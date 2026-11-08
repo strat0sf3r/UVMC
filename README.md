@@ -14,7 +14,7 @@ UVMC runs a small Ubuntu virtual machine on your PC where an AI agent works for 
 - **Several conversations, several agents at once.** Open conversations side by side in tabs, each with its own agent and model, working at the same time. Each one runs as its own Linux user, in its own copy of the work folder and behind its own proxy, so they can't step on each other.
 - **Conversations that share their work.** **Bring into the main folder** merges a conversation's work with what the others brought in. When two conversations changed the same lines, an agent resolves the conflict the way a developer would: it reads both versions, the other conversation's whole log and its folder, then proposes a result for you to accept.
 - **A coordinator and its workers.** Pick a worker model, and the agent you talk to becomes a coordinator: it plans with you and hands self-contained jobs to an independent worker, which does them inside the same walls and reports back. The coordinator itself can't change the machine.
-- **Your choice of model.** Claude through the API or on your Claude plan (through Claude Code, with all its own tools switched off), or any OpenAI-compatible model: DeepSeek, Gemini, OpenRouter, or a model running on your own graphics card (`local-model` sets up llama.cpp and a model sized to your card; no account needed). You pick per conversation, even mid-way; a strong coordinator with a cheaper worker keeps costs down.
+- **Your choice of model.** Claude through the API or on your Claude plan (through Claude Code, with all its own tools switched off), or any OpenAI-compatible model: DeepSeek, Gemini, OpenRouter, or a model running on your own graphics card ([`local-model`](docs/guide.md#a-model-on-your-pc) sets up [llama.cpp](https://github.com/ggml-org/llama.cpp) and a model sized to your card; no account needed). You pick per conversation, even mid-way; a strong coordinator with a cheaper worker keeps costs down.
 - **Tools the agent builds.** Ask for something that keeps running, like *"every morning, check this page and note what changed"*. The agent writes and tests a small program and proposes it. Once you approve it, the program runs on a schedule as its own user, reaching only the sites it declared.
 - **Folders from your PC, safely.** Share folders when you open the panel. The agent reads them, but can't change them: every change is a card with a diff, and the original is backed up first.
 - **Use it from anywhere on your PC.** The `uvmc` command, an HTTP API, and an extension that lets Claude Code and Claude Desktop hand tasks to the agent.
@@ -63,7 +63,7 @@ Download or clone this repository, then:
 
 | Windows | macOS / Linux |
 | --- | --- |
-| double-click `windows\install.cmd` | run `unix/install.sh` |
+| double-click [`windows\install.cmd`](windows/install.cmd) | run [`unix/install.sh`](unix/install.sh) |
 
 The installer asks for admin rights once, turns on Hyper-V if needed (one restart; it continues by itself), installs Multipass if it's missing, creates the VM, installs the supervisor, and takes a `clean` snapshot to reset to. On Windows it also adds a **UVMC Panel** shortcut. The first install takes 5-10 minutes, mostly downloads.
 
@@ -77,17 +77,17 @@ The agent keeps working when you close the browser; the panel catches up when yo
 
 | | Windows | macOS / Linux |
 | --- | --- | --- |
-| Open the panel | `UVMC Panel` shortcut or `windows\panel.cmd` | `unix/panel.sh` |
-| Push changes to the supervisor into the VM | `windows\update.cmd` | `unix/update.sh` |
-| Run a task from a terminal | `windows\uvmc.cmd ask "..."` | `unix/uvmc ask "..."` |
-| Let Claude Code and Claude Desktop use UVMC | `windows\connect-claude-apps.cmd` | `unix/connect-claude-apps.sh` |
-| Run a model on your graphics card (llama.cpp, no account) | `windows\local-model.cmd` | `unix/local-model.sh` |
-| Make sample files to try it with | `windows\make-testdata.cmd` | `unix/make-testdata.sh` |
-| Stop the VM | `windows\stop.cmd` | `unix/stop.sh` |
-| Factory reset | `windows\reset.cmd` | `unix/reset.sh` |
-| Uninstall (asks first, offers to save the agent's work) | `windows\uninstall.cmd` | `unix/uninstall.sh` |
+| Open the panel ([details](docs/guide.md#the-control-panel)) | `UVMC Panel` shortcut or [`windows\panel.cmd`](windows/panel.cmd) | [`unix/panel.sh`](unix/panel.sh) |
+| Push changes to the supervisor into the VM ([details](docs/guide.md#the-supervisor)) | [`windows\update.cmd`](windows/update.cmd) | [`unix/update.sh`](unix/update.sh) |
+| Run a task from a terminal ([details](docs/guide.md#using-uvmc-from-a-terminal-or-scripts)) | [`windows\uvmc.cmd`](windows/uvmc.cmd) `ask "..."` | [`unix/uvmc`](unix/uvmc) `ask "..."` |
+| Let Claude Code and Claude Desktop use UVMC ([details](docs/guide.md#your-pcs-claude-apps-using-uvmc-optional)) | [`windows\connect-claude-apps.cmd`](windows/connect-claude-apps.cmd) | [`unix/connect-claude-apps.sh`](unix/connect-claude-apps.sh) |
+| Run a model on your graphics card (llama.cpp, no account; [details](docs/guide.md#a-model-on-your-pc)) | [`windows\local-model.cmd`](windows/local-model.cmd) | [`unix/local-model.sh`](unix/local-model.sh) |
+| Make sample files to try it with | [`windows\make-testdata.cmd`](windows/make-testdata.cmd) | [`unix/make-testdata.sh`](unix/make-testdata.sh) |
+| Stop the VM | [`windows\stop.cmd`](windows/stop.cmd) | [`unix/stop.sh`](unix/stop.sh) |
+| Factory reset | [`windows\reset.cmd`](windows/reset.cmd) | [`unix/reset.sh`](unix/reset.sh) |
+| Uninstall (asks first, offers to save the agent's work) | [`windows\uninstall.cmd`](windows/uninstall.cmd) | [`unix/uninstall.sh`](unix/uninstall.sh) |
 
-The [guide](docs/guide.md) lists every script and covers the panel, models, the walls, the API and configuration in detail.
+The [guide](docs/guide.md) lists [every script](docs/guide.md#install) and covers the panel, models, the walls, the API and configuration in detail.
 
 ## Configuration
 
