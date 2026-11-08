@@ -1855,7 +1855,7 @@ async function loadLocalModel() {
   } else if (m.running) {
     body = `<p class="small bad">Running on your PC, but UVMC's key doesn't match it. Run ${run} on your PC again: it reconnects UVMC.</p>`;
   } else if (m.has_key) {
-    body = `<p class="small bad">Not running. Start it on your PC with ${run} -Start (it also starts by itself when you log in).</p>`;
+    body = `<p class="small bad">Not running. Start it on your PC: double-click <span class="cmdish">start-model</span> in the UVMC folder (or ${run} -AutoStart to have it start each time you log in).</p>`;
   } else {
     body = `<p class="small">Not set up. A model can run on your PC's graphics card (NVIDIA, AMD, Intel or a Mac), with no account and no key to buy: run ${run} from the UVMC folder on your PC once. It downloads llama.cpp and a model sized to your card, and connects UVMC.</p>`;
   }

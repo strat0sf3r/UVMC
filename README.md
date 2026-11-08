@@ -82,6 +82,8 @@ The agent keeps working when you close the browser; the panel catches up when yo
 | Run a task from a terminal ([details](docs/guide.md#using-uvmc-from-a-terminal-or-scripts)) | [`windows\uvmc.cmd`](windows/uvmc.cmd) `ask "..."` | [`unix/uvmc`](unix/uvmc) `ask "..."` |
 | Let Claude Code and Claude Desktop use UVMC ([details](docs/guide.md#your-pcs-claude-apps-using-uvmc-optional)) | [`windows\connect-claude-apps.cmd`](windows/connect-claude-apps.cmd) | [`unix/connect-claude-apps.sh`](unix/connect-claude-apps.sh) |
 | Run a model on your graphics card (llama.cpp, no account; [details](docs/guide.md#a-model-on-your-pc)) | [`windows\local-model.cmd`](windows/local-model.cmd) | [`unix/local-model.sh`](unix/local-model.sh) |
+| Start / stop the model on your graphics card | [`windows\start-model.cmd`](windows/start-model.cmd), [`windows\stop-model.cmd`](windows/stop-model.cmd) | [`unix/start-model.sh`](unix/start-model.sh), [`unix/stop-model.sh`](unix/stop-model.sh) |
+| Remove the model (asks first; UVMC itself stays) | [`windows\uninstall-model.cmd`](windows/uninstall-model.cmd) | [`unix/uninstall-model.sh`](unix/uninstall-model.sh) |
 | Make sample files to try it with | [`windows\make-testdata.cmd`](windows/make-testdata.cmd) | [`unix/make-testdata.sh`](unix/make-testdata.sh) |
 | Stop the VM | [`windows\stop.cmd`](windows/stop.cmd) | [`unix/stop.sh`](unix/stop.sh) |
 | Factory reset | [`windows\reset.cmd`](windows/reset.cmd) | [`unix/reset.sh`](unix/reset.sh) |

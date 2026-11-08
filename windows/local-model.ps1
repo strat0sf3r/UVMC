@@ -5,6 +5,8 @@
 #   local-model -Model qwen3-4b      switch model (the old file is deleted: one model at a time)
 #   local-model -Update              get the newest llama.cpp
 #   local-model -Status | -Start | -Stop | -Remove
+#   local-model -AutoStart           start it each time you log in (off unless you ask)
+#   local-model -NoAutoStart         stop starting it at login
 #   -Dir <folder>                    where to keep it (default: uvmc-local next to the UVMC folder)
 #
 # The server listens only on this PC and on the network to the UVMC machine, never on your
@@ -18,6 +20,8 @@ param(
     [switch]$Start,
     [switch]$Stop,
     [switch]$Remove,
+    [switch]$AutoStart,
+    [switch]$NoAutoStart,
     [switch]$Yes
 )
 
@@ -213,7 +217,11 @@ function Start-Server($s) {
 
 function Stop-Server {
     $p = Running
-    if ($p) { $p | Stop-Process -Force; Say 'Stopped.' } else { Say 'It was not running.' }
+    if ($p) {
+        $p | Stop-Process -Force
+        $p | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue   # gone before saying so
+        Say 'Stopped.'
+    } else { Say 'It was not running.' }
 }
 
 function Send-Key($mp, $value) {
@@ -247,13 +255,29 @@ function Connect-Uvmc($s) {
     else { Say 'Could not give UVMC the key. Is the UVMC machine installed and running?' 'Yellow' }
 }
 
+function Set-AutoStart([bool]$on) {
+    # Only when you ask: a shortcut in your Startup folder (no administrator rights needed).
+    if (-not $on) {
+        if (Test-Path $Startup) { Remove-Item $Startup; Say 'It no longer starts when you log in.' }
+        else { Say 'It was not starting at login.' }
+        return
+    }
+    $sh = New-Object -ComObject WScript.Shell
+    $lnk = $sh.CreateShortcut($Startup)
+    $lnk.TargetPath = 'powershell.exe'
+    $lnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Start"
+    $lnk.WindowStyle = 7
+    $lnk.Save()
+    Say 'It now starts each time you log in (local-model -NoAutoStart turns that off).' 'Green'
+}
+
 function Show-Status($s) {
     if (-not $s.PSObject.Properties['dir']) { Say 'Not set up yet. Run local-model.'; return }
     Say "Folder:    $($s.dir)"
     Say "llama.cpp: $($s.llama)"
     Say "Card:      $($s.card) ($($s.card_mib) MiB)"
     Say "Model:     $($Models[$s.model].Label)"
-    Say "Starts with Windows: $(if (Test-Path $Startup) { 'yes' } else { 'no' })"
+    Say "Starts at login: $(if (Test-Path $Startup) { 'yes (local-model -NoAutoStart to stop that)' } else { 'no (local-model -AutoStart if you want it)' })"
     if (Running) { Say "Running, port $Port." 'Green' } else { Say 'Not running (local-model -Start).' 'Yellow' }
 }
 
@@ -265,6 +289,10 @@ elseif (-not $state.PSObject.Properties['dir']) {
 }
 
 if ($Status) { Show-Status $state; exit 0 }
+if ($AutoStart -or $NoAutoStart) {
+    if ($AutoStart -and -not $state.PSObject.Properties['model']) { Fail 'Not set up yet. Run local-model first.' }
+    Set-AutoStart $AutoStart; exit 0
+}
 if ($Stop) { Stop-Server; exit 0 }
 if ($Start) {
     if (-not $state.PSObject.Properties['model']) { Fail 'Not set up yet. Run local-model first.' }
@@ -320,13 +348,7 @@ if ($net) { Set-Field $state 'vm_interface' $net.Interface; Save-State $state; O
 if (Running) { Running | Stop-Process -Force; Start-Sleep 2 }   # restart, so it listens on today's addresses
 Start-Server $state
 
-# Start with Windows (a shortcut in your Startup folder; no administrator rights needed).
-$sh = New-Object -ComObject WScript.Shell
-$lnk = $sh.CreateShortcut($Startup)
-$lnk.TargetPath = 'powershell.exe'
-$lnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Start"
-$lnk.WindowStyle = 7
-$lnk.Save()
-
 if ($net) { Connect-Uvmc $state }
-Say "Done. It starts with Windows; local-model -Stop stops it, local-model -Remove takes it all away."
+Say 'Done. It runs until you stop it (local-model -Stop) or restart Windows; local-model -Start starts it again.'
+if (Test-Path $Startup) { Say 'It also starts each time you log in (local-model -NoAutoStart turns that off).' }
+else { Say 'It does not start by itself when you log in; local-model -AutoStart does that, if you want it.' }

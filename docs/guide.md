@@ -16,6 +16,8 @@ UVMC runs as a real Ubuntu 24.04 VM through [Multipass](https://canonical.com/mu
 | Sign in with your Claude plan (for the "my plan" models; easier: panel › Settings) | `windows\sign-in-claude.cmd` | `unix/sign-in-claude.sh` |
 | Let Claude Code / Claude Desktop on your PC use UVMC (see below) | `windows\connect-claude-apps.cmd` | `unix/connect-claude-apps.sh` |
 | Run a model on your graphics card (see "A model on your PC") | `windows\local-model.cmd` | `unix/local-model.sh` |
+| Start / stop that model (double-click) | `windows\start-model.cmd`, `windows\stop-model.cmd` | `unix/start-model.sh`, `unix/stop-model.sh` |
+| Remove that model (asks first) | `windows\uninstall-model.cmd` | `unix/uninstall-model.sh` |
 | Use UVMC from a terminal or scripts (see below) | `windows\uvmc.cmd` | `unix/uvmc` |
 | Push supervisor changes into the VM | `windows\update.cmd` | `unix/update.sh` |
 | Update Claude Code in the VM (or panel › Settings › Update Claude Code) | `windows\update-claude.cmd` | `unix/update-claude.sh` |
@@ -86,8 +88,8 @@ Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a 
 
 `local-model` (`windows\local-model.cmd`, `unix/local-model.sh`) runs a model on the PC's graphics card with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s own server: no account, no subscription, nothing to pay. It runs on the PC, not in the VM, which has no graphics card.
 
-- **Run it once.** It downloads the newest llama.cpp (Vulkan on Windows and Linux: NVIDIA, AMD including older cards like the RX 5000 series, Intel; Metal on a Mac) and a Qwen3 model sized to the card's memory (4B, 8B, 14B or 32B, from the Qwen team's Hugging Face page). Both are checked against their published checksums. It starts the server, makes it start when you log in, and gives UVMC the server's key with `uvmc-setkey local`.
-- **One model at a time.** `local-model -Model qwen3-4b` switches (the old file is deleted); `-Update` gets the newest llama.cpp; `-Status`, `-Start`, `-Stop`, `-Remove`. On Mac/Linux the same with `--model`, `--update`, ...
+- **Run it once.** It downloads the newest llama.cpp (Vulkan on Windows and Linux: NVIDIA, AMD including older cards like the RX 5000 series, Intel; Metal on a Mac) and a Qwen3 model sized to the card's memory (4B, 8B, 14B or 32B, from the Qwen team's Hugging Face page). Both are checked against their published checksums. It starts the server and gives UVMC the server's key with `uvmc-setkey local`. It does **not** start by itself when you log in unless you ask: `-AutoStart` (a shortcut in your Startup folder; a LaunchAgent or systemd user service on Mac/Linux), `-NoAutoStart` to undo.
+- **One model at a time.** `local-model -Model qwen3-4b` switches (the old file is deleted); `-Update` gets the newest llama.cpp; `-Status`, `-Start`, `-Stop`, `-AutoStart`, `-NoAutoStart`, `-Remove`. `start-model`, `stop-model` and `uninstall-model` do `-Start`, `-Stop` and `-Remove` with a double-click. On Mac/Linux the same with `--model`, `--update`, ...
 - **Walls.** The server listens only on the PC itself and on the network to the VM, never the home network; on Windows one firewall rule (asked once, with administrator rights) lets the VM in, on its port only. It answers only with its key, which lives in the VM where the agent can't read it. The model only writes text: what it asks for is done by the supervisor in the VM, with the same rules. The agent can't reach the PC at all: its firewall only lets it talk to the proxy, and the proxy refuses the PC's address whatever the port or site list says.
 - **Finding the PC.** The profile's address is `http://{pc}:8091/v1`; the supervisor fills in `{pc}` with its network gateway each time ([pc.py](../supervisor/uvmc/pc.py)), since Windows gives the VM's network a new range at each restart.
 - **Settings › Model on your PC** shows whether it runs, which model, and how long a conversation it holds.

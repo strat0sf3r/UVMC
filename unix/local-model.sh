@@ -7,6 +7,8 @@
 #   unix/local-model.sh --model qwen3-4b   switch model (the old file is deleted: one at a time)
 #   unix/local-model.sh --update           get the newest llama.cpp
 #   unix/local-model.sh --status | --start | --stop | --remove
+#   unix/local-model.sh --autostart        start it each time you log in (off unless you ask)
+#   unix/local-model.sh --no-autostart     stop starting it at login
 #   --dir <folder>                         where to keep it (default: uvmc-local next to UVMC)
 #
 # The server listens only on this computer and on the network to the UVMC machine, and answers
@@ -44,6 +46,7 @@ while [ $# -gt 0 ]; do
     --dir) DIR="$(mkdir -p "$2" && cd "$2" && pwd)"; shift ;;
     --update) UPDATE=1 ;;
     --status) ACTION=status ;; --start) ACTION=start ;; --stop) ACTION=stop ;; --remove) ACTION=remove ;;
+    --autostart) ACTION=autostart ;; --no-autostart) ACTION=no-autostart ;;
     --yes) YES=1 ;;
     *) fail "Unknown option $1 (see the top of this script)." ;;
   esac
@@ -186,10 +189,15 @@ start_server() {
   fail "The model did not start. See $DIR/server.log."
 }
 
+PLIST="$HOME/Library/LaunchAgents/com.uvmc.local-model.plist"
+UNIT="$HOME/.config/systemd/user/uvmc-local-model.service"
+autostart_on() { [ -f "$PLIST" ] || { [ -f "$UNIT" ] && systemctl --user is-enabled uvmc-local-model.service >/dev/null 2>&1; }; }
+
+# Only when you ask: a LaunchAgent on a Mac, a systemd user service on Linux.
 autostart() {
   local me; me="$HERE/local-model.sh"
   if [ "$OS" = Darwin ]; then
-    local plist="$HOME/Library/LaunchAgents/com.uvmc.local-model.plist"
+    local plist="$PLIST"
     mkdir -p "$(dirname "$plist")"
     cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -200,14 +208,23 @@ autostart() {
   <key>RunAtLoad</key><true/>
 </dict></plist>
 EOF
-    say "It starts when you log in (a LaunchAgent)."
+    say "It now starts each time you log in (--no-autostart turns that off)."
   elif command -v systemctl >/dev/null; then
-    local unit="$HOME/.config/systemd/user/uvmc-local-model.service"
+    local unit="$UNIT"
     mkdir -p "$(dirname "$unit")"
     printf '[Unit]\nDescription=UVMC local model\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/bash %s --start\nExecStop=/bin/bash %s --stop\n\n[Install]\nWantedBy=default.target\n' "$me" "$me" > "$unit"
     systemctl --user daemon-reload && systemctl --user enable uvmc-local-model.service >/dev/null 2>&1 || true
-    say "It starts when you log in (a systemd user service)."
+    say "It now starts each time you log in (--no-autostart turns that off)."
+  else
+    say "No LaunchAgent or systemd here: start it yourself with --start."
   fi
+}
+
+no_autostart() {
+  if [ ! -f "$PLIST" ] && [ ! -f "$UNIT" ]; then say "It was not starting at login."; return; fi
+  rm -f "$PLIST"
+  if [ -f "$UNIT" ]; then systemctl --user disable uvmc-local-model.service >/dev/null 2>&1 || true; rm -f "$UNIT"; fi
+  say "It no longer starts when you log in."
 }
 
 # Stores a key in UVMC with uvmc-setkey. Piped input into "multipass exec" hung on Windows
@@ -237,17 +254,16 @@ case "$ACTION" in
     say "Folder:    $DIR"; say "llama.cpp: $LLAMA"; say "Chip:      $CARD ($CARD_MIB MiB)"
     say "Model:     $(model_field "$MODEL" 5)"
     if running; then say "Running, port $PORT."; else say "Not running (unix/local-model.sh --start)."; fi
+    if autostart_on; then say "Starts at login: yes (--no-autostart to stop that)"; else say "Starts at login: no (--autostart if you want it)"; fi
     exit 0 ;;
+  autostart) [ -n "$MODEL" ] || fail "Not set up yet. Run unix/local-model.sh first."; autostart; exit 0 ;;
+  no-autostart) no_autostart; exit 0 ;;
   stop) stop_server; exit 0 ;;
   start) [ -n "$MODEL" ] || fail "Not set up yet. Run unix/local-model.sh first."; start_server; exit 0 ;;
   remove)
     if [ "$YES" = 0 ]; then read -rp "Delete $DIR (llama.cpp and the model)? [y/N] " a; [[ "$a" =~ ^[yY] ]] || exit 0; fi
     stop_server
-    rm -f "$HOME/Library/LaunchAgents/com.uvmc.local-model.plist"
-    if [ -f "$HOME/.config/systemd/user/uvmc-local-model.service" ]; then
-      systemctl --user disable uvmc-local-model.service >/dev/null 2>&1 || true
-      rm -f "$HOME/.config/systemd/user/uvmc-local-model.service"
-    fi
+    no_autostart >/dev/null
     [ -d "$DIR" ] && rm -rf -- "$DIR"
     command -v multipass >/dev/null && { send_key "" || true; }   # an empty key removes it
     rm -f "$STATE"
@@ -272,6 +288,7 @@ VM_IF="$(find_vm_interface || true)"
 save_state
 running && { kill "$(cat "$PIDFILE")"; rm -f "$PIDFILE"; sleep 2; }   # restart on today's addresses
 start_server
-autostart
 [ -n "$VM_IF" ] && connect_uvmc
-say "Done. --stop stops it, --remove takes it all away."
+say "Done. It runs until you stop it (--stop) or restart; --start starts it again."
+if autostart_on; then say "It also starts each time you log in (--no-autostart turns that off)."
+else say "It does not start by itself when you log in; --autostart does that, if you want it."; fi
