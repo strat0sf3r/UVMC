@@ -130,11 +130,13 @@ class OpenAIProvider(Provider):
 
     def __init__(self, profile: Profile, api_key: str | None = None, timeout: float = 600):
         super().__init__(profile)
-        import httpx  # already installed: the anthropic package depends on it
+        import httpx  # in requirements.txt (anthropic 2.x moved to httpx2, so it no longer brings httpx)
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        base = (profile.base_url or "https://api.openai.com/v1").rstrip("/")
+        from . import pc
+        self.on_pc = pc.PLACEHOLDER in (profile.base_url or "")   # a model on your PC (local-model.cmd)
+        base = pc.resolve(profile.base_url or "https://api.openai.com/v1").rstrip("/")
         self.http = httpx.Client(base_url=base, headers=headers, timeout=timeout)
 
     @staticmethod
@@ -172,7 +174,8 @@ class OpenAIProvider(Provider):
         try:
             resp = self.http.post("/chat/completions", json=body)
         except Exception as e:
-            raise ProviderError(f"{self.profile.name}: could not reach {self.http.base_url}: {e}") from e
+            hint = " Is the model running on your PC? Run windows\\local-model.cmd -Start." if self.on_pc else ""
+            raise ProviderError(f"{self.profile.name}: could not reach {self.http.base_url}: {e}.{hint}") from e
         if resp.status_code >= 400:
             detail = resp.text[:500]
             try:
@@ -180,6 +183,10 @@ class OpenAIProvider(Provider):
                 detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
             except ValueError:
                 pass
+            if self.on_pc and resp.status_code == 401:
+                detail += " (the key doesn't match: run windows\\local-model.cmd again to reconnect UVMC)"
+            elif self.on_pc and "context" in str(detail).lower():
+                detail += " (the conversation is longer than the model on your PC can hold: start a new one)"
             raise ProviderError(f"{self.profile.name}: HTTP {resp.status_code}: {detail}")
         try:
             data = resp.json()

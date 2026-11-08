@@ -74,13 +74,25 @@ The supervisor isn't tied to Claude. The loop talks to a **provider interface**,
 | Adapter | Covers |
 | --- | --- |
 | `anthropic` | Claude, and Anthropic-compatible endpoints |
-| `openai` | OpenAI and any OpenAI-compatible API: DeepSeek, Gemini (through Google's compatibility endpoint, beta), Mistral, Groq, OpenRouter, and local servers like Ollama, LM Studio or vLLM on your PC |
+| `openai` | OpenAI and any OpenAI-compatible API: DeepSeek, Gemini (through Google's compatibility endpoint, beta), Mistral, Groq, OpenRouter, and llama.cpp's server on your PC (`local`, below) |
 
-Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`. Prepared, just fill in a model name: `gpt`, `gemini`, `local`.
+Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`.
 
-- Store a key with `set-key` (Anthropic) or `set-key deepseek` (the profile's `key`). Keys stay in the VM where the agent can't read them; local models need none.
+- Store a key with `set-key` (Anthropic) or `set-key deepseek` (the profile's `key`). Keys stay in the VM where the agent can't read them.
 - Pick the model per conversation in the panel's header, even mid-conversation. The supervisor runs `uvmc --model deepseek` in the terminal.
 - Tools, rules, walls, logs and the panel are the same whatever the model. How well a model uses the tools varies a lot, so try a new one on small tasks first.
+
+### A model on your PC
+
+`local-model` (`windows\local-model.cmd`, `unix/local-model.sh`) runs a model on the PC's graphics card with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s own server: no account, no subscription, nothing to pay. It runs on the PC, not in the VM, which has no graphics card.
+
+- **Run it once.** It downloads the newest llama.cpp (Vulkan on Windows and Linux: NVIDIA, AMD including older cards like the RX 5000 series, Intel; Metal on a Mac) and a Qwen3 model sized to the card's memory (4B, 8B, 14B or 32B, from the Qwen team's Hugging Face page). Both are checked against their published checksums. It starts the server, makes it start when you log in, and gives UVMC the server's key with `uvmc-setkey local`.
+- **One model at a time.** `local-model -Model qwen3-4b` switches (the old file is deleted); `-Update` gets the newest llama.cpp; `-Status`, `-Start`, `-Stop`, `-Remove`. On Mac/Linux the same with `--model`, `--update`, ...
+- **Walls.** The server listens only on the PC itself and on the network to the VM, never the home network; on Windows one firewall rule (asked once, with administrator rights) lets the VM in, on its port only. It answers only with its key, which lives in the VM where the agent can't read it. The model only writes text: what it asks for is done by the supervisor in the VM, with the same rules. The agent can't reach the PC at all: its firewall only lets it talk to the proxy, and the proxy refuses the PC's address whatever the port or site list says.
+- **Finding the PC.** The profile's address is `http://{pc}:8091/v1`; the supervisor fills in `{pc}` with its network gateway each time ([pc.py](../supervisor/uvmc/pc.py)), since Windows gives the VM's network a new range at each restart.
+- **Settings › Model on your PC** shows whether it runs, which model, and how long a conversation it holds.
+- **Settings chosen for the card** (measured on an RX 5700 XT, 8 GB): flash attention off on AMD and Intel through Vulkan (it fell back to the processor, 10x slower on long prompts), and on cards under 11 GB an 8k-token context with a smaller work buffer (`-ub 256`, which kept the model off shared memory: a 7,000-token prompt read in 18 s instead of 32 s). Thinking is off, so the agent gets straight answers. On that card Qwen3 8B writes 30-55 tokens/s and reads about 400.
+- **Limits.** A small model is much weaker than Claude with tools: give it small tasks. A conversation longer than its context is refused by the server; the error says to start a new conversation.
 
 ### Claude on your plan instead of the API
 

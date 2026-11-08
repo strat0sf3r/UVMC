@@ -1573,7 +1573,7 @@ const PRESETS = {
   openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: "openai", max_tokens_param: "max_completion_tokens" },
   deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com", key: "deepseek" },
   gemini: { label: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", key: "gemini" },
-  ollama: { label: "Local (Ollama)", base_url: "http://192.168.1.10:11434/v1", key: "" },
+  "on-pc": { label: "Model on my PC (llama.cpp)", base_url: "http://{pc}:8091/v1", model: "local", key: "local" },
   "claude-plan": { label: "Claude (my plan)", provider: "claude-code", model: "sonnet", base_url: "", key: "claude-subscription" },
 };
 const PROVIDER_TEXT = { anthropic: "Anthropic API", "claude-code": "Claude Code on your plan" };
@@ -1628,6 +1628,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
     <ul class="alist profiles" id="profiles"></ul>
     <button class="btn" type="button" id="addProfile">Add a model</button>
     <div id="profileForm"></div>
+    <div id="localModel"></div>
     <h3>API keys</h3>
     <p class="small">Stored in the VM where the agent can't read them. A key is never shown again, only its last characters. <strong>claude-subscription</strong> is your Claude plan's login, set by the sign-in above.</p>
     <ul class="alist keys" id="keys"></ul>
@@ -1656,6 +1657,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
       ? "Connected from your PC: " + m.seen.map((a) => `${a.name} (last ${when(a.at)}${a.allowed ? "" : ", refused: the switch was off"})`).join("; ") + "."
       : "No Claude app on your PC has connected yet. If you ran connect-claude-apps (the installer offers it), open a new Claude Code session or quit and reopen Claude Desktop: they connect when they start. Otherwise run connect-claude-apps from the UVMC folder on your PC once.";
   }).catch(() => {});
+  loadLocalModel();
   api("/api/briefing").then(renderBriefing).catch((e) => { $("briefingBox").innerHTML = `<p class="small bad">${esc(e.message)}</p>`; });
   $("ccUpdate").addEventListener("click", async (e) => {
     const line = $("ccLine");
@@ -1836,6 +1838,29 @@ async function planSignin() {
     }
   });
   f.code.focus();
+}
+
+// The model on your PC (windows\local-model.cmd, unix/local-model.sh): is it there and running?
+async function loadLocalModel() {
+  const box = $("localModel");
+  if (!box) return;
+  let m;
+  try { m = await api("/api/local-model"); } catch (e) { box.innerHTML = ""; return; }
+  if (!m.profile) { box.innerHTML = ""; return; }
+  const run = `<span class="cmdish">local-model</span>`;
+  let body;
+  if (m.running && m.key_ok) {
+    body = `<p class="plan-ok">&#10003; Running: <strong>${esc(m.model || m.file)}</strong>${m.file && m.model ? ` (${esc(m.file)})` : ""}, holds ${m.context.toLocaleString()} tokens of conversation${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}.</p>
+      <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header. It's slower and less capable than Claude: give it small tasks, and start a new conversation when it says this one is too long. To switch model or update llama.cpp, run ${run} on your PC (${run} -Model qwen3-4b, ${run} -Update).</p>`;
+  } else if (m.running) {
+    body = `<p class="small bad">Running on your PC, but UVMC's key doesn't match it. Run ${run} on your PC again: it reconnects UVMC.</p>`;
+  } else if (m.has_key) {
+    body = `<p class="small bad">Not running. Start it on your PC with ${run} -Start (it also starts by itself when you log in).</p>`;
+  } else {
+    body = `<p class="small">Not set up. A model can run on your PC's graphics card (NVIDIA, AMD, Intel or a Mac), with no account and no key to buy: run ${run} from the UVMC folder on your PC once. It downloads llama.cpp and a model sized to your card, and connects UVMC.</p>`;
+  }
+  box.innerHTML = `<h3>Model on your PC</h3>${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
+  $("localCheck").addEventListener("click", loadLocalModel);
 }
 
 function profileForm(p) {

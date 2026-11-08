@@ -576,6 +576,37 @@ class Controller:
                  "has_key": config.has_key(p), "key": p.key, "plan": p.provider == "claude-code"}
                 for p in self.cfg.models.values()]
 
+    def local_model(self) -> dict:
+        """The model running on your PC (windows\\local-model.cmd): found, running, which one."""
+        from . import pc
+        p = next((p for p in self.cfg.models.values() if pc.PLACEHOLDER in p.base_url), None)
+        out = {"profile": p.name if p else None, "label": p.label if p else "", "pc": pc.address(),
+               "has_key": bool(p and config.has_key(p)), "running": False, "key_ok": None,
+               "model": "", "file": "", "context": 0, "build": "", "error": ""}
+        if not p or not out["pc"]:
+            return out
+        import httpx
+        root = pc.resolve(p.base_url).rstrip("/").removesuffix("/v1")
+        key = config.api_key(p.key)
+        try:
+            r = httpx.get(root + "/props", headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=3)
+        except httpx.HTTPError as e:
+            out["error"] = f"Nothing answers at {root} ({type(e).__name__})."
+            return out
+        out["running"] = True
+        if r.status_code == 401:
+            out["key_ok"] = False
+            return out
+        try:
+            d = r.json()
+        except ValueError:
+            out["error"] = f"Unexpected answer from {root}."
+            return out
+        out.update(key_ok=True, model=str(d.get("model_alias") or ""), build=str(d.get("build_info") or ""),
+                   file=str(d.get("model_path") or "").replace("\\", "/").rsplit("/", 1)[-1],
+                   context=int((d.get("default_generation_settings") or {}).get("n_ctx") or 0))
+        return out
+
     def set_model(self, name: str, cid: str | None = None) -> None:
         profile = self.cfg.profile(name)  # KeyError if unknown
         c = self.conv(cid)
@@ -1757,6 +1788,10 @@ def create_app(ctl: Controller, token: str | None):
     @app.get("/api/models")
     def models():
         return ctl.models()
+
+    @app.get("/api/local-model")
+    def local_model():
+        return ctl.local_model()
 
     @app.post("/api/model")
     async def model(request: Request):

@@ -83,10 +83,10 @@ key = "gemini"
 
 [models.local]
 label = "Local model on my PC"
-provider = "openai"               # Ollama, LM Studio and vLLM all offer an OpenAI-compatible API
-base_url = "http://192.168.1.10:11434/v1"   # your PC's address as the VM sees it
-model = ""                        # e.g. a model you pulled in Ollama
-key = ""                          # no key needed
+provider = "openai"               # llama.cpp's server, set up by windows\local-model.cmd
+base_url = "http://{pc}:8091/v1"  # {pc} = your PC as this machine sees it (looked up each time)
+model = "local"                   # the server runs one model; local-model.cmd picks it
+key = "local"                     # local-model.cmd stores it, like set-key
 
 # --- Delegation ------------------------------------------------------------------
 # In the panel you can give a conversation a worker: the model you talk to then

@@ -95,8 +95,10 @@ Reporter = Callable[[dict], None]
 class Proxy:
     def __init__(self, port: int, allowed_ports: list[int], sites: SiteList,
                  decide: Decider, report: Reporter, host: str = "127.0.0.1"):
+        from . import pc
         self.sites, self.decide, self.report = sites, decide, report
         self.allowed_ports = set(allowed_ports)
+        self.is_pc = pc.is_pc
         proxy = self
 
         class Handler(socketserver.BaseRequestHandler):
@@ -155,6 +157,9 @@ class Proxy:
         if port not in self.allowed_ports:
             self._event(info, "deny", f"port {port} is not allowed", started)
             return self._refuse(client, 403, f"UVMC: port {port} is not allowed")
+        if self.is_pc(host):  # the PC that runs this machine is never reachable, whatever you allow
+            self._event(info, "deny", "the PC itself", started)
+            return self._refuse(client, 403, "UVMC: the PC itself can't be reached from here")
 
         if self.sites.allows(host):
             reason = "allowed site"

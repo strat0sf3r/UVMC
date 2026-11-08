@@ -43,17 +43,17 @@ class SettingsTest(ServiceBase):
 
     def test_add_edit_remove_profiles(self):
         r = self.c.post("/api/settings/profile", json={
-            "name": "local", "label": "My Ollama", "provider": "openai",
+            "name": "mybox", "label": "My Ollama", "provider": "openai",
             "base_url": "http://192.168.1.20:11434/v1", "model": "qwen-coder", "key": ""})
         self.assertEqual(r.status_code, 200, r.text)
         names = {p["name"]: p for p in r.json()["profiles"]}
-        self.assertEqual(names["local"]["source"], "panel")
-        self.assertTrue(names["local"]["has_key"])  # no key needed
-        self.assertIn("local", [m["name"] for m in self.c.get("/api/state").json()["models"]])
+        self.assertEqual(names["mybox"]["source"], "panel")
+        self.assertTrue(names["mybox"]["has_key"])  # no key needed
+        self.assertIn("mybox", [m["name"] for m in self.c.get("/api/state").json()["models"]])
 
         # survives a restart of the supervisor
         again = self.fresh_controller()
-        self.assertEqual(again.cfg.profile("local").base_url, "http://192.168.1.20:11434/v1")
+        self.assertEqual(again.cfg.profile("mybox").base_url, "http://192.168.1.20:11434/v1")
 
         # editing a config.toml profile, then resetting it
         self.c.post("/api/settings/profile", json={"name": "claude", "label": "Claude (panel)", "provider": "anthropic",
@@ -66,13 +66,13 @@ class SettingsTest(ServiceBase):
         self.assertEqual(r.status_code, 400)  # from config.toml: change it there
 
         # default model
-        self.c.post("/api/settings/default", json={"name": "local"})
-        self.assertEqual(self.fresh_controller().cfg.model, "local")
-        self.assertIn('model = "local"', self.c.get("/api/settings/toml").json()["toml"])
-        self.assertIn("[models.local]", self.c.get("/api/settings/toml").json()["toml"])
+        self.c.post("/api/settings/default", json={"name": "mybox"})
+        self.assertEqual(self.fresh_controller().cfg.model, "mybox")
+        self.assertIn('model = "mybox"', self.c.get("/api/settings/toml").json()["toml"])
+        self.assertIn("[models.mybox]", self.c.get("/api/settings/toml").json()["toml"])
 
-        self.ctl.model = "local"
-        self.c.post("/api/settings/profile/remove", json={"name": "local"})
+        self.ctl.model = "mybox"
+        self.c.post("/api/settings/profile/remove", json={"name": "mybox"})
         self.assertEqual(self.ctl.model, "claude")  # the conversation falls back to the default
 
     def test_validation(self):
