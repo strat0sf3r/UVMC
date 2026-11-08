@@ -16,6 +16,7 @@ UVMC runs as a real Ubuntu 24.04 VM through [Multipass](https://canonical.com/mu
 | Set / replace an API key (or use the panel's Settings tab) | `windows\set-key.cmd [name]` | `unix/set-key.sh [name]` |
 | Sign in with your Claude plan (for the "my plan" models; easier: panel › Settings) | `windows\sign-in-claude.cmd` | `unix/sign-in-claude.sh` |
 | Let Claude Code / Claude Desktop on your PC use UVMC (see below) | `windows\connect-claude-apps.cmd` | `unix/connect-claude-apps.sh` |
+| Run a model on your graphics card (see "A model on your PC") | `windows\local-model.cmd` | `unix/local-model.sh` |
 | Use UVMC from a terminal or scripts (see below) | `windows\uvmc.cmd` | `unix/uvmc` |
 | Push supervisor changes into the VM | `windows\update.cmd` | `unix/update.sh` |
 | Update Claude Code in the VM (or panel › Settings › Update Claude Code) | `windows\update-claude.cmd` | `unix/update-claude.sh` |

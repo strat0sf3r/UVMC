@@ -81,6 +81,7 @@ The agent keeps working when you close the browser; the panel catches up when yo
 | Push changes to the supervisor into the VM | `windows\update.cmd` | `unix/update.sh` |
 | Run a task from a terminal | `windows\uvmc.cmd ask "..."` | `unix/uvmc ask "..."` |
 | Let Claude Code and Claude Desktop use UVMC | `windows\connect-claude-apps.cmd` | `unix/connect-claude-apps.sh` |
+| Run a model on your graphics card (llama.cpp, no account) | `windows\local-model.cmd` | `unix/local-model.sh` |
 | Make sample files to try it with | `windows\make-testdata.cmd` | `unix/make-testdata.sh` |
 | Stop the VM | `windows\stop.cmd` | `unix/stop.sh` |
 | Factory reset | `windows\reset.cmd` | `unix/reset.sh` |
