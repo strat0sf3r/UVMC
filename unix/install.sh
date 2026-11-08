@@ -66,14 +66,7 @@ if [ ! -f "$DONE" ]; then
   step "Installing the supervisor"
   unix/update.sh
 
-  # 3. API key (optional)
-  step "API key"
-  echo "Paste your Anthropic API key, or press Enter to skip. To use your Claude plan instead, run sign-in-claude after the install."
-  read -rsp "API key: " KEY; echo
-  if [ -n "$KEY" ]; then
-    printf '%s\n' "$KEY" | multipass exec "$NAME" -- sudo uvmc-setkey
-  fi
-  unset KEY
+  # 3. API keys and the Claude plan sign-in are done in the panel (Settings), not here.
 
   # 4. Factory snapshot (kept if an earlier run already took it)
   if ! multipass info "$NAME.clean" >/dev/null 2>&1; then
@@ -105,4 +98,4 @@ if [ ! -f "$HOME/.uvmc/asked-claude-apps" ]; then
 fi
 
 step "Done"
-echo "Open the control panel with unix/panel.sh. To use your Claude plan, run unix/sign-in-claude.sh first."
+echo "Open the control panel with unix/panel.sh. Then, in its Settings tab, add your API key or sign in with your Claude plan."

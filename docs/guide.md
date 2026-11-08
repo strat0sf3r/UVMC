@@ -13,7 +13,6 @@ UVMC runs as a real Ubuntu 24.04 VM through [Multipass](https://canonical.com/mu
 | Choose shared folders again | hold Shift on the shortcut, or `windows\panel.cmd --folders` | `unix/panel.sh --folders` |
 | Supervisor in the terminal | `windows\supervisor.cmd` | `unix/supervisor.sh` |
 | Plain shell in the VM | `windows\shell.cmd` | `unix/shell.sh` |
-| Set / replace an API key (or use the panel's Settings tab) | `windows\set-key.cmd [name]` | `unix/set-key.sh [name]` |
 | Sign in with your Claude plan (for the "my plan" models; easier: panel › Settings) | `windows\sign-in-claude.cmd` | `unix/sign-in-claude.sh` |
 | Let Claude Code / Claude Desktop on your PC use UVMC (see below) | `windows\connect-claude-apps.cmd` | `unix/connect-claude-apps.sh` |
 | Run a model on your graphics card (see "A model on your PC") | `windows\local-model.cmd` | `unix/local-model.sh` |
@@ -34,7 +33,7 @@ UVMC runs as a real Ubuntu 24.04 VM through [Multipass](https://canonical.com/mu
 3. Installs Multipass if it's missing (winget on Windows, Homebrew on macOS, snap on Linux) and remembers that it did.
 4. Creates the VM (2 CPUs, 15 GB disk, and 3 GB of memory if your computer has 12 GB or more, else 2 GB; set `UVMC_MEMORY`, e.g. `4G`, before installing to choose) and runs [cloud-init.yaml](../cloud-init.yaml) inside it: an `agent` user with no sudo and basic tools. On Windows it first asks where to store the machine: next to UVMC (the repo's `machine` folder, kept out of git), Multipass's usual place (`C:\ProgramData\Multipass`), or another folder you type. It takes about 5 GB at first and can grow to about 16 GB.
 5. Installs the supervisor (see below).
-6. Asks for an Anthropic API key (optional: you can use other models, or your Claude plan through `sign-in-claude`). It's stored in the VM where the agent can't read it.
+6. Doesn't ask for an API key any more (since 0.12.6): add keys, or sign in with your Claude plan, in the panel's Settings tab. They're stored in the VM where the agent can't read them.
 7. Takes a snapshot called `clean`: the factory reset point.
 8. Windows: adds a `UVMC Panel` shortcut to the desktop and Start menu.
 
@@ -79,7 +78,7 @@ The supervisor isn't tied to Claude. The loop talks to a **provider interface**,
 
 Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`.
 
-- Store a key with `set-key` (Anthropic) or `set-key deepseek` (the profile's `key`). Keys stay in the VM where the agent can't read them.
+- Add keys in the panel: **Settings › API keys** (the profile's `key` name, e.g. `deepseek`). Keys stay in the VM where the agent can't read them. (The `set-key` scripts were removed in 0.12.6: piping a key into `multipass exec` hangs with Multipass 1.16 on Windows; the installer no longer asks for one either.)
 - Pick the model per conversation in the panel's header, even mid-conversation. The supervisor runs `uvmc --model deepseek` in the terminal.
 - Tools, rules, walls, logs and the panel are the same whatever the model. How well a model uses the tools varies a lot, so try a new one on small tasks first.
 

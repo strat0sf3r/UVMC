@@ -133,7 +133,7 @@ class OpenAIAdapterTest(ServiceBase):
             bad.stop()
         with self.assertRaises(ProviderError) as e:
             make(Profile("deepseek", "openai", "m", key="deepseek"), None)
-        self.assertIn("set-key deepseek", str(e.exception))
+        self.assertIn("Settings › API keys (deepseek)", str(e.exception))
         local = make(Profile("local", "openai", "m", key="", base_url="http://127.0.0.1:9/v1"), None)
         with self.assertRaises(ProviderError):
             local.complete("s", [{"role": "user", "text": "hi"}], [], 10)  # nothing listens there
@@ -220,7 +220,7 @@ class ControllerModelTest(ServiceBase):
         ctl.start_task("hello")
         self.assertTrue(wait_for(lambda: ctl.state == "idle"))
         errors = [e["text"] for e in ctl.log.read() if e["kind"] == "error"]
-        self.assertIn("set-key deepseek", errors[0])
+        self.assertIn("Settings › API keys (deepseek)", errors[0])
 
 
 if __name__ == "__main__":

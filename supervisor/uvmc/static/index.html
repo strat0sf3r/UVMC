@@ -1130,7 +1130,7 @@ function showModels(s) {
   const banner = $("keyBanner");
   banner.hidden = s.has_key;
   if (!s.has_key && cur && cur.plan) banner.innerHTML = `UVMC isn't signed in with your Claude plan yet. Sign in under <strong>Settings</strong>, or pick another model.`;
-  else if (!s.has_key && cur) banner.innerHTML = `There's no API key for ${esc(cur.label)}, so the agent can't think yet. Run <strong>set-key${cur.key === "anthropic" ? "" : " " + esc(cur.key)}</strong> on your PC, or pick another model.`;
+  else if (!s.has_key && cur) banner.innerHTML = `There's no API key for ${esc(cur.label)}, so the agent can't think yet. ${cur.on_pc ? "Run <strong>local-model</strong> on your PC" : `Add the key <strong>${esc(cur.key)}</strong> under Settings › API keys`}, or pick another model.`;
 }
 $("worker").addEventListener("change", async (e) => {
   try { showModels(await api("/api/worker", withConv({ name: e.target.value }))); }

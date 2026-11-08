@@ -170,12 +170,10 @@ function Settings-For($card) {
 function Open-Firewall($s, $net) {
     # Windows asks for administrator rights once, for this one rule: llama-server may accept
     # connections on the network to the UVMC machine, on its port only.
-    $have = Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue
-    if ($have) {
-        $f = $have | Get-NetFirewallInterfaceFilter
-        $p = $have | Get-NetFirewallApplicationFilter
-        if ($f.InterfaceAlias -contains $net.Interface -and $p.Program -eq (Server-Exe $s)) { return }
-    }
+    # Already there for this llama-server? (netsh, since Get-NetFirewallRule sees nothing without
+    # administrator rights, which would ask for them again on every run.)
+    $have = (& netsh advfirewall firewall show rule name="$RuleName" verbose 2>$null | Out-String)
+    if ($have -match [regex]::Escape((Server-Exe $s))) { return }
     Say "Allowing the UVMC machine to reach the model (Windows will ask for administrator rights)..."
     $exe = (Server-Exe $s).Replace("'", "''")
     $cmd = "Remove-NetFirewallRule -DisplayName '$RuleName' -ErrorAction SilentlyContinue; " +
@@ -218,15 +216,33 @@ function Stop-Server {
     if ($p) { $p | Stop-Process -Force; Say 'Stopped.' } else { Say 'It was not running.' }
 }
 
+function Send-Key($mp, $value) {
+    # Stores a key in UVMC with uvmc-setkey (where the agent can't read it). Piping it into
+    # "multipass exec" hangs (Multipass 1.16 on Windows passes no input through), so the key goes
+    # over as a file, into the ubuntu user's home (the agent users can't read it), and is deleted
+    # right after.
+    $name = 'uvmc-key-' + [guid]::NewGuid().ToString('N')
+    $tmp = Join-Path $env:TEMP $name
+    [IO.File]::WriteAllText($tmp, "$value`n")
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    Push-Location $env:TEMP   # a relative path: "multipass transfer" reads "C:..." as a machine name
+    try {
+        & $mp transfer $name "${VmName}:/home/ubuntu/$name" *> $null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        & $mp exec $VmName -- sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=`$?; rm -f /home/ubuntu/$name; exit `$s" *> $null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        Pop-Location
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $old
+    }
+}
+
 function Connect-Uvmc($s) {
-    # Gives UVMC the key, through the same door as set-key: stored where the agent can't read it.
+    # Gives UVMC the key, through uvmc-setkey: stored where the agent can't read it.
     $mp = Find-Multipass
     if (-not $mp) { Say 'Multipass is not installed, so UVMC was not connected. Run install.cmd, then local-model again.' 'Yellow'; return }
-    $key = (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim()
-    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $key | & $mp exec $VmName -- sudo uvmc-setkey local *> $null
-    $ok = $LASTEXITCODE -eq 0
-    $ErrorActionPreference = $old
+    $ok = Send-Key $mp (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim()
     if ($ok) { Say 'UVMC connected: pick "Local model on my PC" in the panel.' 'Green' }
     else { Say 'Could not give UVMC the key. Is the UVMC machine installed and running?' 'Yellow' }
 }
@@ -261,13 +277,13 @@ if ($Remove) {
     }
     Stop-Server
     Remove-Item $Startup -ErrorAction SilentlyContinue
-    if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) {
+    if ((& netsh advfirewall firewall show rule name="$RuleName" 2>$null | Out-String) -match [regex]::Escape($RuleName)) {
         Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden `
             -ArgumentList @('-NoProfile', '-Command', "Remove-NetFirewallRule -DisplayName '$RuleName'")
     }
     if (Test-Path $state.dir) { Remove-Item -Recurse -Force $state.dir }
     $mp = Find-Multipass
-    if ($mp) { '' | & $mp exec $VmName -- sudo uvmc-setkey local *> $null }
+    if ($mp) { Send-Key $mp '' | Out-Null }   # an empty key removes it
     Remove-Item $StateFile -ErrorAction SilentlyContinue
     Say 'Removed.' 'Green'; exit 0
 }

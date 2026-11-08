@@ -65,7 +65,7 @@ Download or clone this repository, then:
 | --- | --- |
 | double-click `windows\install.cmd` | run `unix/install.sh` |
 
-The installer asks for admin rights once, turns on Hyper-V if needed (one restart; it continues by itself), installs Multipass if it's missing, creates the VM, installs the supervisor, offers to store an API key, and takes a `clean` snapshot to reset to. On Windows it also adds a **UVMC Panel** shortcut. The first install takes 5-10 minutes, mostly downloads.
+The installer asks for admin rights once, turns on Hyper-V if needed (one restart; it continues by itself), installs Multipass if it's missing, creates the VM, installs the supervisor, and takes a `clean` snapshot to reset to. On Windows it also adds a **UVMC Panel** shortcut. The first install takes 5-10 minutes, mostly downloads.
 
 ## Run
 

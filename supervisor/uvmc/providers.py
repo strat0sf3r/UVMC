@@ -58,7 +58,7 @@ class Profile:
     name: str
     provider: str                  # "anthropic" or "openai"
     model: str
-    key: str = ""                  # key name for set-key; "" = no key needed (local servers)
+    key: str = ""                  # key name (Settings › API keys); "" = no key needed
     base_url: str = ""
     max_tokens_param: str = "max_tokens"   # OpenAI's newer models want "max_completion_tokens"
     label: str = ""
@@ -245,7 +245,10 @@ def make(profile: Profile, api_key: str | None) -> Provider:
                             f"use one of {', '.join(ADAPTERS)}.")
     if profile.key and not api_key:
         if profile.provider == "claude-code":
-            raise ProviderError(f"Claude Code is not signed in with your plan yet. Run sign-in-claude on your PC "
-                                f"(or paste the token under Settings, key '{profile.key}').")
-        raise ProviderError(f"No API key for '{profile.name}'. Run set-key {profile.key} on your PC.")
+            raise ProviderError("Claude Code is not signed in with your plan yet: in the panel, Settings › "
+                                "Your Claude plan › Sign in with your Claude plan.")
+        if "{pc}" in profile.base_url:
+            raise ProviderError(f"'{profile.name}' runs on your PC and isn't set up yet: run local-model on your PC "
+                                "(windows\\local-model.cmd or unix/local-model.sh).")
+        raise ProviderError(f"No API key for '{profile.name}'. Add it in the panel: Settings › API keys ({profile.key}).")
     return ADAPTERS[profile.provider](profile, api_key=api_key)

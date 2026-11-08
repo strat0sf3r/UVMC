@@ -259,15 +259,8 @@ try {
         & (Join-Path $PSScriptRoot 'update.cmd')
         if ($LASTEXITCODE -ne 0) { Fail 'Installing the supervisor failed.' }
 
-        # 5. API key (optional)
-        Step 'API key'
-        Write-Host 'Paste your Anthropic API key, or press Enter to skip. To use your Claude plan instead, run sign-in-claude after the install.'
-        $sec = Read-Host 'API key' -AsSecureString
-        $key = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
-        if ($key) {
-            $key | & $mp exec $Name -- sudo uvmc-setkey
-            if ($LASTEXITCODE -ne 0) { Fail 'Saving the API key failed.' }
-        }
+        # 5. API keys and the Claude plan sign-in are done in the panel (Settings), not here:
+        #    typed input piped into "multipass exec" hangs with Multipass 1.16 on Windows.
 
         # 6. Factory snapshot (kept if an earlier run already took it)
         if (-not (Test-Ok { & $mp info "$Name.clean" })) {
@@ -322,7 +315,7 @@ try {
     }
 
     Step 'Done'
-    Write-Host 'Open the control panel with the UVMC Panel shortcut. To use your Claude plan, run sign-in-claude first.'
+    Write-Host 'Open the control panel with the UVMC Panel shortcut. Then, in its Settings tab, add your API key or sign in with your Claude plan.'
     Read-Host 'Press Enter to close' | Out-Null
 }
 catch {

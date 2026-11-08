@@ -210,9 +210,23 @@ EOF
   fi
 }
 
+# Stores a key in UVMC with uvmc-setkey. Piped input into "multipass exec" hung on Windows
+# (Multipass 1.16), so the key goes over as a file, into the ubuntu user's home (the agent users
+# can't read it), and is deleted right after.
+send_key() {
+  local name tmp ok=1
+  name="uvmc-key-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
+  tmp="$(mktemp)"; printf '%s\n' "$1" > "$tmp"
+  if multipass transfer "$tmp" "$VM:/home/ubuntu/$name" >/dev/null 2>&1 &&
+     multipass exec "$VM" -- sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=\$?; rm -f /home/ubuntu/$name; exit \$s" >/dev/null 2>&1
+  then ok=0; fi
+  rm -f "$tmp"
+  return $ok
+}
+
 connect_uvmc() {
   if ! command -v multipass >/dev/null; then say "Multipass is not installed, so UVMC was not connected."; return; fi
-  if multipass exec "$VM" -- sudo uvmc-setkey local < "$DIR/api_key" >/dev/null 2>&1; then
+  if send_key "$(cat "$DIR/api_key")"; then
     say 'UVMC connected: pick "Local model on my PC" in the panel.'
   else say "Could not give UVMC the key. Is the UVMC machine installed and running?"; fi
 }
@@ -235,7 +249,7 @@ case "$ACTION" in
       rm -f "$HOME/.config/systemd/user/uvmc-local-model.service"
     fi
     [ -d "$DIR" ] && rm -rf -- "$DIR"
-    command -v multipass >/dev/null && printf '\n' | multipass exec "$VM" -- sudo uvmc-setkey local >/dev/null 2>&1 || true
+    command -v multipass >/dev/null && { send_key "" || true; }   # an empty key removes it
     rm -f "$STATE"
     say "Removed."; exit 0 ;;
 esac

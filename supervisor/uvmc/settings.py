@@ -3,7 +3,7 @@
 config.toml (from the repo) stays the base. What you change in the panel is saved in
 /var/lib/uvmc/settings.json as a layer on top, so it survives `update`. A profile made
 in the panel can be removed; a config.toml profile edited in the panel can be reset.
-Keys go where `set-key` puts them, readable only by the supervisor, never by the agent.
+Keys go where uvmc-setkey puts them, readable only by the supervisor, never by the agent.
 """
 
 from __future__ import annotations

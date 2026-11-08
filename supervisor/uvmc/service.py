@@ -573,7 +573,8 @@ class Controller:
 
     def models(self) -> list[dict]:
         return [{"name": p.name, "label": p.label, "provider": p.provider, "model": p.model,
-                 "has_key": config.has_key(p), "key": p.key, "plan": p.provider == "claude-code"}
+                 "has_key": config.has_key(p), "key": p.key, "plan": p.provider == "claude-code",
+                 "on_pc": "{pc}" in p.base_url}
                 for p in self.cfg.models.values()]
 
     def local_model(self) -> dict:
@@ -879,7 +880,7 @@ class Controller:
                 c.log.event("error", text=str(e))
                 return
             if client is None:
-                c.log.event("error", text=f"No API key for {profile.label}. Run set-key {profile.key} on your PC.")
+                c.log.event("error", text=f"No API key for {profile.label}. Add it in the panel: Settings › API keys ({profile.key}).")
                 return
             try:
                 self.ensure_copy(c)

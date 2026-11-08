@@ -138,7 +138,7 @@ class BrainTest(ServiceBase):
     def test_not_signed_in(self):
         ctl = self.controller(token=None)
         self.run_task(ctl, "hello")
-        self.assertIn("sign-in-claude", self.of("error")[-1]["text"])
+        self.assertIn("Sign in with your Claude plan", self.of("error")[-1]["text"])
 
     def test_bridge_refuses_outside_a_task_and_strangers(self):
         ctl = self.controller()

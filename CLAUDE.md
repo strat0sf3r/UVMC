@@ -28,11 +28,11 @@ To look at the panel without a VM, run it the way the tests do: a `Controller` w
 - `extension/`: the Claude Desktop extension; rebuild `uvmc.mcpb` with `npx @anthropic-ai/mcpb pack` after changing it.
 - `windows/`, `unix/`: the scripts on the PC.
 
-## State (0.12.5, 2026-11-08)
+## State (0.12.6, 2026-11-08)
 
 Done: steps 1-5, 7 (tools the agent builds), 7b (several conversations), 7c (each conversation isolated, bring-in, agent-resolved conflicts), a model on the PC's graphics card (`local-model`, llama.cpp, not Ollama: the user doesn't want Ollama's subscription side). Step 6 (Codex on a ChatGPT plan) is parked: no plan to test with.
 
-Not yet confirmed on the VM: the proposal card and transcripts (0.12.2-0.12.3), the handed-file fix and folded UVMC tasks (0.12.4), the model on the PC end to end and `httpx` now in requirements.txt (0.12.5; anthropic 2.x stopped bringing it, which broke every OpenAI-compatible model). `unix/local-model.sh` is untested (no Mac or Linux PC here).
+Not yet confirmed on the VM: the proposal card and transcripts (0.12.2-0.12.3), the handed-file fix and folded UVMC tasks (0.12.4), the model on the PC end to end and `httpx` now in requirements.txt (0.12.5; anthropic 2.x stopped bringing it, which broke every OpenAI-compatible model). `unix/local-model.sh` is untested (no Mac or Linux PC here). 0.12.6: piped input into `multipass exec` hangs with Multipass 1.16 on Windows, so `set-key` was removed (keys go in the panel), the installers no longer ask for a key, and `local-model` sends its key as a file.
 
 Next: step 8, a proper installer (`UVMC-Setup.exe` with Inno Setup, Multipass bundled). Needs the user's decision on code signing first.
 
