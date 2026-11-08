@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""uvmc: use UVMC from a terminal or a script (macOS and Linux; needs python3).
+
+    uvmc ask "task" [--model name] [--new] [--no-ask] [--json] [--timeout seconds]
+        Runs a task and shows its steps live; approvals are asked here (or refused with
+        --no-ask). --json waits quietly and prints the result as JSON. Exit code 0 = done.
+    uvmc status | stop | new | models | model <name> | open | url
+    uvmc mcp    the relay Claude Code / Claude Desktop start to use UVMC as a tool
+                (connect-claude-apps sets that up; it must be switched on in the panel)
+Set UVMC_URL and UVMC_TOKEN to skip looking them up through Multipass.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+NAME, PORT = "uvmc", 8080
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def fail(text, code=2):
+    print(f"uvmc: {text}", file=sys.stderr)
+    sys.exit(code)
+
+
+def connect():
+    # UVMC_URL and UVMC_TOKEN skip the lookup (e.g. from another machine, or in scripts).
+    if os.environ.get("UVMC_URL") and os.environ.get("UVMC_TOKEN"):
+        return os.environ["UVMC_URL"].rstrip("/"), os.environ["UVMC_TOKEN"]
+
+    def mp(*args):
+        try:
+            return subprocess.run(["multipass", *args], capture_output=True, text=True, timeout=120)
+        except FileNotFoundError:
+            fail("Multipass is not installed. Run unix/install.sh first.")
+    mp("start", NAME)
+    ip = (mp("exec", NAME, "--", "hostname", "-I").stdout.split() or [""])[0]
+    token = mp("exec", NAME, "--", "sudo", "cat", "/etc/uvmc/panel_token").stdout.strip()
+    if not ip or not token:
+        fail("Could not reach the UVMC machine. Is it installed and running?")
+    return f"http://{ip}:{PORT}", token
+
+
+def api(conn, path, body=None, timeout=60):
+    base, token = conn
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method="GET" if body is None else "POST",
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error")
+        except Exception:
+            msg = None
+        fail(msg or f"{e.code} {e.reason}")
+    except OSError as e:
+        fail(f"Could not reach UVMC: {e}")
+
+
+def short(text, n=160):
+    t = " ".join(str(text).split())
+    return t if len(t) <= n else t[: n - 3] + "..."
+
+
+def describe(args):
+    for k in ("command", "path", "instructions", "packages"):
+        v = (args or {}).get(k)
+        if v:
+            return short(" ".join(v) if isinstance(v, list) else v, 120)
+    return ""
+
+
+def color(text, code):
+    return f"\033[{code}m{text}\033[0m" if sys.stdout.isatty() else text
+
+
+def ask(conn, o):
+    text = " ".join(o.text).strip()
+    if not text:
+        fail('Usage: uvmc ask "what to do" [--model name] [--new] [--no-ask] [--json]')
+    if o.json:
+        body = {"text": text, "new": o.new, "no_ask": o.no_ask, "timeout": o.timeout}
+        if o.model:
+            body["model"] = o.model
+        r = api(conn, "/api/run", body, timeout=o.timeout + 60)
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+        return 0 if r.get("done") else 1
+    if o.new:
+        api(conn, "/api/new", {})
+    if o.model:
+        api(conn, "/api/model", {"name": o.model})
+    base, token = conn
+    req = urllib.request.Request(base + "/api/events", headers={"Authorization": f"Bearer {token}"})
+    stream = urllib.request.urlopen(req, timeout=60)   # the supervisor pings every 15 s
+    started = api(conn, "/api/task", {"text": text})
+    after, conv = started.get("after", 0), started.get("conv")   # several conversations can work at once
+    deadline, code = time.time() + o.timeout, 1
+    try:
+        for raw in stream:
+            if time.time() > deadline:
+                print(color("Time is up; stopping the task.", 33))
+                api(conn, "/api/stop", {"conv": conv})
+                deadline = float("inf")
+            line = raw.decode("utf-8", "replace").rstrip("\n")
+            if not line.startswith("data: "):
+                continue
+            ev = json.loads(line[6:])
+            if conv and ev.get("conv") and ev["conv"] != conv:
+                continue   # another conversation's
+            if ev.get("seq", 0) <= after:
+                continue   # earlier events of this conversation
+            ind = "    " if ev.get("parent") else ""
+            kind = ev.get("kind")
+            if kind == "reply":
+                for b in ev.get("content") or []:
+                    if b.get("type") == "text" and b.get("text"):
+                        print(ind + b["text"].strip())
+                    elif b.get("type") == "tool_use":
+                        print(color(f"{ind}> {b.get('name')} {describe(b.get('input'))}", 36))
+            elif kind == "result":
+                first = str(ev.get("text", "")).split("\n")[0]
+                print(color(f"{ind}  {short(first, 140)}", 31 if ev.get("is_error") else 90))
+            elif kind == "approval":
+                t = ev.get("type")
+                what = (f"reach {ev.get('host')}" if t == "site" else f"change {ev.get('share')}/{ev.get('path')}"
+                        if t == "file" else f"{ev.get('tool')} {describe(ev.get('args'))}")
+                if o.no_ask:
+                    api(conn, "/api/approve", {"id": ev["id"], "answer": "deny"})
+                    print(color(f"{ind}  refused (--no-ask): {what}", 33))
+                    continue
+                choices = "[y]es for this task / [a]lways / [N]o" if t == "site" else "[y]es / [N]o"
+                a = input(f"{ind}  Allow: {what}  {choices} ").strip().lower()
+                answer = "allow" if a.startswith("y") else ("always" if t == "site" else "allow") if a.startswith("a") else "deny"
+                try:
+                    api(conn, "/api/approve", {"id": ev["id"], "answer": answer})
+                except SystemExit:
+                    pass   # it was answered in the panel meanwhile
+            elif kind == "error":
+                print(color(ind + str(ev.get("text")), 31))
+            elif kind == "notice":
+                print(color(ind + str(ev.get("text")), 90))
+            elif kind == "end" and not ev.get("parent"):
+                done = ev.get("reason") == "done"
+                print(color(f"[{ev.get('reason')}]", 32 if done else 33))
+                code = 0 if done else 1
+                break
+    finally:
+        stream.close()
+    return code
+
+
+def mcp_relay():
+    """stdio MCP <-> POST /mcp. Only JSON goes to stdout; messages for you go to stderr."""
+    conn = None
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        mid = msg.get("id") if isinstance(msg, dict) else None
+        reply = None
+        for attempt in (1, 2):   # the machine's address can change: look it up again once
+            try:
+                if conn is None:
+                    conn = connect()
+                base, token = conn
+                req = urllib.request.Request(base + "/mcp", data=line.encode(), method="POST", headers={
+                    "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"})
+                try:
+                    with urllib.request.urlopen(req, timeout=1000) as r:
+                        data = r.read()
+                except urllib.error.HTTPError as e:
+                    data = e.read()
+                reply = data.decode("utf-8", "replace").strip() or None
+                break
+            except (OSError, SystemExit) as e:
+                conn = None
+                if attempt == 2 and mid is not None:
+                    reply = json.dumps({"jsonrpc": "2.0", "id": mid, "error": {
+                        "code": -32002, "message": f"Could not reach the UVMC machine: {e}"}})
+        if reply:
+            sys.stdout.write(reply.replace("\n", " ") + "\n")
+            sys.stdout.flush()
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="uvmc", description="Use UVMC from a terminal or a script.")
+    sub = p.add_subparsers(dest="cmd")
+    a = sub.add_parser("ask", help="run a task and show its steps")
+    a.add_argument("text", nargs="+")
+    a.add_argument("--model")
+    a.add_argument("--new", action="store_true", help="start a new conversation first")
+    a.add_argument("--no-ask", action="store_true", help="refuse anything that would need approval")
+    a.add_argument("--json", action="store_true", help="wait and print the result as JSON")
+    a.add_argument("--timeout", type=int, default=1800)
+    for name, text in (("mcp", "relay for Claude apps on your PC (MCP over stdio)"), ("status", "what UVMC is doing"), ("stop", "stop the current task"),
+                       ("new", "start a new conversation"), ("models", "list the models"),
+                       ("open", "open the panel"), ("url", "the address and token, for your own scripts")):
+        sub.add_parser(name, help=text)
+    m = sub.add_parser("model", help="switch the model")
+    m.add_argument("name")
+    o = p.parse_args()
+    if not o.cmd:
+        p.print_help()
+        return 0
+    if o.cmd == "mcp":
+        return mcp_relay()
+    if o.cmd == "open":
+        return subprocess.call([os.path.join(HERE, "panel.sh")])
+    conn = connect()
+    if o.cmd == "ask":
+        return ask(conn, o)
+    if o.cmd == "status":
+        s = api(conn, "/api/state")
+        print(f"UVMC {s['version']}: {s['state']}, model {s['model_label']}" + (f", worker {s['worker']}" if s.get("worker") else ""))
+        if s.get("pending"):
+            print(color(f"Waiting for {len(s['pending'])} approval(s) in the panel.", 33))
+    elif o.cmd == "stop":
+        api(conn, "/api/stop", {})
+        print("Stopped.")
+    elif o.cmd == "new":
+        api(conn, "/api/new", {})
+        print("New conversation.")
+    elif o.cmd == "models":
+        s = api(conn, "/api/state")
+        for m in s["models"]:
+            key = "" if m["has_key"] else (" (not signed in)" if m.get("plan") else " (no key)")
+            print(f"{'*' if m['name'] == s['model'] else ' '} {m['name']:<18} {m['label']}{key}")
+    elif o.cmd == "model":
+        api(conn, "/api/model", {"name": o.name})
+        print(f"Model: {o.name}")
+    elif o.cmd == "url":
+        print(f"Address: {conn[0]}\nToken:   {conn[1]}\nUse it as: Authorization: Bearer <token>. API reference: {conn[0]}/docs")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)

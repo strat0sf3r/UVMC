@@ -1,0 +1,38 @@
+# Secrets
+.env
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Runtime data
+*.sqlite
+*.db
+logs/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# UVMC test data (made by make-testdata)
+testdata/
+
+# UVMC launcher: "don't ask about folders again"
+.uvmc-skip-folder-window
+
+# Your shared folders (made from shares.example.txt)
+shares.txt
+
+# The UVMC machine's disk and Multipass data (Windows installer stores them here)
+machine/
+
+# Made by windows\diagnose.cmd
+diagnose.txt

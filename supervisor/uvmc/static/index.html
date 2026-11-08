@@ -1,0 +1,1931 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UVMC Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #e7ecef;
+  --surface: #f7f9fa;
+  --ink: #17232b;
+  --muted: #5a6b75;
+  --line: #c9d3d8;
+  --thread: #aebcc4;
+  --you: #24506b;
+  --you-bg: #dde8ef;
+  --signal: #9a5b00;
+  --signal-strong: #b86e00;
+  --signal-bg: #fdf0d5;
+  --ok: #2d7a4f;
+  --bad: #b3261e;
+  --bad-bg: #fbe4e1;
+  --code-bg: #eef2f4;
+  --focus: #24506b;
+  --sans: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10171b;
+    --surface: #172126;
+    --ink: #dde6ea;
+    --muted: #91a2ab;
+    --line: #2a3840;
+    --thread: #3b4d57;
+    --you: #8cc3e3;
+    --you-bg: #1b2d38;
+    --signal: #f0a830;
+    --signal-strong: #f0a830;
+    --signal-bg: #2f2512;
+    --ok: #5cc08a;
+    --bad: #f08a80;
+    --bad-bg: #341b19;
+    --code-bg: #121a1f;
+    --focus: #8cc3e3;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 var(--sans);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+button, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+pre, code { font-family: var(--mono); font-size: 13px; }
+
+/* Header ------------------------------------------------------------------ */
+header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.mark {
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+.state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+.state .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--thread);
+}
+.state[data-state="running"] .dot, .state[data-state="stopping"] .dot { background: var(--ok); }
+.state[data-state="waiting"] { color: var(--signal); }
+.state[data-state="waiting"] .dot { background: var(--signal-strong); box-shadow: 0 0 0 4px var(--signal-bg); }
+.meta { color: var(--muted); font-size: 14px; }
+#tokens { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 0; min-width: 0; flex: 1 1 0; }
+header .picker { flex-shrink: 0; }
+.meta.warn { color: var(--signal-strong); font-weight: 700; }
+.meta.bad { color: var(--bad); font-weight: 700; }
+header .spacer { flex: 0 0 0; }  /* #tokens fills the free space instead */
+.picker { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+.picker select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.picker select:disabled { opacity: 0.6; }
+.nested { margin: 10px 0 2px; padding: 4px 0 0 14px; border-left: 2px dashed var(--line); }
+.nested .item:last-child::before { bottom: 0; }
+.instr { font-size: 14px; color: var(--muted); margin: 0 0 12px; white-space: pre-wrap; }
+.instr strong { color: var(--ink); }
+.tool.delegate > button .name::after { content: ""; }
+.conn { color: var(--bad); font-size: 14px; }
+
+.btn {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--muted); }
+a.btn { display: inline-block; color: inherit; text-decoration: none; justify-self: start; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary { background: var(--you); border-color: var(--you); color: var(--surface); font-weight: 700; }
+.btn.stop { border-color: var(--bad); color: var(--bad); font-weight: 700; }
+.btn.allow { background: var(--signal-strong); border-color: var(--signal-strong); color: #fff; font-weight: 700; }
+@media (prefers-color-scheme: dark) { .btn.allow { color: #1a1205; } .btn.primary { color: #0f1a20; } }
+
+/* Layout ------------------------------------------------------------------ */
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  min-height: 0;
+}
+.left { display: grid; grid-template-rows: auto auto auto 1fr auto; min-height: 0; border-right: 1px solid var(--line); }
+
+/* Conversations: one tab each, its dot showing what it's doing -------------- */
+.convs {
+  display: flex; align-items: stretch; gap: 8px;
+  padding: 0 16px 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  min-width: 0;
+}
+.convlist { display: flex; align-items: stretch; overflow-x: auto; min-width: 0; flex: 1 1 auto; scrollbar-width: thin; }
+.conv {
+  display: flex; align-items: center; gap: 2px;
+  border-bottom: 3px solid transparent;
+  flex: 0 0 auto; max-width: 240px;
+}
+.conv[aria-selected="true"] { border-bottom-color: var(--you); }
+.conv .pick {
+  all: unset; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 4px 9px 10px; min-width: 0;
+  font-size: 14px; color: var(--muted);
+}
+.conv .pick:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 4px; }
+.conv[aria-selected="true"] .pick { color: var(--ink); font-weight: 700; }
+.conv .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
+.conv .from { font-size: 12px; color: var(--muted); font-weight: 400; white-space: nowrap; }
+.conv .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--thread); flex: 0 0 auto; }
+.conv[data-state="running"] .dot, .conv[data-state="stopping"] .dot { background: var(--ok); }
+.conv[data-state="waiting"] .dot { background: var(--signal-strong); box-shadow: 0 0 0 3px var(--signal-bg); }
+.conv[data-state="waiting"] .pick { color: var(--signal); }
+.conv .close {
+  all: unset; cursor: pointer; color: var(--muted);
+  width: 22px; height: 22px; border-radius: 4px; text-align: center; line-height: 22px; font-size: 16px;
+}
+.conv .close:hover { color: var(--ink); background: var(--code-bg); }
+.conv .close:focus-visible { outline: 2px solid var(--focus); }
+.conv .close[hidden] { display: none; }
+/* A conversation's copy of the work folder, next to the main one ------------ */
+.folderbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 24px; border-bottom: 1px solid var(--line); font-size: 14px; color: var(--muted);
+}
+.folderbar[hidden] { display: none; }
+.folderbar .state { font-weight: 400; gap: 6px; }
+.folderbar .count { color: var(--ink); font-weight: 700; }
+.folderbar .warn { color: var(--signal); font-weight: 700; }
+.folderbar .btn { padding: 3px 12px; font-size: 14px; }
+.sync .box { border: 1px solid var(--line); background: var(--surface); }
+.sync h3 { margin: 0 0 6px; font-size: 17px; }
+.sync h4 { margin: 12px 0 4px; font-size: 15px; }
+.sync ul { margin: 0; padding-left: 20px; font-size: 14px; }
+.sync li code { font-size: 13px; }
+.sync .conflict { list-style: none; margin: 0 0 10px -20px; }
+.sync .conflict fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 4px 0 0; }
+.sync .conflict legend { font-family: var(--mono); font-size: 13px; padding: 0 4px; }
+.sync .conflict label { display: block; font-size: 14px; }
+.sync .actions { display: flex; gap: 10px; margin-top: 12px; }
+.quick .btn[aria-pressed="true"] { border-color: var(--you); color: var(--you); font-weight: 700; }
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.newconv { align-self: center; flex: 0 0 auto; padding: 4px 12px; font-size: 14px; }
+.banner {
+  margin: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--signal-bg);
+  color: var(--ink);
+  font-size: 15px;
+}
+.banner button { margin-left: 8px; }
+.banner[hidden] { display: none; }
+
+/* Feed: one thread of steps ------------------------------------------------ */
+#feed {
+  overflow-y: auto;
+  padding: 24px 24px 40px;
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) { #feed { scroll-behavior: auto; } }
+.thread { max-width: 820px; margin: 0 auto; position: relative; }
+.empty {
+  max-width: 520px;
+  margin: 12vh auto 0;
+  color: var(--muted);
+}
+.empty h2 { color: var(--ink); font-size: 22px; margin: 0 0 8px; }
+.empty ul { padding-left: 20px; margin: 12px 0 0; }
+.empty li { margin: 4px 0; }
+
+.item { position: relative; padding-left: 28px; margin: 0 0 14px; }
+.item::before {          /* the thread */
+  content: "";
+  position: absolute; left: 7px; top: 0; bottom: -14px;
+  width: 2px; background: var(--line);
+}
+.item:last-child::before { bottom: 0; }
+.item::after {           /* the node */
+  content: "";
+  position: absolute; left: 3px; top: 9px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--thread);
+}
+
+.box { border-radius: 8px; padding: 10px 14px; }
+.you .box { background: var(--you-bg); }
+.you::after { background: var(--you); border-color: var(--you); top: 14px; }
+.you .who { font-size: 13px; font-weight: 700; color: var(--you); }
+.you .text { white-space: pre-wrap; font-size: 17px; }
+
+.agent .text p { margin: 0 0 8px; }
+.agent .text p:last-child { margin-bottom: 0; }
+.agent .text code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.agent .text pre { background: var(--code-bg); padding: 10px 12px; border-radius: 6px; overflow-x: auto; }
+.agent .text ul { margin: 4px 0 8px; padding-left: 20px; }
+
+.tool::after { border-radius: 2px; }
+.tool.ok::after { border-color: var(--ok); }
+.tool.error::after, .tool.denied::after { border-color: var(--bad); }
+.tool > button {
+  all: unset;
+  display: flex; gap: 10px; align-items: baseline;
+  width: 100%;
+  cursor: pointer;
+}
+.tool > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.tool .name { font-weight: 700; white-space: nowrap; }
+.tool .what {
+  font-family: var(--mono); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; min-width: 0; color: var(--ink);
+}
+.tool .status { font-size: 14px; color: var(--muted); white-space: nowrap; }
+.tool.ok .status { color: var(--ok); }
+.tool.error .status, .tool.denied .status { color: var(--bad); }
+.tool .out {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  max-height: 420px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+.tool .out[hidden] { display: none; }
+.tool .note { font-size: 14px; color: var(--bad); margin-top: 2px; }
+.tool .note.quiet { color: var(--muted); }
+
+.ask .box {
+  border: 2px solid var(--signal-strong);
+  background: var(--signal-bg);
+  padding: 14px 16px;
+}
+.ask::after { background: var(--signal-strong); border-color: var(--signal-strong); width: 14px; height: 14px; left: 1px; top: 18px; }
+.ask h3 { margin: 0 0 6px; font-size: 17px; }
+.ask pre { background: var(--surface); border: 1px solid var(--line); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; margin: 6px 0; }
+.ask .why { color: var(--muted); font-size: 14px; margin: 4px 0 12px; }
+.ask .actions { display: flex; gap: 10px; }
+
+.line { color: var(--muted); font-size: 14px; }
+.line.bad { color: var(--bad); }
+.err .box { background: var(--bad-bg); color: var(--ink); padding: 8px 12px; }
+.err::after { border-color: var(--bad); top: 13px; }
+
+.thinking { color: var(--muted); font-size: 15px; }
+.thinking span { display: inline-block; animation: blink 1.4s infinite both; }
+.thinking span:nth-child(2) { animation-delay: .2s; }
+.thinking span:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .thinking span { animation: none; } }
+
+/* Composer ---------------------------------------------------------------- */
+.composer {
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding: 12px 24px 14px;
+}
+.composer form { max-width: 820px; margin: 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+.composer textarea {
+  width: 100%; resize: none;
+  min-height: 46px; max-height: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg);
+}
+.composer .buttons { display: flex; gap: 8px; }
+.composer .hint { grid-column: 1 / -1; font-size: 13px; color: var(--muted); margin: 0; }
+
+/* Side panel -------------------------------------------------------------- */
+aside { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: var(--surface); }
+.tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 12px; }
+.tabs button {
+  all: unset;
+  padding: 12px 12px 10px;
+  cursor: pointer;
+  color: var(--muted);
+  border-bottom: 3px solid transparent;
+}
+.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--you); }
+.tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -4px; }
+.pane { overflow-y: auto; padding: 16px; min-height: 0; }
+.pane[hidden] { display: none; }
+.pane h2 { font-size: 17px; margin: 0 0 8px; }
+.pane p.small, .small { font-size: 14px; color: var(--muted); }
+
+.crumbs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; margin-bottom: 10px; font-family: var(--mono); font-size: 13px; }
+.crumbs button { all: unset; cursor: pointer; color: var(--you); padding: 2px 3px; border-radius: 3px; }
+.crumbs button:focus-visible { outline: 2px solid var(--focus); }
+.files { list-style: none; margin: 0; padding: 0; }
+.files li button {
+  all: unset; box-sizing: border-box;
+  display: grid; grid-template-columns: 1fr auto; gap: 8px;
+  width: 100%; padding: 6px 8px; border-radius: 6px; cursor: pointer;
+}
+.files li button:hover { background: var(--bg); }
+.files li button:focus-visible { outline: 2px solid var(--focus); }
+.files .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files .dir .fname { font-weight: 700; }
+.files .dir .fname::after { content: "/"; color: var(--muted); font-weight: 400; }
+.files .fmeta { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.files li.fresh .fname { color: var(--ok); }
+.viewer-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.viewer-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; margin: 0; }
+
+.runs { list-style: none; margin: 0; padding: 0; }
+.runs li button {
+  all: unset; box-sizing: border-box; display: block; width: 100%;
+  padding: 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+}
+.runs li button:hover { background: var(--bg); }
+.runs li button:focus-visible { outline: 2px solid var(--focus); }
+.runs li.viewing button { border-color: var(--you); }
+.runs .task { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.runs .when { font-size: 13px; color: var(--muted); }
+
+.meter { margin: 0 0 16px; }
+.meter .row { display: flex; justify-content: space-between; font-size: 15px; }
+.meter .bar { height: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+.meter .bar span { display: block; height: 100%; background: var(--you); width: 0; transition: width .4s; }
+@media (prefers-reduced-motion: reduce) { .meter .bar span { transition: none; } }
+dl.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0 0 16px; font-size: 15px; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; }
+.pane pre.cfg { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; }
+
+/* Activity on tool rows, undo, activity tab, processes, sites ---------- */
+.tool .trail { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.tool .acts { margin: 6px 0 0; padding: 0; list-style: none; font-size: 13px; }
+.tool .acts[hidden] { display: none; }
+.tool .acts li { font-family: var(--mono); padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .acts li.site { font-family: var(--sans); }
+.tool .acts .k { color: var(--muted); font-family: var(--sans); margin-right: 6px; }
+.site-ask .box { border-style: dashed; }
+.you .undo { margin-top: 8px; font-size: 14px; padding: 3px 10px; }
+body:not([data-state="idle"]) .you .undo { display: none; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+.seg button { all: unset; padding: 5px 14px; cursor: pointer; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--you-bg); color: var(--ink); font-weight: 700; }
+.seg button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+/* Tools the agent built ----------------------------------------------------- */
+.mtools { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.mtool { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface); }
+.mtool .top { display: flex; align-items: baseline; gap: 8px; }
+.mtool .top strong { font-size: 16px; }
+.mtool .ver { font-size: 13px; color: var(--muted); }
+.mtool .chip { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.mtool .chip.on { color: var(--ok); }
+.mtool .chip.need { color: var(--signal); }
+.mtool .chip.bad { color: var(--bad); }
+.mtool .desc { margin: 4px 0; font-size: 14px; }
+.mtool .when { font-size: 13px; color: var(--muted); }
+.mtool .when .bad { color: var(--bad); }
+.mtool .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.mtool .row .btn { padding: 3px 12px; font-size: 14px; }
+.mtool details { margin-top: 8px; }
+.mtool details summary { margin: 0; font-size: 14px; }
+.mtool .setup { background: var(--signal-bg); border-radius: 6px; padding: 8px 10px; font-size: 14px; white-space: pre-wrap; margin: 8px 0; }
+.mtool .pform { margin: 8px 0; }
+.mtool pre.log { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
+.mtool .runlist button, .mtool .filelist button { all: unset; cursor: pointer; display: block; font-size: 13px; padding: 2px 0; }
+.mtool .runlist button:hover, .mtool .filelist button:hover { text-decoration: underline; }
+.mtool .runlist button:focus-visible, .mtool .filelist button:focus-visible { outline: 2px solid var(--focus); }
+.mtool .runlist .bad { color: var(--bad); }
+.ask .tooldef { margin: 6px 0 8px; }
+.ask .tooldef dt { font-weight: 700; }
+.ask details.code { margin: 4px 0; }
+.ask details.code summary { margin: 0; font-weight: 400; font-size: 14px; font-family: var(--mono); }
+.ask details.code pre { max-height: 360px; }
+.ask .setupnote { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 14px; white-space: pre-wrap; }
+
+.alist { list-style: none; margin: 0; padding: 0; }
+.alist li { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.alist li:last-child { border-bottom: 0; }
+.alist .cmd { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+.alist .sub { color: var(--muted); font-size: 13px; }
+.alist .denied { color: var(--bad); font-weight: 700; }
+.proc { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
+.proc .btn { padding: 2px 10px; font-size: 13px; }
+.sites li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sites .btn { padding: 2px 10px; font-size: 13px; }
+.addsite { display: flex; gap: 8px; margin: 8px 0 16px; }
+.addsite input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.pane h3 { font-size: 15px; margin: 18px 0 6px; }
+.profiles li, .keys li { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.acts2 { display: flex; gap: 6px; flex-wrap: wrap; }
+.keyrow .addsite { flex-wrap: wrap; margin: 0; }
+.keyrow .addsite input { flex: 1 1 160px; }
+.acts2 .btn { padding: 2px 10px; font-size: 13px; }
+.tag { font-size: 12px; background: var(--you-bg); color: var(--you); border-radius: 4px; padding: 1px 6px; }
+.cmdish { font-family: var(--mono); font-size: 12.5px; }
+.pform { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 12px 0; display: grid; gap: 8px; }
+.pform h3 { margin: 0 0 4px; }
+.pform label { display: grid; gap: 3px; font-size: 14px; color: var(--muted); }
+.pform input, .pform select { font: inherit; color: var(--ink); padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.pform input[readonly] { opacity: .7; }
+.pform textarea { font: inherit; font-size: 14px; color: var(--ink); padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); width: 100%; resize: vertical; }
+.pform textarea.mono { font-family: var(--mono); font-size: 13px; }
+.plan-ok { margin: 4px 0; font-weight: 700; color: var(--ok); }
+.linkish { background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: var(--muted); text-decoration: underline; cursor: pointer; }
+.told { display: grid; gap: 12px; margin-top: 8px; }
+.told section { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.told h4 { margin: 0 0 4px; font-size: 15px; }
+.told .checks { display: grid; gap: 4px; margin: 6px 0; font-size: 14px; }
+.told .checks label { display: flex; gap: 8px; align-items: center; }
+.pform .told-switch, .told .told-switch { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--ink); font-weight: 600; }
+.pform .actions { display: flex; gap: 8px; }
+.form-msg.bad, .bad { color: var(--bad); }
+details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-size: 15px; }
+
+.ask pre.diff { max-height: 320px; }
+.diff .add { color: var(--ok); }
+.diff .del { color: var(--bad); }
+.diff .hunk { color: var(--muted); }
+.quick { display: flex; gap: 8px; margin-bottom: 10px; }
+.quick .btn { padding: 3px 10px; font-size: 14px; }
+.tool .note .undo { margin-left: 6px; padding: 1px 8px; font-size: 13px; }
+
+/* Small screens ----------------------------------------------------------- */
+.tabs { overflow-x: auto; padding: 0 6px; }
+.tabs button { padding-left: 7px; padding-right: 7px; font-size: 15px; }   /* six tabs fit the side panel */
+@media (max-width: 900px) {
+  body { grid-template-rows: auto auto; height: auto; }
+  .convs { padding: 0 8px; }
+  .newconv { padding: 4px 8px; }
+  main { grid-template-columns: 1fr; }
+  .left { border-right: 0; min-height: 70vh; }
+  #feed { padding: 16px; }
+  .composer { padding: 10px 16px; position: sticky; bottom: 0; }
+  aside { border-top: 1px solid var(--line); min-height: 50vh; }
+  header { flex-wrap: wrap; gap: 10px 16px; padding: 10px 16px; }
+  #tokens { flex: 1 1 100%; width: auto; order: 9; }
+}
+.you details { margin-top: 6px; }
+.you details summary { cursor: pointer; font-size: 13px; opacity: 0.75; }
+.you details pre { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; font-size: 12px; margin: 6px 0 0; }
+.beta { font-size: 0.75em; padding: 0 0.4em; border: 1px solid currentColor; border-radius: 0.6em; opacity: 0.7; margin-left: 0.3em; vertical-align: 0.1em; }
+</style>
+</head>
+<body>
+<header>
+  <h1 class="mark">UVMC</h1>
+  <div class="state" id="state" data-state="idle" role="status" aria-live="polite"><span class="dot"></span><span id="stateText">Idle</span></div>
+  <span class="meta" id="tokens"></span>
+  <span class="conn" id="conn" hidden>Reconnecting to the machine…</span>
+  <span class="spacer"></span>
+  <label class="picker"><span>Model</span><select id="model" aria-label="Model you talk to"></select></label>
+  <label class="picker"><span>Worker</span><select id="worker" aria-label="Model that does the work"></select></label>
+</header>
+
+<main>
+  <section class="left" aria-label="Conversation">
+    <nav class="convs" aria-label="Conversations">
+      <div class="convlist" id="convs" role="tablist" aria-label="Open conversations"></div>
+      <button class="btn newconv" id="newBtn" type="button" title="Opens another conversation next to these; they can work at the same time.">New conversation</button>
+    </nav>
+    <div class="folderbar" id="folderbar" hidden></div>
+    <div>
+      <p class="banner" id="keyBanner" hidden></p>
+      <p class="banner" id="pastBanner" hidden><span id="pastText"></span><button class="btn" id="backLive" type="button">Back to the live conversation</button></p>
+    </div>
+    <div id="feed" tabindex="-1"><div class="thread" id="thread"></div></div>
+    <div class="composer">
+      <form id="form">
+        <label for="task" class="small" hidden>Task</label>
+        <textarea id="task" rows="1" placeholder="Tell the agent what to do" aria-label="Task for the agent"></textarea>
+        <div class="buttons">
+          <button class="btn primary" id="runBtn" type="submit">Run</button>
+          <button class="btn stop" id="stopBtn" type="button" hidden>Stop</button>
+        </div>
+        <p class="hint">Enter runs the task, Shift+Enter starts a new line. Follow-up tasks continue the same conversation.</p>
+      </form>
+    </div>
+  </section>
+
+  <aside aria-label="Machine details">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" aria-controls="pane-files" id="tab-files">Files</button>
+      <button role="tab" aria-selected="false" aria-controls="pane-tools" id="tab-tools">Tools</button>
+      <button role="tab" aria-selected="false" aria-controls="pane-activity" id="tab-activity">Activity</button>
+      <button role="tab" aria-selected="false" aria-controls="pane-runs" id="tab-runs">Runs</button>
+      <button role="tab" aria-selected="false" aria-controls="pane-machine" id="tab-machine">Machine</button>
+      <button role="tab" aria-selected="false" aria-controls="pane-settings" id="tab-settings">Settings</button>
+    </div>
+    <div class="pane" id="pane-files" role="tabpanel" aria-labelledby="tab-files"></div>
+    <div class="pane" id="pane-tools" role="tabpanel" aria-labelledby="tab-tools" hidden></div>
+    <div class="pane" id="pane-activity" role="tabpanel" aria-labelledby="tab-activity" hidden></div>
+    <div class="pane" id="pane-runs" role="tabpanel" aria-labelledby="tab-runs" hidden></div>
+    <div class="pane" id="pane-machine" role="tabpanel" aria-labelledby="tab-machine" hidden></div>
+    <div class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden></div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const thread = $("thread"), feed = $("feed");
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+
+// Small, safe markdown: code blocks, inline code, bold, bullet lists, paragraphs.
+function md(text) {
+  const parts = String(text).split(/```[a-zA-Z0-9_-]*\n?/);
+  return parts.map((part, i) => {
+    if (i % 2) return `<pre><code>${esc(part.replace(/\n$/, ""))}</code></pre>`;
+    return part.trim().split(/\n{2,}/).filter(Boolean).map((block) => {
+      const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      const lines = block.split("\n");
+      if (lines.every((l) => /^\s*[-*] /.test(l))) return "<ul>" + lines.map((l) => `<li>${inline(l.replace(/^\s*[-*] /, ""))}</li>`).join("") + "</ul>";
+      return `<p>${lines.map(inline).join("<br>")}</p>`;
+    }).join("");
+  }).join("");
+}
+
+const fmtBytes = (n) => n == null ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
+function fmtWhen(t) {
+  if (!t) return "";
+  const d = new Date(t * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? `today at ${time}` : `${d.toLocaleDateString()} at ${time}`;
+}
+function ago(t) {
+  const s = Date.now() / 1000 - t;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return new Date(t * 1000).toLocaleDateString();
+}
+function summary(name, args) {
+  if (name === "run_command") return args.command || "";
+  if (name === "propose_tool") return args.folder || "";
+  if (name === "write_file") return `${args.path} (${(args.content || "").length} characters)`;
+  if (name === "install_system_package") return (args.packages || []).join(" ");
+  return args.path || ".";
+}
+async function api(path, body) {
+  const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+  return data;
+}
+
+// --- Feed rendering ---------------------------------------------------------
+const view = { conv: null, session: null, lastSeq: 0, tools: {}, asks: {}, tokens: 0, steps: 0, live: true, checkpoint: null,
+               loading: false, queue: [] };
+const withConv = (body = {}) => ({ ...body, conv: view.conv });   // calls about the conversation on screen
+const stateUrl = () => view.conv ? `/api/state?conv=${encodeURIComponent(view.conv)}` : "/api/state";
+const activity = { execs: [], nets: [] };  // this conversation, newest last
+
+function resetFeed() {
+  thread.innerHTML = "";
+  view.lastSeq = 0; view.tools = {}; view.asks = {}; view.tokens = 0; view.steps = 0; view.checkpoint = null;
+  activity.execs = []; activity.nets = [];
+  showTokens();
+  showEmpty();
+}
+function showEmpty() {
+  if (thread.children.length) return;
+  const e = el("div", "empty");
+  e.id = "empty";
+  e.innerHTML = view.live
+    ? `<h2>The machine is ready.</h2><p>Give the agent a task below. You'll see every step here as it happens, and it will stop and ask you before anything your rules mark as risky.</p>
+       <ul><li>Write a Python script that lists the 10 largest files in the work folder</li><li>Clone a small repo from GitHub and summarize what it does</li><li>Make a notes.md with what's installed on this machine</li></ul>`
+    : `<h2>This run is empty.</h2>`;
+  thread.appendChild(e);
+}
+function add(node, box) {
+  $("empty")?.remove();
+  const near = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+  if (box) box.appendChild(node);
+  else thread.insertBefore(node, $("thinking"));
+  if (near) feed.scrollTop = feed.scrollHeight;
+  return node;
+}
+// For the "my plan" models the header shows how much of your plan's usage windows is used
+// (from Claude Code), not token counts, which mean little there.
+let planUsage = null, onPlan = false;
+const WINDOW_NAMES = { five_hour: "5h", seven_day: "week", seven_day_opus: "week (Opus)", seven_day_sonnet: "week (Sonnet)" };
+const WINDOW_LONG = { five_hour: "5-hour window", seven_day: "weekly limit", seven_day_opus: "weekly Opus limit", seven_day_sonnet: "weekly Sonnet limit" };
+function planText(u) {
+  if (!u) return { text: "Plan usage appears after the first reply.", title: "", cls: "" };
+  const at = (t) => {
+    if (!t) return "";
+    const d = new Date(t * 1000), now = new Date();
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  };
+  const entries = Object.entries(u.windows || {});
+  const parts = entries.map(([name, w]) => {
+    const label = WINDOW_NAMES[name] || name.replace(/_/g, " ");
+    const used = w.used == null ? "" : ` ${Math.round(w.used * 100)}%`;
+    return `${label}${used}${w.resets_at ? ` (resets ${at(w.resets_at)})` : ""}`;
+  });
+  const title = entries.map(([name, w]) => `${WINDOW_LONG[name] || name.replace(/_/g, " ")}: `
+    + `${w.used == null ? "in use" : Math.round(w.used * 100) + "% used"}${w.resets_at ? `, resets ${at(w.resets_at)}` : ""}`).join("\n");
+  if (u.status === "rejected" && !u.overage) {
+    const w = (u.windows || {})[u.limit] || Object.values(u.windows || {})[0] || {};
+    return { text: `Plan limit reached${w.resets_at ? `, resets ${at(w.resets_at)}` : ""}`, title, cls: "bad" };
+  }
+  return { text: "Plan: " + (parts.join(", ") || "within limits"), title, cls: u.status === "allowed_warning" ? "warn" : "" };
+}
+function showTokens() {
+  const t = $("tokens");
+  if (onPlan) {
+    const p = planText(planUsage);
+    t.textContent = p.text;
+    t.title = p.title;
+    t.className = "meta " + p.cls;
+    return;
+  }
+  t.className = "meta";
+  t.title = "";
+  t.textContent = view.tokens ? `${view.tokens.toLocaleString()} tokens this conversation` : "";
+}
+
+function apply(ev) {
+  if (view.live && ev.session && view.session && ev.session !== view.session) { view.session = ev.session; resetFeed(); }
+  if (ev.session) view.session = ev.session;
+  if (ev.seq && ev.seq <= view.lastSeq) return;
+  if (ev.seq) view.lastSeq = ev.seq;
+
+  const box = ev.parent ? view.tools[ev.parent]?.querySelector(".nested") : null;
+  const put = (node) => add(node, box);
+  switch (ev.kind) {
+    case "task": {
+      if (box) { put(el("div", "instr", `<strong>Instructions</strong>\n${esc(ev.text)}`)); break; }
+      let n;
+      if (ev.by === "uvmc") {   // UVMC's long instructions to the agent: one line, the rest folded
+        const files = [...String(ev.text).matchAll(/^- (.+?): /gm)].map((m) => m[1]);
+        n = el("div", "item you", `<div class="box"><div class="who">UVMC, for you</div><div class="text">Asked the agent to resolve a conflict${files.length ? " in " + esc(files.join(", ")) : ""}.</div>
+          <details class="code"><summary>What the agent was told</summary><pre>${esc(ev.text)}</pre></details></div>`);
+      } else {
+        n = el("div", "item you", `<div class="box"><div class="who">You</div><div class="text">${esc(ev.text)}</div></div>`);
+      }
+      if (view.checkpoint && view.live) n.querySelector(".box").appendChild(undoButton(view.checkpoint));
+      view.checkpoint = null;
+      add(n); break;
+    }
+    case "checkpoint": view.checkpoint = ev.id; break;
+    case "plan_usage": planUsage = ev; showTokens(); break;
+    case "exec": {
+      activity.execs.push(ev);
+      const row = view.tools[ev.call];
+      if (row) addActivity(row, "exec", ev);
+      if (activityVisible() && view.live) renderActivity();
+      break;
+    }
+    case "net": {
+      activity.nets.push(ev);
+      const row = view.tools[ev.call];
+      if (row) addActivity(row, "net", ev);
+      if (activityVisible() && view.live) renderActivity();
+      break;
+    }
+    case "reply": {
+      view.steps += 1;
+      view.tokens += (ev.usage?.in || 0) + (ev.usage?.out || 0);
+      showTokens();
+      for (const b of ev.content || []) {
+        if (b.type === "text" && b.text?.trim()) put(el("div", "item agent", `<div class="text">${md(b.text)}</div>`));
+        if (b.type === "tool_use") {
+          const n = el("div", b.name === "delegate" ? "item tool delegate pending" : "item tool pending");
+          n.innerHTML = `<button type="button" aria-expanded="false"><span class="name">${esc(b.name)}</span><span class="what">${esc(summary(b.name, b.input || {}))}</span><span class="trail"></span><span class="status">waiting</span></button><pre class="out" hidden></pre><ul class="acts" hidden></ul>`;
+          n.counts = { exec: 0, net: 0 };
+          const btn = n.querySelector("button"), out = n.querySelector(".out"), acts = n.querySelector(".acts");
+          btn.addEventListener("click", () => { out.hidden = !out.hidden; acts.hidden = out.hidden || !acts.children.length; btn.setAttribute("aria-expanded", String(!out.hidden)); });
+          out.textContent = b.name === "write_file" ? (b.input?.content || "") : "No output yet.";
+          if (b.name === "delegate") {
+            const who = workerLabel(b.input?.model || currentWorker) || "the worker";
+            n.querySelector(".what").textContent = `to ${who}: ${b.input?.instructions || ""}`;
+            n.appendChild(el("div", "nested"));
+          }
+          view.tools[b.id] = n;
+          put(n);
+        }
+      }
+      break;
+    }
+    case "decision": {
+      const n = view.tools[ev.id];
+      if (n && ev.verdict !== "allow") {
+        n.className = "item tool denied";
+        n.querySelector(".status").textContent = "denied";
+        if (!String(ev.reason).includes("-> you")) n.appendChild(el("div", "note", `Blocked by your rules: ${esc(ev.reason)}`));
+      } else if (n) n.querySelector(".status").textContent = "running";
+      break;
+    }
+    case "result": {
+      const n = view.tools[ev.id];
+      if (!n || n.classList.contains("denied")) break;
+      n.className = `item tool ${ev.is_error ? "error" : "ok"}`;
+      const first = (ev.text || "").split("\n")[0];
+      n.querySelector(".status").textContent = ev.is_error ? (first.startsWith("exit code") ? first.replace("exit code", "exit") : "error") : "done";
+      n.querySelector(".out").textContent = ev.text || "(no output)";
+      if (filesVisible()) refreshFilesSoon();
+      break;
+    }
+    case "approval": {
+      const site = ev.type === "site", file = ev.type === "file", made = ev.type === "made_tool";
+      const n = el("div", site ? "item ask site-ask" : "item ask");
+      const what = ev.tool === "run_command" ? ev.args?.command : summary(ev.tool, ev.args || {});
+      n.innerHTML = made ? madeToolCard(ev) : file
+        ? `<div class="box"><h3>The agent wants to ${ev.exists ? "replace" : "add"} ${esc(ev.share)}/${esc(ev.path)}</h3>
+           <p class="why">On your computer. ${ev.exists ? `Now ${fmtBytes(ev.old_size)}, new version ${fmtBytes(ev.new_size)}. The original is backed up first.` : `New file, ${fmtBytes(ev.new_size)}.`} Its reason: ${esc(ev.reason)}</p>
+           ${ev.diff ? `<pre class="diff">${diffHtml(ev.diff)}</pre>` : `<p class="why">${ev.exists ? "Binary or large file, so no line-by-line comparison." : ""}</p>`}
+           <div class="actions"><button type="button" class="btn allow" data-a="allow">${ev.exists ? "Replace it" : "Add it"}</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`
+        : site
+        ? `<div class="box"><h3>The agent wants to reach ${esc(ev.host)}</h3>
+           <p class="why">This site isn't on your allowed list, so the request waits until you decide. It's refused automatically if nobody answers.</p>
+           <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow for this task</button><button type="button" class="btn" data-a="always">Always allow</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`
+        : `<div class="box"><h3>The agent wants to use ${esc(ev.tool)}</h3><pre>${esc(what)}</pre>
+           ${ev.tool === "install_system_package" && ev.args?.reason ? `<p class="why">Its reason: ${esc(ev.args.reason)}</p>` : `<p class="why">Your rules ask first: ${esc(ev.reason)}</p>`}
+           <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`;
+      const buttons = [...n.querySelectorAll(".actions button")];
+      for (const b of buttons) b.addEventListener("click", async () => {
+        buttons.forEach((x) => x.disabled = true);
+        try { await api("/api/approve", { id: ev.id, answer: b.dataset.a }); }
+        catch (e) { n.querySelector(".why").textContent = e.message; buttons.forEach((x) => x.disabled = false); }
+      });
+      if (!view.live) n.querySelector(".actions").remove();
+      view.asks[ev.id] = n;
+      add(n);
+      if (view.live) buttons[0].focus({ preventScroll: true });
+      break;
+    }
+    case "approval_done": {
+      const card = view.asks[ev.id];
+      card?.remove();
+      const row = view.tools[ev.call];
+      let text;
+      if (ev.type === "site") {
+        const host = card?.querySelector("h3")?.textContent.replace("The agent wants to reach ", "") || "the site";
+        text = ev.timed_out ? `Nobody answered, so ${host} was refused.`
+          : ev.answer === "always" ? `You allowed ${host} from now on.`
+          : ev.answer === "allow" ? `You allowed ${host} for this task.` : `You denied ${host}.`;
+      } else if (ev.type === "file") text = ev.allow ? "You approved the change to your file." : "You declined the change; nothing was written.";
+      else if (ev.type === "made_tool") text = ev.allow ? "You approved the tool." : "You declined the tool; nothing was installed.";
+      else text = ev.allow ? "You allowed this." : "You denied this.";
+      if (row) row.appendChild(el("div", ev.allow ? "note quiet" : "note", esc(text)));
+      else add(el("div", `item line${ev.allow ? "" : " bad"}`, esc(text)));
+      break;
+    }
+    case "end": {
+      const words = { "done": "Finished", "stopped by you": "Stopped by you" };
+      const label = (box ? "Worker: " : "") + (words[ev.reason] || `Ended: ${ev.reason}`);
+      put(el("div", `item line${ev.reason === "done" ? "" : " bad"}`, `${esc(label)}, ${Number(ev.tokens || 0).toLocaleString()} tokens.`));
+      break;
+    }
+    case "file_update": {
+      const row = view.tools[ev.call];
+      const note = el("div", "note quiet", `Written to ${esc(ev.share)}/${esc(ev.path)} on your computer${ev.backup ? `; original kept in ${esc(ev.share)}/${esc(ev.backup)}` : ""}. `);
+      if (view.live) {
+        const b = el("button", "btn undo", ev.backup ? "Restore original" : "Remove the new file"); b.type = "button";
+        b.addEventListener("click", async () => {
+          b.disabled = true;
+          try { await api("/api/shares/restore", { id: ev.id }); b.textContent = "Restored"; }
+          catch (e) { b.disabled = false; add(el("div", "item err", `<div class="box">${esc(e.message)}</div>`)); }
+        });
+        note.appendChild(b);
+      }
+      (row || thread).appendChild(note);
+      break;
+    }
+    case "workcopy":
+      add(el("div", "item line", `This conversation works in its own copy of the work folder (<code>${esc(ev.path)}</code>). The main one changes only when you bring its work in.`));
+      break;
+    case "sync": {
+      const into = (ev.brought_in || []).length + (ev.merged || []).length, got = (ev.got || []).length;
+      const bits = [];
+      if (into) bits.push(`brought ${into} file${into > 1 ? "s" : ""} into the main folder${(ev.merged || []).length ? ` (${ev.merged.length} merged)` : ""}`);
+      if (got) bits.push(`got ${got} newer file${got > 1 ? "s" : ""} from it`);
+      const others = (ev.other_merging || []);
+      const handed = others.flatMap((o) => o.paths);
+      const merging = (ev.agent_merging || []);
+      const later = (ev.open_conflicts || []).filter((p) => !merging.includes(p) && !handed.includes(p));
+      if (merging.length) bits.push(`asked this conversation's agent to resolve ${merging.join(", ")}`);
+      for (const o of others) bits.push(`asked "${o.title || "the other conversation"}" to resolve ${o.paths.join(", ")}`);
+      if (later.length) bits.push(`left ${later.join(", ")} for later`);
+      const note = el("div", "item line", esc("You " + (bits.join(", ") || "found nothing to bring in") + "."));
+      if (ev.undo && view.live) {
+        const b = el("button", "btn undo", "Undo this bring-in"); b.type = "button";
+        b.title = "Puts the main folder back to how it was before. This conversation's copy keeps its changes.";
+        b.addEventListener("click", async () => {
+          b.disabled = true;
+          try { await api("/api/conversations/undo-bring-in", withConv({ checkpoint: ev.undo })); b.textContent = "Undone"; refreshFolderSoon(); }
+          catch (e) { b.disabled = false; add(el("div", "item err", `<div class="box">${esc(e.message)}</div>`)); }
+        });
+        note.appendChild(document.createTextNode(" "));
+        note.appendChild(b);
+      }
+      add(note);
+      break;
+    }
+    case "resolution_ready": {
+      const note = el("div", "item line", `The agent has a proposed resolution for ${esc((ev.paths || []).join(", "))}. `);
+      if (view.live) {
+        const b = el("button", "linkish", "Review it"); b.type = "button";
+        b.addEventListener("click", reviewResolution);
+        note.appendChild(b);
+        if (!view.loading) setTimeout(reviewResolution, 300);   // show it right away
+      }
+      add(note);
+      break;
+    }
+    case "resolved": {
+      const ch = ev.choices || {};
+      const words = { accept: "accepted the agent's resolution", yours: "kept this conversation's version", main: "kept the main folder's version",
+                      other: "kept the other conversation's version", later: "left it for later" };
+      const parts = Object.entries(ch).map(([p, v]) => `${p}: ${String(v).startsWith("agent:") ? "handed to the other conversation" : words[v] || v}`);
+      const note = el("div", "item line", esc(`You decided: ${parts.join("; ")}.`));
+      if (ev.undo && view.live) {
+        const b = el("button", "btn undo", "Undo this bring-in"); b.type = "button";
+        b.addEventListener("click", async () => {
+          b.disabled = true;
+          try { await api("/api/conversations/undo-bring-in", withConv({ checkpoint: ev.undo })); b.textContent = "Undone"; refreshFolderSoon(); }
+          catch (e) { b.disabled = false; add(el("div", "item err", `<div class="box">${esc(e.message)}</div>`)); }
+        });
+        note.appendChild(document.createTextNode(" ")); note.appendChild(b);
+      }
+      add(note);
+      break;
+    }
+    case "made_tool": {
+      const note = el("div", "item line", `Installed the tool ${esc(ev.title || ev.name)}, version ${ev.version}. It starts switched off: `);
+      const b = el("button", "linkish", "open Tools to set it up"); b.type = "button";
+      b.addEventListener("click", () => { toolsOpen = ev.name; selectTab($("tab-tools")); });
+      note.appendChild(b);
+      add(note);
+      break;
+    }
+    case "worker_mode": add(el("div", "item line", ev.worker
+        ? `From now on, ${esc(ev.label || ev.worker)} does the work on the machine, and the model you talk to plans, delegates and checks.`
+        : "From now on, the model you talk to does the work itself.")); break;
+    case "settings": if (view.live) api(stateUrl()).then(showModels).catch(() => {}); break;
+    case "model": add(el("div", "item line", `Switched to ${esc(ev.label || ev.model)} for this conversation.`)); break;
+    case "error": put(el("div", "item err", `<div class="box">${esc(ev.text)}</div>`)); break;
+    case "notice": put(el("div", "item line", esc(ev.text))); break;
+    case "status": if (view.live) setState(ev.state); break;
+  }
+}
+
+function diffHtml(d) {
+  return d.split("\n").map((l) => {
+    const c = l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : l.startsWith("@@") ? "hunk" : "";
+    return `<span class="${c}">${esc(l)}</span>`;
+  }).join("\n");
+}
+
+// --- Activity, undo ------------------------------------------------------------
+function cmdline(e) { return (e.args && e.args.length ? e.args : [e.exe]).join(" "); }
+function addActivity(row, kind, e) {
+  row.counts[kind] += 1;
+  const parts = [];
+  if (row.counts.exec) parts.push(`${row.counts.exec} program${row.counts.exec > 1 ? "s" : ""}`);
+  if (row.counts.net) parts.push(`${row.counts.net} connection${row.counts.net > 1 ? "s" : ""}`);
+  row.querySelector(".trail").textContent = parts.join(", ");
+  const acts = row.querySelector(".acts");
+  if (acts.children.length < 300) {
+    const li = kind === "exec"
+      ? el("li", "", `<span class="k">ran</span>${esc(cmdline(e))}`)
+      : el("li", "site", `<span class="k">${e.verdict === "allow" ? "reached" : "refused"}</span>${esc(e.host)}:${e.port}${e.verdict === "allow" ? `, ${fmtBytes(e.received)} in` : ""}`);
+    acts.appendChild(li);
+  }
+  if (!row.querySelector(".out").hidden) acts.hidden = false;
+}
+function undoButton(cid) {
+  const b = el("button", "btn undo", "Undo this task");
+  b.type = "button";
+  b.title = "Puts this conversation's copy of the work folder back to how it was before this task (changes from its later tasks go too). The main folder and other conversations aren't touched.";
+  let armed = null;
+  b.addEventListener("click", async () => {
+    if (!armed) {
+      b.textContent = "Click again to undo";
+      armed = setTimeout(() => { b.textContent = "Undo this task"; armed = null; }, 4000);
+      return;
+    }
+    clearTimeout(armed); armed = null;
+    b.disabled = true;
+    try { await api("/api/undo", withConv({ checkpoint: cid })); b.textContent = "Undone"; if (filesVisible()) refreshFilesSoon(); }
+    catch (e) { b.disabled = false; b.textContent = "Undo this task"; add(el("div", "item err", `<div class="box">${esc(e.message)}</div>`)); }
+  });
+  return b;
+}
+
+// --- Tools the agent built ----------------------------------------------------
+// The approval card shows everything the tool would be: what it does, when it runs, which
+// sites it reaches, which settings and secrets it asks you for, and its code or changes.
+function madeToolCard(ev) {
+  const m = ev.manifest || {};
+  const settings = (m.settings || []).map((st) => `${esc(st.label)}${st.type === "secret" ? " (secret: you type it in the panel; the agent never sees it)" : ""}${st.required ? "" : ", optional"}`);
+  const code = (ev.shown || []).map((f) => f.binary
+    ? `<p class="why">${esc(f.path)}: not text (${fmtBytes(f.size)}).</p>`
+    : `<details class="code"><summary>${esc(f.path)}${ev.update ? ` (${esc(f.change)})` : ""}</summary><pre class="${ev.update ? "diff" : ""}">${ev.update ? diffHtml(f.text) : esc(f.text)}</pre></details>`).join("");
+  return `<div class="box"><h3>${ev.update ? `The agent proposes version ${ev.current_version + 1} of the tool ${esc(m.title)}` : `The agent built a tool: ${esc(m.title)}`}</h3>
+    <p class="why">${esc(m.description)}</p>
+    <dl class="facts tooldef">
+      <dt>Runs</dt><dd>${esc(ev.schedule_text)}, at most ${m.timeout_seconds} s each time: <code>${esc(m.command)}</code></dd>
+      <dt>Reaches</dt><dd>${(m.sites || []).length ? m.sites.map(esc).join(", ") : "no sites (no internet)"}</dd>
+      <dt>Asks you for</dt><dd>${settings.length ? settings.join("; ") : "nothing"}</dd>
+    </dl>
+    ${m.setup ? `<p class="setupnote">${esc(m.setup)}</p>` : ""}
+    <p class="why">Its reason: ${esc(ev.reason)}</p>
+    <p class="why">${ev.update ? "What changes" : "Its files"} (${(ev.files || []).length} file${(ev.files || []).length === 1 ? "" : "s"}; click one to read it):</p>
+    ${code || `<p class="why">No changes to the code.</p>`}
+    <p class="why">Once approved, it runs as its own user from a copy the agent can't change, and only the sites above. It starts switched off.</p>
+    <div class="actions"><button type="button" class="btn allow" data-a="allow">Approve and install</button><button type="button" class="btn" data-a="deny">Decline</button></div></div>`;
+}
+
+let toolsOpen = null;   // the tool whose details are open
+let toolsTimer = null;
+function loadToolsSoon() {   // not while you type in a tool's settings
+  clearTimeout(toolsTimer);
+  toolsTimer = setTimeout(() => { if ($("pane-tools").contains(document.activeElement) && document.activeElement.matches("input, textarea")) return; loadTools(); }, 300);
+}
+const toolsVisible = () => !$("pane-tools").hidden;
+function toolWhen(t) {
+  const parts = [];
+  if (t.running) parts.push(`Running since ${fmtWhen(t.running_since)}.`);
+  const r = t.last_run;
+  if (r) parts.push(r.ok ? `Last run ${fmtWhen(r.started)}: OK.` : `<span class="bad">Last run ${fmtWhen(r.started)} failed${r.note ? `: ${esc(r.note)}` : r.exit != null ? ` (exit code ${r.exit})` : ""}.</span>`);
+  if (t.enabled && t.next_run && !t.running) parts.push(`Next: ${fmtWhen(t.next_run)}.`);
+  return parts.join(" ") || "Never run yet.";
+}
+async function loadTools() {
+  const pane = $("pane-tools");
+  let list;
+  try { list = await api("/api/made-tools"); } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; return; }
+  const keep = pane.scrollTop;
+  pane.innerHTML = `<h2>Tools</h2><p class="small">Programs the agent built and you approved. They keep working after the conversation, on a schedule or when you run them. Each runs as its own user, from a copy the agent can't change, and reaches only its own sites.</p>`;
+  if (!list.length) {
+    pane.appendChild(el("p", "small", `No tools yet. Ask the agent to build one, for example: <em>"every morning, check this site and write what changed into a file"</em>. You see its code and settings before anything is installed.`));
+    return;
+  }
+  const ul = el("ul", "mtools");
+  for (const t of list) {
+    const chip = t.running ? ["Running", "on"] : t.missing.length ? ["Needs settings", "need"] : t.enabled ? ["On", "on"] : ["Off", ""];
+    const li = el("li", "mtool");
+    li.innerHTML = `<div class="top"><strong>${esc(t.title)}</strong><span class="ver">version ${t.version}</span><span class="chip ${chip[1]}">${chip[0]}</span></div>
+      <p class="desc">${esc(t.description)}</p>
+      <div class="when">Runs ${esc(t.schedule_text)}. ${toolWhen(t)}</div>
+      <div class="row"></div>`;
+    const row = li.querySelector(".row");
+    const run = el("button", "btn", t.running ? "Stop" : "Run now"); run.type = "button";
+    run.addEventListener("click", () => toolCall(t.running ? "/api/made-tools/stop" : "/api/made-tools/run", { name: t.name }, li));
+    const sw = el("button", "btn", t.enabled ? "Turn off" : "Turn on"); sw.type = "button";
+    if (!t.schedule) sw.hidden = true;   // nothing to switch: it only runs when you run it
+    sw.addEventListener("click", () => toolCall("/api/made-tools/enable", { name: t.name, on: !t.enabled }, li));
+    const more = el("button", "btn", toolsOpen === t.name ? "Hide details" : (t.missing.length ? "Set it up" : "Details")); more.type = "button";
+    more.setAttribute("aria-expanded", String(toolsOpen === t.name));
+    more.addEventListener("click", () => { toolsOpen = toolsOpen === t.name ? null : t.name; loadTools(); });
+    row.append(run, sw, more);
+    if (toolsOpen === t.name) li.appendChild(el("div", "", "")).appendChild(await toolDetails(t.name));
+    ul.appendChild(li);
+  }
+  pane.appendChild(ul);
+  pane.scrollTop = keep;
+}
+async function toolCall(path, body, li) {
+  li.querySelectorAll(".row .btn").forEach((b) => b.disabled = true);
+  try { await api(path, body); }
+  catch (e) { li.appendChild(el("p", "small bad", esc(e.message))); li.querySelectorAll(".row .btn").forEach((b) => b.disabled = false); return; }
+  loadTools();
+}
+async function toolDetails(name) {
+  const box = el("div", "details");
+  let t;
+  try { t = await api(`/api/made-tools/${encodeURIComponent(name)}`); } catch (e) { box.textContent = e.message; return box; }
+  box.innerHTML = `${t.setup ? `<p class="setup">${esc(t.setup)}</p>` : ""}
+    ${t.settings.length ? `<form class="pform"><h3>Settings</h3>${t.settings.map((st) => {
+      const id = `ts-${t.name}-${st.name}`;
+      const help = st.help ? `<span class="small">${esc(st.help)}</span>` : "";
+      if (st.type === "secret") return `<label for="${id}">${esc(st.label)}${st.required ? "" : " (optional)"} ${help}<input id="${id}" name="${esc(st.name)}" type="password" autocomplete="off" placeholder="${st.set ? "Saved. Type a new one to replace it." : "Not set"}"></label>`;
+      if (st.type === "yes/no") return `<label class="told-switch" for="${id}"><input id="${id}" name="${esc(st.name)}" type="checkbox" ${st.value === "yes" ? "checked" : ""}> ${esc(st.label)}</label>`;
+      if (st.type === "long text") return `<label for="${id}">${esc(st.label)} ${help}<textarea id="${id}" name="${esc(st.name)}" rows="4">${esc(st.value)}</textarea></label>`;
+      return `<label for="${id}">${esc(st.label)}${st.required ? "" : " (optional)"} ${help}<input id="${id}" name="${esc(st.name)}" ${st.type === "number" ? 'inputmode="decimal"' : ""} value="${esc(st.value)}"></label>`;
+    }).join("")}<p class="small form-msg"></p><div class="actions"><button class="btn primary" type="submit">Save settings</button></div></form>` : ""}
+    <dl class="facts"><dt>Reaches</dt><dd>${t.sites.length ? t.sites.map(esc).join(", ") : "no sites"}</dd>
+      <dt>Command</dt><dd><code>${esc(t.command)}</code>, at most ${t.timeout_seconds} s</dd></dl>
+    <details><summary>Its code (version ${t.version}, read-only)</summary><div class="filelist"></div><pre class="log" hidden></pre></details>
+    <details ${t.runs.length ? "" : "hidden"}><summary>Runs (${t.runs.length})</summary><div class="runlist"></div><pre class="log" hidden></pre></details>
+    <div class="row"><button type="button" class="btn stop" data-remove>Remove this tool</button></div>`;
+  const form = box.querySelector("form");
+  form?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const values = {};
+    for (const st of t.settings) {
+      const input = form.elements[st.name];
+      values[st.name] = st.type === "yes/no" ? input.checked : input.value;
+    }
+    const msg = form.querySelector(".form-msg");
+    try { await api("/api/made-tools/settings", { name: t.name, values }); msg.classList.remove("bad"); msg.textContent = "Saved."; setTimeout(loadTools, 600); }
+    catch (err) { msg.classList.add("bad"); msg.textContent = err.message; }
+  });
+  const show = (pre, text) => { pre.hidden = false; pre.textContent = text; };
+  const files = box.querySelector(".filelist");
+  for (const f of t.files) {
+    const b = el("button", "", esc(f)); b.type = "button";
+    b.addEventListener("click", async () => {
+      const pre = files.nextElementSibling;
+      try { const d = await api(`/api/made-tools/${encodeURIComponent(t.name)}/file?path=${encodeURIComponent(f)}`); show(pre, d.binary ? `(not text, ${fmtBytes(d.size)})` : d.text); }
+      catch (e) { show(pre, e.message); }
+    });
+    files.appendChild(b);
+  }
+  const runs = box.querySelector(".runlist");
+  for (const r of t.runs) {
+    const b = el("button", r.ok ? "" : "bad", `${esc(fmtWhen(r.started))}: ${r.ok ? "OK" : "failed" + (r.note ? ", " + esc(r.note) : "")} (${r.why === "schedule" ? "on schedule" : "by you"}, version ${r.version ?? t.version})`); b.type = "button";
+    b.addEventListener("click", async () => {
+      const pre = runs.nextElementSibling;
+      try { show(pre, (await api(`/api/made-tools/${encodeURIComponent(t.name)}/runs/${encodeURIComponent(r.id)}`)).text || "(it printed nothing)"); }
+      catch (e) { show(pre, e.message); }
+    });
+    runs.appendChild(b);
+  }
+  let armed = null;
+  const rm = box.querySelector("[data-remove]");
+  rm.addEventListener("click", async () => {
+    if (!armed) { rm.textContent = "Click again to remove it and its data"; armed = setTimeout(() => { rm.textContent = "Remove this tool"; armed = null; }, 4000); return; }
+    clearTimeout(armed);
+    try { await api("/api/made-tools/remove", { name: t.name }); toolsOpen = null; loadTools(); }
+    catch (e) { box.appendChild(el("p", "small bad", esc(e.message))); }
+  });
+  return box;
+}
+
+// --- State ------------------------------------------------------------------
+let current = "idle";
+function setState(s) {
+  current = s;
+  const words = { idle: "Idle", running: "Working", waiting: "Waiting for you", stopping: "Stopping" };
+  $("state").dataset.state = s;
+  document.body.dataset.state = s;
+  $("stateText").textContent = words[s] || s;
+  showTitle();
+  const busy = s !== "idle";
+  $("stopBtn").hidden = !busy;
+  $("runBtn").disabled = busy || !view.live;
+  $("model").disabled = busy || !view.live;
+  $("worker").disabled = busy || !view.live;
+  let t = $("thinking");
+  if (s === "running" && view.live) {
+    if (!t) { t = el("div", "item line thinking", `Thinking<span>.</span><span>.</span><span>.</span>`); t.id = "thinking"; thread.appendChild(t); }
+  } else t?.remove();
+}
+
+// --- Model picker ---------------------------------------------------------------
+let modelList = [], currentWorker = null, sharesList = [];
+function workerLabel(name) { return (modelList.find((m) => m.name === name) || {}).label; }
+function showModels(s) {
+  if (s.conversations) { convs = s.conversations; renderConvs(); }
+  modelList = s.models;
+  sharesList = s.shares || [];
+  currentWorker = s.worker;
+  const ws = $("worker");
+  ws.innerHTML = "";
+  const none = el("option", "", "None (works itself)"); none.value = ""; none.selected = !s.worker; ws.appendChild(none);
+  for (const name of s.workers || []) {
+    const m = s.models.find((x) => x.name === name);
+    if (!m) continue;
+    const o = el("option", "", esc(m.label + (m.has_key ? "" : m.plan ? " (not signed in)" : " (no key)")));
+    o.value = m.name; o.selected = m.name === s.worker; ws.appendChild(o);
+  }
+  ws.closest(".picker").hidden = !(s.workers || []).length;
+  const sel = $("model");
+  sel.innerHTML = "";
+  for (const m of s.models) {
+    const o = el("option", "", esc(m.label + (m.has_key ? "" : m.plan ? " (not signed in)" : " (no key)")));
+    o.value = m.name;
+    o.selected = m.name === s.model;
+    sel.appendChild(o);
+  }
+  const cur = s.models.find((m) => m.name === s.model);
+  onPlan = !!(cur && cur.plan);
+  if (s.plan_usage) planUsage = s.plan_usage;
+  showTokens();
+  const banner = $("keyBanner");
+  banner.hidden = s.has_key;
+  if (!s.has_key && cur && cur.plan) banner.innerHTML = `UVMC isn't signed in with your Claude plan yet. Sign in under <strong>Settings</strong>, or pick another model.`;
+  else if (!s.has_key && cur) banner.innerHTML = `There's no API key for ${esc(cur.label)}, so the agent can't think yet. Run <strong>set-key${cur.key === "anthropic" ? "" : " " + esc(cur.key)}</strong> on your PC, or pick another model.`;
+}
+$("worker").addEventListener("change", async (e) => {
+  try { showModels(await api("/api/worker", withConv({ name: e.target.value }))); }
+  catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); showModels(await api(stateUrl())); }
+});
+$("model").addEventListener("change", async (e) => {
+  try { showModels(await api("/api/model", withConv({ name: e.target.value }))); refreshConvs(); }
+  catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); showModels(await api(stateUrl())); }
+});
+
+// --- Conversations -------------------------------------------------------------
+// Several can be open and work at once. The tabs show each one's state; the feed, the
+// composer and the model pickers belong to the one selected. Live events of the others
+// only update their tabs.
+let convs = [], convTimer = null;
+const ORIGIN = { api: "from a script", "claude-app": "from a Claude app" };
+function showTitle() {
+  const waiting = convs.some((c) => c.state === "waiting" || c.waiting);
+  document.title = waiting ? "Waiting for you - UVMC" : "UVMC Panel";
+}
+function renderConvs() {
+  const list = $("convs");
+  const focused = list.contains(document.activeElement) ? document.activeElement.dataset.conv : null;
+  list.innerHTML = "";
+  for (const c of convs) {
+    const state = c.waiting ? "waiting" : c.state;
+    const tab = el("div", "conv");
+    tab.dataset.state = state;
+    const selected = c.id === view.conv && view.live;   // none while a past run is on screen
+    tab.setAttribute("aria-selected", String(selected));
+    const words = { idle: "", running: ", working", waiting: ", waiting for you", stopping: ", stopping" };
+    const title = c.title || "New conversation";
+    tab.innerHTML = `<button type="button" class="pick" role="tab" data-conv="${esc(c.id)}" aria-selected="${selected}"
+        title="${esc(title)} (${esc(c.model_label)})${words[state] || ""}"><span class="dot" aria-hidden="true"></span>
+        <span class="title">${esc(title)}</span>${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
+        <span class="visually-hidden">${words[state] || ""}</span></button>
+      <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="Close this conversation (it stays under Runs)" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
+    tab.querySelector(".pick").addEventListener("click", () => { if (c.id !== view.conv || !view.live) selectConv(c.id); });
+    tab.querySelector(".close").addEventListener("click", () => closeConv(c.id));
+    list.appendChild(tab);
+    if (c.id === focused) tab.querySelector(".pick").focus();
+  }
+  list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  showTitle();
+}
+async function refreshConvs() {
+  try { convs = await api("/api/conversations"); renderConvs(); } catch (e) {}
+}
+function refreshConvsSoon() { clearTimeout(convTimer); convTimer = setTimeout(refreshConvs, 150); }
+function updateConv(id, change) {
+  const c = convs.find((x) => x.id === id);
+  if (!c) { refreshConvsSoon(); return; }
+  Object.assign(c, change);
+  renderConvs();
+}
+
+// Shows one conversation: its state, then its events so far, then live ones.
+async function selectConv(id, { focus = true } = {}) {
+  view.conv = id;
+  view.live = true;
+  $("pastBanner").hidden = true;
+  view.session = null;
+  view.loading = true;
+  view.queue = [];
+  resetFeed();
+  $("thinking")?.remove();
+  renderConvs();
+  if (focus) api("/api/conversations/focus", { conv: id }).catch(() => {});
+  try {
+    const [s, events] = await Promise.all([api(stateUrl()), api(`/api/conversations/${encodeURIComponent(id)}/events`)]);
+    if (view.conv !== id) return;   // another tab was picked meanwhile
+    showModels(s);
+    for (const ev of events) apply(ev);
+    for (const ev of view.queue) apply(ev);
+    setState(s.state);
+  } catch (e) {
+    if (view.conv === id) { refreshConvs(); add(el("div", "item err", `<div class="box">${esc(e.message)}</div>`)); }
+  } finally {
+    if (view.conv === id) { view.loading = false; view.queue = []; showEmpty(); feed.scrollTop = feed.scrollHeight; refreshFolder(); }
+  }
+  if (fileWhere === "copy") { filePath = "."; openFile = null; }   // each conversation has its own folder
+  if (filesVisible()) refreshFilesSoon();
+  if (activityVisible()) renderActivity();
+}
+async function closeConv(id, discard = false) {
+  const r0 = await fetch("/api/conversations/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conv: id, discard }) });
+  const r = await r0.json().catch(() => ({}));
+  if (r0.ok) {
+    convs = r.conversations;
+    if (id === view.conv) selectConv(r.current); else renderConvs();
+    return;
+  }
+  if (r.unsaved) {   // its work isn't in the main folder: ask, in that conversation
+    if (id !== view.conv) await selectConv(id);
+    const n = el("div", "item ask", `<div class="box"><h3>Close this conversation?</h3><p class="why">${esc(r.error)}</p>
+      <div class="actions"><button type="button" class="btn primary" data-in>Bring them in first</button><button type="button" class="btn stop" data-drop>Close and drop them</button><button type="button" class="btn" data-keep>Keep it open</button></div></div>`);
+    n.querySelector("[data-keep]").addEventListener("click", () => n.remove());
+    n.querySelector("[data-drop]").addEventListener("click", () => { n.remove(); closeConv(id, true); });
+    n.querySelector("[data-in]").addEventListener("click", async () => { n.remove(); reviewSync(await api(`/api/conversations/${encodeURIComponent(id)}/changes`)); });
+    add(n);
+    return;
+  }
+  add(el("div", "item err", `<div class="box">${esc(r.error || "Closing failed.")}</div>`));
+}
+
+// --- This conversation's copy of the work folder --------------------------------
+// Each conversation works in its own copy; the bar says how it stands against the main
+// work folder, and "Bring in" shows what would happen before anything changes.
+let folderTimer = null;
+function refreshFolderSoon() { clearTimeout(folderTimer); folderTimer = setTimeout(refreshFolder, 400); }
+async function refreshFolder() {
+  const bar = $("folderbar");
+  if (!view.conv || !view.live) { bar.hidden = true; return; }
+  const id = view.conv;
+  let ch;
+  try { ch = await api(`/api/conversations/${encodeURIComponent(id)}/changes`); } catch (e) { bar.hidden = true; return; }
+  if (id !== view.conv) return;
+  bar.hidden = false;
+  if (!ch.ready) { bar.innerHTML = `<span>This conversation gets its own copy of the main work folder at its first task.</span>`; return; }
+  const mine = ch.mine.length + ch.merged.length, theirs = ch.theirs.length, both = ch.conflicts.length;
+  const resolving = (ch.resolving || []).length;
+  const parts = [];
+  if (resolving) parts.push(current === "idle"
+    ? `<span class="warn">the agent proposed a resolution for ${resolving} file${resolving > 1 ? "s" : ""}</span>`
+    : `the agent is resolving ${resolving} file${resolving > 1 ? "s" : ""}`);
+  for (const h of ch.handed || []) parts.push(`${esc(h.path)} is being resolved by "${esc(h.title)}": you'll get its result once you accept it there`);
+  if (mine) parts.push(`<span class="count">${mine} change${mine > 1 ? "s" : ""}</span> here, not in the main folder yet`);
+  if (theirs) parts.push(`the main folder has <span class="count">${theirs}</span> newer file${theirs > 1 ? "s" : ""}`);
+  if (both) parts.push(`<span class="warn">${both} file${both > 1 ? "s" : ""} changed on both sides</span>`);
+  bar.innerHTML = `<span>${parts.length ? "Its own copy: " + parts.join("; ") + "." : "Its own copy is in step with the main work folder."}</span>`;
+  if (resolving && current === "idle") {
+    const r = el("button", "btn primary", "Review the agent's resolution"); r.type = "button";
+    r.addEventListener("click", reviewResolution);
+    bar.appendChild(r);
+  }
+  if (mine || theirs || both) {
+    const b = el("button", "btn", mine || both ? "Bring into the main folder" : "Get them");
+    b.type = "button";
+    b.disabled = current !== "idle";
+    b.title = current !== "idle" ? "When this conversation's task ends" : "Shows what would change first";
+    b.addEventListener("click", () => reviewSync(ch));
+    bar.appendChild(b);
+  }
+}
+function reviewSync(ch) {
+  $("syncReview")?.remove();
+  const fileList = (items, what) => items.length ? `<h4>${what}</h4><ul>${items.map((x) => `<li><code>${esc(x.path)}</code>${x.change ? ` (${esc(x.change)})` : ""}</li>`).join("")}</ul>` : "";
+  const n = el("div", "item sync");
+  n.id = "syncReview";
+  n.innerHTML = `<div class="box"><h3>Bring this conversation's work into the main folder</h3>
+    <p class="small">Nothing changes until you press Apply. The main folder gets an undo point first.</p>
+    ${fileList(ch.mine, "Into the main folder")}
+    ${fileList(ch.theirs, "Into this conversation's copy (newer in the main folder)")}
+    ${fileList(ch.merged, "Changed on both sides in different places: merged line by line")}
+    ${ch.conflicts.length ? `<h4>Changed on both sides</h4><ul>${ch.conflicts.map((x) => `<li><code>${esc(x.path)}</code> (${esc(x.kind)})</li>`).join("")}</ul>
+      <p class="small">This conversation's agent works out a resolution for these, like a merge conflict: what each side was doing, keeping both sides' work. You see its proposal and decide before anything of them goes into the main folder.</p>` : ""}
+    <p class="small form-msg"></p>
+    <div class="actions"><button type="button" class="btn primary" data-apply>Apply</button><button type="button" class="btn" data-cancel>Cancel</button></div></div>`;
+  n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
+  n.querySelector("[data-apply]").addEventListener("click", async (e) => {
+    const choices = {};   // conflicts: the agent proposes first
+    e.target.disabled = true;
+    const msg = n.querySelector(".form-msg");
+    try {
+      await api("/api/conversations/sync", withConv({ choices }));   // the agent starts on its merges by itself
+      n.remove();
+      refreshFolderSoon();
+      if (filesVisible()) refreshFilesSoon();
+    } catch (err) { msg.classList.add("bad"); msg.textContent = err.message; e.target.disabled = false; }
+  });
+  add(n);
+  n.scrollIntoView({ block: "nearest" });
+}
+
+// The agent's proposed resolution of conflicts: accept it, or pick another version, per file.
+async function reviewResolution() {
+  let p;
+  try { p = await api(`/api/conversations/${encodeURIComponent(view.conv)}/resolution`); }
+  catch (e) { add(el("div", "item err", `<div class="box">${esc(e.message)}</div>`)); return; }
+  if (!p.files.length) { refreshFolderSoon(); return; }
+  $("resolveReview")?.remove();
+  const n = el("div", "item ask");
+  n.id = "resolveReview";
+  const fileHtml = (f, i) => {
+    const what = f.removed ? "It proposes removing this file." : f.same_as_main ? "It proposes keeping the main folder's version."
+      : f.same_as_yours ? "It proposes keeping this conversation's version." : f.binary ? `It proposes a new version (not text, ${fmtBytes(f.size)}).` : "It proposes a merged version:";
+    const opt = (value, text, on) => `<label><input type="radio" name="r${i}" value="${esc(value)}" ${on ? "checked" : ""}> ${text}</label>`;
+    return `<li class="conflict"><fieldset><legend>${esc(f.path)}</legend>
+      <p class="why">${what}</p>
+      ${f.diff ? `<details class="code" ${f.same_as_main ? "" : "open"}><summary>Changes against the main folder</summary><pre class="diff">${diffHtml(f.diff)}</pre></details>` : ""}
+      ${opt("accept", "<strong>Accept the agent's resolution</strong>", true)}
+      ${f.has.yours ? opt("yours", "Keep this conversation's version from before", false) : opt("yours", "Keep it removed, as this conversation had it", false)}
+      ${f.has.other ? opt("other", `Keep the version from ${esc(f.other_title || "the other conversation")}`, false) : ""}
+      ${opt("main", f.has.main ? "Keep the main folder's version" : "Keep it removed, as the main folder has it", false)}
+      ${f.reassign ? opt("agent:" + f.reassign.id, `Let ${esc(f.reassign.title)} (${esc(f.reassign.model_label)}) resolve it instead <span class="beta" title="New: may still have rough edges">beta</span>`, false) : ""}
+      ${opt("later", "Decide later", false)}</fieldset></li>`;
+  };
+  n.innerHTML = `<div class="box"><h3>The agent's proposed resolution</h3>
+    ${p.explanation ? `<div class="why">${md(p.explanation)}</div>` : ""}
+    <ul class="sync">${p.files.map(fileHtml).join("")}</ul>
+    <p class="why">Not quite right? Tell the agent in the box below what to change; it updates its proposal, and you review again.</p>
+    <p class="small form-msg"></p>
+    <div class="actions"><button type="button" class="btn allow" data-apply>Apply</button><button type="button" class="btn" data-cancel>Not now</button></div></div>`;
+  n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
+  n.querySelector("[data-apply]").addEventListener("click", async (e) => {
+    const choices = {};
+    p.files.forEach((f, i) => { choices[f.path] = n.querySelector(`input[name="r${i}"]:checked`)?.value || "later"; });
+    e.target.disabled = true;
+    try { await api("/api/conversations/resolve", withConv({ choices })); n.remove(); refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); }
+    catch (err) { const m = n.querySelector(".form-msg"); m.classList.add("bad"); m.textContent = err.message; e.target.disabled = false; }
+  });
+  add(n);
+  n.scrollIntoView({ block: "nearest" });
+}
+
+// --- Live connection --------------------------------------------------------
+let source = null;
+function connect() {
+  source?.close();
+  source = new EventSource("/api/events");
+  source.addEventListener("hello", (m) => {
+    const s = JSON.parse(m.data);
+    $("conn").hidden = true;
+    convs = s.conversations || [];
+    const mine = view.conv && convs.some((c) => c.id === view.conv) ? view.conv : s.conv;
+    if (!view.live) { renderConvs(); return; }    // looking at a past run: stay there
+    selectConv(mine, { focus: mine !== s.conv });
+  });
+  source.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.kind === "conversations") { refreshConvsSoon(); return; }
+    if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); return; }
+    if (ev.kind === "shared_folder") { refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
+    if (ev.kind === "plan_usage") { planUsage = ev; showTokens(); }
+    if (ev.conv && ev.conv !== view.conv) {           // another conversation: only its tab changes
+      if (ev.kind === "status") updateConv(ev.conv, { state: ev.state });
+      else if (ev.kind === "approval" || ev.kind === "approval_done" || ev.kind === "task") refreshConvsSoon();
+      else if (ev.kind === "settings" && view.live) api(stateUrl()).then(showModels).catch(() => {});
+      else if (ev.kind === "result" && filesVisible()) refreshFilesSoon();   // they share the work folder
+      return;
+    }
+    if (!view.live) return;
+    if (view.loading) { view.queue.push(ev); return; }
+    apply(ev);
+    if (ev.kind === "end" && !ev.parent) refreshFolderSoon();
+    if (ev.kind === "status") { updateConv(ev.conv, { state: ev.state }); if (ev.state === "idle") refreshFolderSoon(); }
+    else if (ev.kind === "approval" || ev.kind === "approval_done" || ev.kind === "task") refreshConvsSoon();
+  };
+  source.onerror = () => { $("conn").hidden = false; };
+}
+
+// --- Composer ----------------------------------------------------------------
+const box = $("task");
+function grow() { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; }
+box.addEventListener("input", grow);
+box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("form").requestSubmit(); } });
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = box.value.trim();
+  if (!text || current !== "idle") return;
+  try { await api("/api/task", withConv({ text })); box.value = ""; grow(); }
+  catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); }
+});
+$("stopBtn").addEventListener("click", () => api("/api/stop", withConv()).catch(() => {}));
+$("newBtn").addEventListener("click", async () => {
+  try {
+    const s = await api("/api/conversations", {});
+    convs = s.conversations;
+    await selectConv(s.conv, { focus: false });
+    box.focus();
+  } catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); }
+});
+
+// --- Past runs ---------------------------------------------------------------
+async function openRun(run) {
+  if (run.conv) { selectConv(run.conv); loadRuns(); return; }   // still open: show it live
+  view.live = false;
+  renderConvs();
+  setState(current);
+  const events = await api(`/api/history/${encodeURIComponent(run.name)}`);
+  thread.innerHTML = ""; view.tools = {}; view.asks = {}; view.lastSeq = 0; view.tokens = 0;
+  $("thinking")?.remove();
+  for (const ev of events) apply(ev);
+  showEmpty();
+  $("pastText").textContent = `You're looking at a past run from ${fmtWhen(events[0]?.t)}. It's read-only.`;
+  $("pastBanner").hidden = false;
+  $("folderbar").hidden = true;
+  $("runBtn").disabled = true;
+  feed.scrollTop = 0;
+  loadRuns(run.name);
+}
+function backToLive() {
+  selectConv(view.conv && convs.some((c) => c.id === view.conv) ? view.conv : (convs[0] || {}).id);
+  loadRuns();
+}
+$("backLive").addEventListener("click", backToLive);
+
+async function loadRuns(viewing) {
+  const pane = $("pane-runs");
+  try {
+    const runs = await api("/api/history");
+    pane.innerHTML = `<h2>Runs</h2><p class="small">Every conversation is kept on the machine, open or closed. Stopping or resetting from your PC also copies them into the repo's logs folder.</p>`;
+    const list = el("ul", "runs");
+    for (const r of runs) {
+      const li = el("li", viewing === r.name ? "viewing" : "");
+      const b = el("button");
+      b.type = "button";
+      b.innerHTML = `<div class="task">${esc(r.first_task || "No tasks yet")}</div><div class="when">${r.conv ? (r.conv === view.conv && view.live ? "This conversation" : "Open") : fmtWhen(r.last)}${r.tasks > 1 ? `, ${r.tasks} tasks` : ""}</div>`;
+      b.addEventListener("click", () => openRun(r));
+      li.appendChild(b); list.appendChild(li);
+    }
+    pane.appendChild(list);
+  } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
+}
+
+// --- Files -------------------------------------------------------------------
+let filePath = ".", fileTimer = null, openFile = null, fileWhere = "copy";
+const filesQuery = () => `conv=${encodeURIComponent(view.conv || "")}&where=${fileWhere}`;
+const filesVisible = () => !$("pane-files").hidden;
+function refreshFilesSoon() { clearTimeout(fileTimer); fileTimer = setTimeout(() => openFile ? showFile(openFile) : loadFiles(filePath), 700); }
+
+async function loadFiles(path) {
+  const pane = $("pane-files");
+  openFile = null;
+  try {
+    const data = await api(`/api/files?path=${encodeURIComponent(path)}&${filesQuery()}`);
+    filePath = data.path;
+    pane.innerHTML = "";
+    const quick = el("div", "quick");
+    const wb = el("button", "btn", "This conversation"); wb.type = "button";
+    wb.setAttribute("aria-pressed", String(fileWhere === "copy"));
+    wb.addEventListener("click", () => { fileWhere = "copy"; loadFiles("."); });
+    const shb = el("button", "btn", "Main folder"); shb.type = "button";
+    shb.setAttribute("aria-pressed", String(fileWhere === "shared"));
+    shb.addEventListener("click", () => { fileWhere = "shared"; loadFiles("."); });
+    quick.append(wb, shb);
+    if (sharesList.length) {
+      const sb = el("button", "btn", "Shared folders"); sb.type = "button"; sb.addEventListener("click", () => loadFiles("/mnt/shared"));
+      quick.appendChild(sb);
+    }
+    pane.appendChild(quick);
+    if (fileWhere === "copy" && data.where === "shared") pane.appendChild(el("p", "small", "This conversation gets its own copy at its first task; until then this is the main work folder."));
+    else if (fileWhere === "shared") pane.appendChild(el("p", "small", "Read-only for the agent. It changes when you bring a conversation's work in."));
+    const crumbs = el("nav", "crumbs"); crumbs.setAttribute("aria-label", "Folder path");
+    const parts = data.path.split("/").filter(Boolean);
+    const root = el("button", "", "/"); root.type = "button"; root.addEventListener("click", () => loadFiles("/")); crumbs.appendChild(root);
+    parts.forEach((p, i) => {
+      const b = el("button", "", esc(p)); b.type = "button";
+      b.addEventListener("click", () => loadFiles("/" + parts.slice(0, i + 1).join("/")));
+      crumbs.appendChild(b);
+      if (i < parts.length - 1) crumbs.appendChild(document.createTextNode("/"));
+    });
+    pane.appendChild(crumbs);
+    if (!data.entries.length) { pane.appendChild(el("p", "small", "This folder is empty. Files the agent creates show up here.")); return; }
+    const list = el("ul", "files");
+    for (const f of data.entries) {
+      const li = el("li", f.dir ? "dir" : "");
+      if (Date.now() / 1000 - f.mtime < 120) li.classList.add("fresh");
+      const b = el("button"); b.type = "button";
+      b.innerHTML = `<span class="fname">${esc(f.name)}</span><span class="fmeta">${f.dir ? "" : fmtBytes(f.size) + ", "}${ago(f.mtime)}</span>`;
+      b.addEventListener("click", () => f.dir ? loadFiles(`${data.path}/${f.name}`) : showFile(`${data.path}/${f.name}`));
+      li.appendChild(b); list.appendChild(li);
+    }
+    pane.appendChild(list);
+  } catch (e) {
+    pane.innerHTML = `<p class="small">${esc(e.message)}</p>`;
+    const b = el("button", "btn", "Go to the work folder"); b.type = "button"; b.addEventListener("click", () => loadFiles(".")); pane.appendChild(b);
+  }
+}
+async function showFile(path) {
+  const pane = $("pane-files");
+  openFile = path;
+  try {
+    const f = await api(`/api/file?path=${encodeURIComponent(path)}&${filesQuery()}`);
+    pane.innerHTML = "";
+    const head = el("div", "viewer-head");
+    const back = el("button", "btn", "Back"); back.type = "button"; back.addEventListener("click", () => loadFiles(filePath));
+    head.appendChild(back);
+    head.appendChild(el("strong", "", esc(path.split("/").pop())));
+    head.appendChild(el("span", "small", fmtBytes(f.size)));
+    pane.appendChild(head);
+    if (f.binary) pane.appendChild(el("p", "small", "This is a binary file, so it can't be shown as text."));
+    else {
+      const pre = el("pre", "viewer"); pre.textContent = f.text || "(empty file)"; pane.appendChild(pre);
+      if (f.truncated) pane.appendChild(el("p", "small", "Only the first 200 KB are shown."));
+    }
+  } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
+}
+
+// --- Machine -----------------------------------------------------------------
+let machineTimer = null;
+function meter(label, used, total, text) {
+  const pct = total ? Math.round((used / total) * 100) : 0;
+  return `<div class="meter"><div class="row"><span>${label}</span><span>${text ?? `${fmtBytes(used)} of ${fmtBytes(total)}`}</span></div><div class="bar"><span style="width:${pct}%"></span></div></div>`;
+}
+async function loadMachine() {
+  const pane = $("pane-machine");
+  try {
+    const [m, procs] = await Promise.all([api("/api/machine"), api("/api/processes")]);
+    const up = m.uptime_s ? (m.uptime_s < 3600 ? `${Math.round(m.uptime_s / 60)} min` : `${(m.uptime_s / 3600).toFixed(1)} h`) : "";
+    const box = m.agent_box || {}, home = m.agent_home;
+    const boxHtml = box.memory_max != null || box.processes_max != null
+      ? `${box.memory_max != null ? meter("Memory", box.memory || 0, box.memory_max) : ""}
+         ${box.processes_max != null ? meter("Processes", box.processes || 0, box.processes_max, `${box.processes || 0} of ${box.processes_max}`) : ""}`
+      : `<p class="small">Limits aren't active here.</p>`;
+    pane.innerHTML = `<h2>Machine</h2>
+      ${meter("Processor", m.cpu_percent ?? 0, 100, m.cpu_percent == null ? "measuring" : `${m.cpu_percent}% of ${m.cpus} cores`)}
+      ${meter("Memory", m.mem_used, m.mem_total)}
+      ${meter("Disk", m.disk_used, m.disk_total)}
+      <dl class="facts"><dt>Running for</dt><dd>${esc(up)}</dd><dt>Load</dt><dd>${m.load ? m.load.map((x) => x.toFixed(2)).join(", ") : ""}</dd></dl>
+      <h3>The agent's limits</h3>
+      ${boxHtml}
+      ${home ? meter("Its home disk", home.used, home.total) : ""}
+      ${m.brain_box?.memory_max != null ? `<h3>Claude Code (my plan models)</h3>${meter("Memory", m.brain_box.memory || 0, m.brain_box.memory_max)}
+        <p class="small">${m.brain_box.memory ? "Running." : "Not running: it starts with your next message to a my-plan model."}</p>` : ""}
+      <h3>Programs the agent is running</h3>
+      <div id="procs"></div>
+      <p class="small">Starting, stopping, snapshots and factory reset run from your PC, so they still work if this machine hangs: use <strong>stop</strong> and <strong>reset</strong> in the repo's windows folder.</p>`;
+    const list = $("procs");
+    if (!procs.length) list.appendChild(el("p", "small", "None right now."));
+    else {
+      const ul = el("ul", "alist");
+      for (const pr of procs.slice(0, 50)) {
+        const li = el("li", "proc", `<div><div class="cmd">${esc(pr.args)}</div><div class="sub">${pr.cpu}% processor, ${fmtBytes(pr.memory)}, running ${pr.seconds < 60 ? pr.seconds + " s" : Math.round(pr.seconds / 60) + " min"}</div></div>`);
+        const b = el("button", "btn", "Stop"); b.type = "button";
+        b.addEventListener("click", async () => { b.disabled = true; try { await api("/api/processes/kill", { pid: pr.pid }); } catch (e) {} setTimeout(loadMachine, 600); });
+        li.appendChild(b); ul.appendChild(li);
+      }
+      list.appendChild(ul);
+      const all = el("button", "btn stop", "Stop all agent programs"); all.type = "button";
+      all.addEventListener("click", async () => { all.disabled = true; try { await api("/api/processes/kill-all", {}); } catch (e) {} setTimeout(loadMachine, 600); });
+      list.appendChild(all);
+    }
+  } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
+}
+
+// --- Rules -------------------------------------------------------------------
+const PRESETS = {
+  "": { label: "", base_url: "" },
+  openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: "openai", max_tokens_param: "max_completion_tokens" },
+  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com", key: "deepseek" },
+  gemini: { label: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", key: "gemini" },
+  ollama: { label: "Local (Ollama)", base_url: "http://192.168.1.10:11434/v1", key: "" },
+  "claude-plan": { label: "Claude (my plan)", provider: "claude-code", model: "sonnet", base_url: "", key: "claude-subscription" },
+};
+const PROVIDER_TEXT = { anthropic: "Anthropic API", "claude-code": "Claude Code on your plan" };
+
+async function loadSettings() {
+  const pane = $("pane-settings");
+  try {
+    const [st, set, c, net, cc] = await Promise.all([api(stateUrl()), api("/api/settings"), api("/api/config"),
+      api("/api/network"), api("/api/claude").catch(() => ({}))]);
+    renderSettings(pane, st, set, c, net, cc);
+  } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
+}
+
+async function settingsPost(path, body, pane) {
+  try {
+    await api(path, body);
+    showModels(await api(stateUrl()));
+    await loadSettings();
+    return true;
+  } catch (e) {
+    let msg = pane.querySelector(".form-msg");
+    if (!msg) {
+      msg = $("pane-settings").querySelector(".settings-msg") || el("p", "small settings-msg");
+      $("pane-settings").prepend(msg);
+    }
+    msg.textContent = e.message; msg.classList.add("bad");
+    return false;
+  }
+}
+
+function renderSettings(pane, st, set, c, net, cc = {}) {
+  const keyText = (p) => p.provider === "claude-code" ? (p.has_key ? "signed in" : "not signed in yet (see Your Claude plan above)")
+    : !p.key ? "no key needed" : p.has_key ? "key set" : "no key yet";
+  const planKey = (set.keys || []).find((k) => k.name === "claude-subscription");
+  pane.innerHTML = `<h2>Settings</h2>
+    <h3>Your Claude plan</h3>
+    ${planKey?.set
+      ? `<p class="plan-ok">&#10003; Signed in with your Claude plan (token ${esc(planKey.hint)}).</p>
+         <p class="small">The "my plan" models use it. Nothing more to do here.</p>
+         <div id="planSignin"><button class="linkish" type="button" id="planStart">Replace the token (only if it stopped working)</button></div>`
+      : `<p class="small">Not signed in. The "my plan" models need this; the sign-in takes a minute.</p>
+         <div id="planSignin"><button class="btn" type="button" id="planStart">Sign in with your Claude plan</button></div>`}
+    <p class="small" id="ccLine">${cc.installed ? `Claude Code ${esc(cc.version.replace(/\s*\(Claude Code\)\s*$/, ""))} is installed. It doesn't update itself.`
+      : "Claude Code is not installed in the machine yet."}
+      <button class="btn" type="button" id="ccUpdate">${cc.installed ? "Update Claude Code" : "Install Claude Code"}</button></p>
+    <h3>Claude apps on your PC</h3>
+    <p class="small">Let Claude Code or Claude Desktop on your PC hand tasks to the agent here, as a tool. Their tasks run with the same rules and walls; anything that needs approval still waits for you here, and they can't approve anything.</p>
+    <label class="told-switch"><input type="checkbox" id="mcpOn" ${set.mcp_enabled ? "checked" : ""}> Allow Claude apps on my PC to use UVMC</label>
+    <p class="small" id="mcpSeen"></p>
+    <h3>Models</h3>
+    <p class="small">Pick which one a conversation uses in the header. Changes here are kept in the VM on top of config.toml.</p>
+    <ul class="alist profiles" id="profiles"></ul>
+    <button class="btn" type="button" id="addProfile">Add a model</button>
+    <div id="profileForm"></div>
+    <h3>API keys</h3>
+    <p class="small">Stored in the VM where the agent can't read them. A key is never shown again, only its last characters. <strong>claude-subscription</strong> is your Claude plan's login, set by the sign-in above.</p>
+    <ul class="alist keys" id="keys"></ul>
+    <h3>What the agent is told</h3>
+    <p class="small">At the start of each conversation, in three separate parts. Changes apply from your next new conversation.</p>
+    <div id="briefingBox"><p class="small">Loading...</p></div>
+    <h3>Allowed sites</h3>
+    <p class="small">The agent can reach these and their subdomains. ${net.ask_unknown ? "For any other site, you're asked." : "Other sites are refused without asking."}</p>
+    <form class="addsite" id="addSite"><input id="siteInput" placeholder="example.com" aria-label="Site to allow" autocomplete="off"><button class="btn" type="submit">Allow</button></form>
+    <ul class="alist sites" id="learnedSites"></ul>
+    <p class="small">Set in config.toml: ${net.sites.configured.map(esc).join(", ") || "none"}.</p>
+    <details id="tomlBox"><summary>Copy panel settings into config.toml</summary><p class="small">To keep these models in the repo, paste this into supervisor/config.toml on your PC.</p><pre class="cfg" id="tomlText"></pre><button class="btn" type="button" id="copyToml">Copy</button></details>
+    <details><summary>config.toml and house rules in the VM</summary>
+      <p class="small">Model ${esc(st.model_label)}, agent user ${esc(st.user)}, works in ${esc(st.workdir)}. Edit these in the repo's supervisor folder, then run <strong>update</strong>.</p>
+      <pre class="cfg">${esc(c.config)}</pre><pre class="cfg">${esc(c.house_rules)}</pre></details>
+    <p class="small about">UVMC ${esc(st.version)} is free software under the GNU AGPL-3.0.
+      ${/^https?:\/\//.test(st.source || "") ? `<a href="${esc(st.source)}" target="_blank" rel="noopener">Source code</a>` : "The source code and license are in the UVMC repository."}</p>`;
+
+  $("planStart").addEventListener("click", planSignin);
+  $("mcpOn").addEventListener("change", (e) => settingsPost("/api/settings/mcp", { enabled: e.target.checked }, pane));
+  api("/api/settings/mcp").then((m) => {
+    const line = $("mcpSeen");
+    if (!line) return;
+    const when = (t) => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    line.textContent = m.seen.length
+      ? "Connected from your PC: " + m.seen.map((a) => `${a.name} (last ${when(a.at)}${a.allowed ? "" : ", refused: the switch was off"})`).join("; ") + "."
+      : "No Claude app on your PC has connected yet. If you ran connect-claude-apps (the installer offers it), open a new Claude Code session or quit and reopen Claude Desktop: they connect when they start. Otherwise run connect-claude-apps from the UVMC folder on your PC once.";
+  }).catch(() => {});
+  api("/api/briefing").then(renderBriefing).catch((e) => { $("briefingBox").innerHTML = `<p class="small bad">${esc(e.message)}</p>`; });
+  $("ccUpdate").addEventListener("click", async (e) => {
+    const line = $("ccLine");
+    e.target.disabled = true;
+    line.firstChild.textContent = "Updating Claude Code; this takes about a minute... ";
+    try {
+      const r = await api("/api/claude/update", {});
+      await loadSettings();
+      $("ccLine").insertAdjacentHTML("beforebegin", `<p class="small">${esc(r.message)}</p>`);
+    } catch (err) {
+      line.firstChild.textContent = err.message + " ";
+      line.classList.add("bad");
+      e.target.disabled = false;
+    }
+  });
+  const list = $("profiles");
+  for (const p of set.profiles) {
+    const li = el("li", "profile", `<div><strong>${esc(p.label)}</strong>${p.name === set.default ? ` <span class="tag">default</span>` : ""}
+      <div class="sub"><span class="cmdish">${esc(p.model)}</span>, ${PROVIDER_TEXT[p.provider] || esc(p.base_url)}</div>
+      <div class="sub">${keyText(p)}${p.source !== "config.toml" ? `, ${esc(p.source)}` : ""}</div></div>`);
+    const acts = el("div", "acts2");
+    const edit = el("button", "btn", "Edit"); edit.type = "button";
+    edit.addEventListener("click", () => profileForm(p));
+    acts.appendChild(edit);
+    if (p.name !== set.default) {
+      const def = el("button", "btn", "Make default"); def.type = "button";
+      def.addEventListener("click", () => settingsPost("/api/settings/default", { name: p.name }, pane));
+      acts.appendChild(def);
+    }
+    if (p.source !== "config.toml") {
+      const rm = el("button", "btn", p.source === "panel" ? "Remove" : "Reset"); rm.type = "button";
+      rm.addEventListener("click", () => settingsPost("/api/settings/profile/remove", { name: p.name }, pane));
+      acts.appendChild(rm);
+    }
+    li.appendChild(acts);
+    list.appendChild(li);
+  }
+  $("addProfile").addEventListener("click", () => profileForm(null));
+
+  const keys = $("keys");
+  for (const k of set.keys) {
+    const li = el("li", "keyrow", `<div><strong>${esc(k.name)}</strong> <span class="sub">${k.set ? esc(k.hint) : "not set"}${k.used_by.length ? `, for ${k.used_by.map(esc).join(", ")}` : ""}</span></div>`);
+    const f = el("form", "addsite");
+    const plan = k.name === "claude-subscription";   // set only by the sign-in above, never pasted here
+    f.innerHTML = plan ? `<span class="sub">Set by "Sign in with your Claude plan" above.</span>`
+      : `<input type="password" autocomplete="off" placeholder="${k.set ? "Paste a new key to replace it" : "Paste the key"}" aria-label="API key ${esc(k.name)}"><button class="btn" type="submit">Save</button>`;
+    f.addEventListener("submit", (e) => { e.preventDefault(); const v = f.querySelector("input")?.value.trim(); if (v) settingsPost("/api/settings/key", { name: k.name, key: v }, pane); });
+    if (k.set) {
+      const rm = el("button", "btn", plan ? "Sign out" : "Remove"); rm.type = "button";
+      rm.addEventListener("click", () => {
+        if (!confirm(plan ? "Sign UVMC out of your Claude plan? The \"my plan\" models stop working until you sign in again." : `Remove the key ${k.name}?`)) return;
+        settingsPost("/api/settings/key", { name: k.name, key: "" }, pane);
+      });
+      f.appendChild(rm);
+    }
+    li.appendChild(f);
+    keys.appendChild(li);
+  }
+
+  const ul = $("learnedSites");
+  if (!net.sites.learned.length) ul.appendChild(el("li", "sub", "None added from the panel yet."));
+  for (const h of net.sites.learned) {
+    const li = el("li", "", `<span>${esc(h)}</span>`);
+    const b = el("button", "btn", "Remove"); b.type = "button";
+    b.addEventListener("click", async () => { try { await api("/api/sites/remove", { host: h }); } catch (e) {} loadSettings(); });
+    li.appendChild(b); ul.appendChild(li);
+  }
+  $("addSite").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const host = $("siteInput").value.trim();
+    if (!host) return;
+    try { await api("/api/sites", { host }); loadSettings(); }
+    catch (err) { $("siteInput").setCustomValidity(err.message); $("siteInput").reportValidity(); setTimeout(() => $("siteInput").setCustomValidity(""), 3000); }
+  });
+  $("tomlBox").addEventListener("toggle", async () => {
+    const t = (await api("/api/settings/toml")).toml;
+    $("tomlText").textContent = t || "Nothing changed in the panel yet.";
+  });
+  $("copyToml").addEventListener("click", () => navigator.clipboard?.writeText($("tomlText").textContent));
+}
+
+// What the agent is told: 1. house rules, 2. the live briefing, 3. your notes. Kept apart on
+// purpose: the house rules are the fixed rules; the briefing and notes are about right now and you.
+function renderBriefing(d) {
+  const box = $("briefingBox");
+  if (!box) return;
+  const parts = Object.entries(d.labels).map(([k, label]) =>
+    `<label><input type="checkbox" data-part="${esc(k)}" ${d.parts[k] ? "checked" : ""} ${d.enabled ? "" : "disabled"}> ${esc(label)}</label>`).join("");
+  box.innerHTML = `<div class="told">
+    <section class="rules"><h4>1. House rules</h4>
+      <p class="small">The fixed rules for the agent, ${d.house_rules_source === "panel" ? "<strong>changed in the panel</strong> (the repo's version is kept)" : "from the repo (<span class=\"cmdish\">supervisor/house_rules.md</span>)"}. Workers get them too; a coordinator gets its own role's rules instead.</p>
+      <details><summary>Show and edit</summary>
+        <form class="pform" id="rulesForm"><textarea class="mono" name="text" rows="18" spellcheck="false">${esc(d.house_rules)}</textarea>
+          <p class="small form-msg"></p>
+          <div class="actions"><button class="btn primary" type="submit">Save house rules</button>
+          ${d.house_rules_source === "panel" ? `<button class="btn" type="button" id="rulesReset">Reset to the repo version</button>` : ""}</div></form>
+      </details></section>
+    <form class="pform told-form" id="briefForm" style="border:0;padding:0;margin:0;gap:12px">
+      <section class="live"><h4>2. Live briefing</h4>
+        <p class="small">Written by the supervisor when a conversation starts, so the agent knows its situation. Workers get one too, written for their role.</p>
+        <label class="told-switch"><input type="checkbox" name="enabled" ${d.enabled ? "checked" : ""}> Give the agent a live briefing</label>
+        <div class="checks">${parts}</div></section>
+      <section class="notes"><h4>3. Your notes</h4>
+        <p class="small">Anything you want every conversation to know, e.g. "Answer in French" or "My projects use Python 3.12".</p>
+        <textarea name="notes" rows="4" maxlength="${d.notes_max}" placeholder="Nothing yet">${esc(d.notes || "")}</textarea></section>
+      <p class="small form-msg"></p>
+      <div class="actions"><button class="btn primary" type="submit">Save briefing and notes</button></div>
+    </form>
+    <details><summary>Preview: the full text the agent you talk to gets</summary><pre class="cfg">${esc(d.preview)}</pre></details>
+  </div>`;
+  const bf = $("briefForm");
+  bf.enabled.addEventListener("change", () => bf.querySelectorAll("[data-part]").forEach((c) => { c.disabled = !bf.enabled.checked; }));
+  const done = (form, text) => { const m = form.querySelector(".form-msg"); m.classList.remove("bad"); m.textContent = text; };
+  const failed = (form, err) => { const m = form.querySelector(".form-msg"); m.classList.add("bad"); m.textContent = err.message; };
+  bf.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const parts = {};
+    bf.querySelectorAll("[data-part]").forEach((c) => { parts[c.dataset.part] = c.checked; });
+    try {
+      renderBriefing(await api("/api/briefing", { enabled: bf.enabled.checked, parts, notes: bf.notes.value }));
+      done($("briefForm"), "Saved. It applies from your next new conversation.");
+    } catch (err) { failed(bf, err); }
+  });
+  const rf = $("rulesForm");
+  rf.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      renderBriefing(await api("/api/house-rules", { text: rf.text.value }));
+      $("rulesForm").closest("details").open = true;
+      done($("rulesForm"), "Saved. They apply from your next new conversation.");
+    } catch (err) { failed(rf, err); }
+  });
+  $("rulesReset")?.addEventListener("click", async () => {
+    try {
+      renderBriefing(await api("/api/house-rules/reset", {}));
+      $("rulesForm").closest("details").open = true;
+      done($("rulesForm"), "Back to the repo version, from your next new conversation.");
+    } catch (err) { failed(rf, err); }
+  });
+}
+
+// Sign in with your Claude plan: the supervisor runs Claude Code's own setup-token, the
+// panel shows its link, you paste back the code the page gives you. The token is never shown.
+async function planSignin() {
+  const box = $("planSignin");
+  const retry = (text) => {
+    box.innerHTML = `<p class="small bad">${esc(text)}</p><button class="btn" type="button" id="planStart">Start the sign-in again</button>`;
+    $("planStart").addEventListener("click", planSignin);
+  };
+  box.innerHTML = `<p class="small">Starting the sign-in...</p>`;
+  let url;
+  try { url = (await api("/api/signin/start", {})).url; } catch (e) { retry(e.message); return; }
+  box.innerHTML = `<form class="pform" id="planForm">
+    <label>1. Open the sign-in page, sign in with your Claude account and approve.
+      <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open the sign-in page</a></label>
+    <label>2. The page then shows a code. Paste it here:
+      <input name="code" autocomplete="off" spellcheck="false" required placeholder="the code from the sign-in page"></label>
+    <p class="small form-msg"></p>
+    <div class="actions"><button class="btn primary" type="submit">Finish signing in</button><button class="btn" type="button" data-cancel>Cancel</button></div>
+  </form>`;
+  const f = $("planForm");
+  f.querySelector("[data-cancel]").addEventListener("click", async () => {
+    await api("/api/signin/cancel", {}).catch(() => {});
+    loadSettings();
+  });
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = f.querySelector(".form-msg");
+    msg.classList.remove("bad");
+    msg.textContent = "Finishing the sign-in, then checking the token with one small request to Claude. This can take a few minutes; it stops with a timeout message after about 4.";
+    f.querySelector("button[type=submit]").disabled = true;
+    try {
+      await api("/api/signin/code", { code: f.code.value });
+      showModels(await api(stateUrl()));
+      await loadSettings();   // now shows "Signed in" with a tick
+    } catch (err) {
+      retry(err.message);
+    }
+  });
+  f.code.focus();
+}
+
+function profileForm(p) {
+  const box = $("profileForm");
+  const isNew = !p;
+  p = p || { name: "", label: "", provider: "openai", model: "", base_url: "", key: "", max_tokens_param: "max_tokens" };
+  box.innerHTML = `<form class="pform">
+    <h3>${isNew ? "Add a model" : `Edit ${esc(p.label)}`}</h3>
+    ${isNew ? `<label>Start from <select name="preset">${Object.entries(PRESETS).map(([k, v]) => `<option value="${k}">${k ? esc(v.label) : "Nothing"}</option>`).join("")}</select></label>` : ""}
+    <label>Name (short, for the picker's id) <input name="name" value="${esc(p.name)}" ${isNew ? "" : "readonly"} required pattern="[a-z0-9][a-z0-9_-]{0,40}" placeholder="my-model"></label>
+    <label>Label <input name="label" value="${esc(p.label)}" placeholder="My model"></label>
+    <label>Kind of API <select name="provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI-compatible</option><option value="claude-code">Claude Code on my plan</option></select></label>
+    <label>Address (base URL) <input name="base_url" value="${esc(p.base_url)}" placeholder="https://..."></label>
+    <label>Model name <input name="model" value="${esc(p.model)}" required placeholder="as the provider names it"></label>
+    <label>Key name <input name="key" value="${esc(p.key)}" placeholder="empty if no key is needed"></label>
+    <details><summary>Advanced</summary><label>Length setting the API expects <input name="max_tokens_param" value="${esc(p.max_tokens_param)}"></label></details>
+    <p class="small form-msg"></p>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-cancel>Cancel</button></div></form>`;
+  const f = box.querySelector("form");
+  f.provider.value = p.provider;
+  f.querySelector("[data-cancel]").addEventListener("click", () => { box.innerHTML = ""; });
+  f.preset?.addEventListener("change", () => {
+    const v = PRESETS[f.preset.value]; if (!v) return;
+    f.provider.value = v.provider || "openai"; f.label.value = v.label; f.base_url.value = v.base_url;
+    if (v.model) f.model.value = v.model;
+    f.key.value = v.key ?? ""; f.max_tokens_param.value = v.max_tokens_param || "max_tokens";
+    if (!f.name.value) f.name.value = f.preset.value;
+  });
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(["name", "label", "provider", "base_url", "model", "key", "max_tokens_param"].map((k) => [k, f[k].value]));
+    settingsPost("/api/settings/profile", body, box);
+  });
+  f.scrollIntoView({ block: "nearest" });
+  (isNew ? f.preset : f.model).focus();
+}
+
+// --- Activity tab ----------------------------------------------------------------
+let activityMode = "programs", activityAvailable = true, networkOn = true;
+const activityVisible = () => !$("pane-activity").hidden;
+function renderActivity() {
+  const pane = $("pane-activity");
+  const seg = `<div class="seg" role="group" aria-label="Show"><button type="button" data-m="programs" aria-pressed="${activityMode === "programs"}">Programs</button><button type="button" data-m="sites" aria-pressed="${activityMode === "sites"}">Sites</button></div>`;
+  let body;
+  if (activityMode === "programs") {
+    const rows = activity.execs.slice(-300).reverse();
+    body = !activityAvailable ? `<p class="small">The activity log isn't running. It needs the VM's audit service; run <strong>update</strong> on your PC.</p>`
+      : rows.length ? `<ul class="alist">${rows.map((e) => `<li><div class="cmd">${esc(cmdline(e))}</div><div class="sub">${esc(new Date((e.at || e.t) * 1000).toLocaleTimeString())}${e.cwd ? `, in ${esc(e.cwd)}` : ""}</div></li>`).join("")}</ul>`
+      : `<p class="small">Every program the agent starts appears here, including ones started inside scripts.</p>`;
+  } else {
+    const rows = activity.nets.slice(-300).reverse();
+    body = !networkOn ? `<p class="small">The network proxy isn't running, so the agent has no internet at all.</p>`
+      : rows.length ? `<ul class="alist">${rows.map((e) => `<li><div>${e.verdict === "allow" ? "" : `<span class="denied">Refused</span> `}<strong>${esc(e.host)}</strong>:${e.port}${e.who === "claude-code" ? " (Claude Code itself)" : ""}</div><div class="sub">${esc(new Date(e.t * 1000).toLocaleTimeString())}, ${e.verdict === "allow" ? `${fmtBytes(e.sent)} out, ${fmtBytes(e.received)} in` : esc(e.reason)}</div></li>`).join("")}</ul>`
+      : `<p class="small">Every site the agent contacts appears here. It has no other way online.</p>`;
+  }
+  pane.innerHTML = `<h2>Activity in this conversation</h2>${seg}${body}`;
+  pane.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => { activityMode = b.dataset.m; renderActivity(); }));
+}
+async function loadActivity() {
+  try { const s = await api("/api/state"); activityAvailable = s.activity; networkOn = s.network; } catch (e) {}
+  renderActivity();
+}
+
+// --- Tabs --------------------------------------------------------------------
+const loaders = { files: () => loadFiles(filePath), tools: () => loadTools(), activity: loadActivity, runs: () => loadRuns(), machine: loadMachine, settings: loadSettings };
+const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
+function selectTab(tab) {
+  for (const t of tabs) {
+    const on = t === tab;
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(t.getAttribute("aria-controls")).hidden = !on;
+  }
+  const name = tab.id.replace("tab-", "");
+  loaders[name]();
+  clearInterval(machineTimer);
+  if (name === "machine") machineTimer = setInterval(loadMachine, 5000);
+}
+tabs.forEach((t, i) => {
+  t.addEventListener("click", () => selectTab(t));
+  t.addEventListener("keydown", (e) => {
+    const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (d) { const next = tabs[(i + d + tabs.length) % tabs.length]; next.focus(); selectTab(next); }
+  });
+});
+
+// --- Start -------------------------------------------------------------------
+showEmpty();
+connect();
+selectTab(tabs[0]);
+</script>
+</body>
+</html>

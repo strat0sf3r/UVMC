@@ -1,0 +1,29 @@
+#cloud-config
+# UVMC: first-boot recipe for the agent machine (Ubuntu 24.04).
+# Multipass runs this once, when the machine is created. Everything else (supervisor,
+# firewall, limits, activity log, helper commands) is set up by supervisor/setup.sh,
+# which the installer and the update script run afterwards (including Claude Code, which
+# runs as its own user for the "my plan" models, never as the agent).
+
+package_update: true
+packages:
+  - auditd
+  - ca-certificates
+  - curl
+  - git
+  - less
+  - nftables
+  - python3
+  - python3-venv
+  - ripgrep
+  - rsync
+
+users:
+  - default           # "ubuntu": used by Multipass and the supervisor, has sudo
+  - name: agent       # the AI agent: normal user, no sudo, no password
+    shell: /bin/bash
+    lock_passwd: true
+
+runcmd:
+  - [su, -, agent, -c, "mkdir -p ~/work"]
+  - [chmod, "750", /home/agent]

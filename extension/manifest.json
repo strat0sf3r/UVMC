@@ -1,0 +1,59 @@
+{
+  "manifest_version": "0.3",
+  "name": "uvmc",
+  "display_name": "UVMC",
+  "version": "1.2.0",
+  "description": "Hand tasks to the AI agent in your UVMC machine (a sandboxed Ubuntu VM).",
+  "long_description": "Lets Claude Desktop give tasks to the agent inside your UVMC machine and read the files it makes. The machine must be installed and running, and 'Allow Claude apps on my PC to use UVMC' must be on in the UVMC panel (Settings). Tasks run with the machine's usual rules; anything that needs approval waits for you in the UVMC panel.",
+  "author": {
+    "name": "strat0sf3r"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/strat0sf3r/UVMC"
+  },
+  "homepage": "https://github.com/strat0sf3r/UVMC",
+  "license": "AGPL-3.0-only",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "run_task",
+      "description": "Give a task to the AI agent in the UVMC machine (a sandboxed Ubuntu VM with its own tools, files and internet access through approvals). Waits up to wait_seconds for it to finish and returns its final reply and steps; if it is still running, use task_status later. Anything risky waits for the user's approval in the UVMC panel."
+    },
+    {
+      "name": "task_status",
+      "description": "What a UVMC conversation is doing now: working or idle, approvals waiting for the user, its latest reply. Default: the last conversation you used."
+    },
+    {
+      "name": "stop_task",
+      "description": "Stop the task a UVMC conversation is running. Default: the last conversation you used."
+    },
+    {
+      "name": "list_files",
+      "description": "List a folder in a UVMC conversation's work folder (relative paths start there). Default: the last conversation you used."
+    },
+    {
+      "name": "read_file",
+      "description": "Read a text file from a UVMC conversation's work folder, e.g. a result it produced. Default: the last conversation you used."
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "win32",
+      "darwin",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=16.0.0"
+    }
+  }
+}

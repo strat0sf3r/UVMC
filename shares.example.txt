@@ -1,0 +1,16 @@
+# Folders from this computer that the agent can see, one per line:  name = folder
+# (shares.txt is made from shares.example.txt on first use; it stays on your PC, out of git.)
+# - The agent reads them under /mnt/shared/<name>; it can't change or delete anything there.
+# - It can ask to change or add a file; you approve each one in the panel, and the
+#   original is backed up first in <folder>\_uvmc_backups.
+# - Relative folders are inside this repo. Lines starting with # are ignored;
+#   "#off name = folder" is a folder that is remembered but not shared right now.
+# - The UVMC Panel shortcut shows a window to tick folders on and off before it starts.
+# - After editing this file, run share (windows\share.cmd or unix/share.sh).
+#   Removing a line and running share again stops sharing that folder.
+#
+# Only share folders you'd be fine with the agent reading. Never share your whole drive
+# or your user folder.
+
+# Example, after running make-testdata:
+# testdata = testdata

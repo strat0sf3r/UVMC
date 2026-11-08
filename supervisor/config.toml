@@ -1,0 +1,178 @@
+# UVMC supervisor configuration. This file is the source of truth:
+# edit it here in the repo, then run the update script to push it into the VM.
+
+[about]
+# Where people can get this program's source (UVMC is AGPL-3.0; the panel links here).
+source = "https://github.com/strat0sf3r/UVMC"
+
+[agent]
+model = "claude"                  # the default model profile (see [models.*] below)
+max_tokens = 8000                 # per model reply
+max_steps = 40                    # model turns per task
+max_tokens_per_task = 1_000_000   # input + output, summed over the task
+house_rules = "house_rules.md"    # system prompt, next to this file
+
+# --- Model profiles -------------------------------------------------------------
+# Each [models.<name>] is one brain the panel can switch to. provider is "anthropic"
+# or "openai" (any OpenAI-compatible API). key is the name you give set-key on your PC
+# ("set-key deepseek"); keys are stored in the VM where the agent can't read them.
+# A profile without a model name is not offered. Tool use quality varies a lot
+# between models: try a new one on small tasks first.
+
+[models.claude]
+label = "Claude Sonnet"
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+key = "anthropic"
+
+[models.claude-opus]
+label = "Claude Opus"
+provider = "anthropic"
+model = "claude-opus-5-5"
+key = "anthropic"
+
+[models.claude-haiku]
+label = "Claude Haiku"
+provider = "anthropic"
+model = "claude-haiku-5-5"
+key = "anthropic"
+
+# Claude on your Claude plan (Pro/Max) instead of the API: Claude Code is the brain,
+# signed in once with sign-in-claude on your PC. It has no tools of its own: it acts only
+# through the supervisor, with the same rules, approvals and logs. model: "sonnet",
+# "opus", "haiku", or a full model name. See [subscription] below.
+[models.claude-plan]
+label = "Claude Sonnet (my plan)"
+provider = "claude-code"
+model = "sonnet"
+key = "claude-subscription"
+
+[models.claude-plan-opus]
+label = "Claude Opus (my plan)"
+provider = "claude-code"
+model = "opus"
+key = "claude-subscription"
+
+[models.claude-plan-haiku]
+label = "Claude Haiku (my plan)"
+provider = "claude-code"
+model = "haiku"
+key = "claude-subscription"
+
+[models.deepseek]
+label = "DeepSeek V4 Pro"
+provider = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+key = "deepseek"
+
+[models.gpt]
+label = "OpenAI"
+provider = "openai"
+base_url = "https://api.openai.com/v1"
+model = ""                        # fill in a model name from platform.openai.com/docs/models
+key = "openai"
+max_tokens_param = "max_completion_tokens"
+
+[models.gemini]
+label = "Gemini"
+provider = "openai"               # through Google's OpenAI-compatible endpoint (beta)
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = ""                        # fill in a model name from ai.google.dev/gemini-api/docs/models
+key = "gemini"
+
+[models.local]
+label = "Local model on my PC"
+provider = "openai"               # Ollama, LM Studio and vLLM all offer an OpenAI-compatible API
+base_url = "http://192.168.1.10:11434/v1"   # your PC's address as the VM sees it
+model = ""                        # e.g. a model you pulled in Ollama
+key = ""                          # no key needed
+
+# --- Delegation ------------------------------------------------------------------
+# In the panel you can give a conversation a worker: the model you talk to then
+# coordinates (plans, delegates, checks) and a worker model does the work on the machine,
+# with the same tools, walls and approvals.
+
+[delegation]
+enabled = true
+workers = []                      # profiles allowed as workers; empty = all of them
+max_steps = 30                    # model turns per delegated job
+orchestrator_rules = "orchestrator_rules.md"
+
+[subscription]
+# Claude Code on your plan runs as its own user, so what the agent runs can't read its login.
+user = "uvmc-brain"
+proxy_port = 3129                 # its own proxy, which only lets it reach these sites:
+sites = ["anthropic.com", "claude.ai", "claude.com"]
+claude = "/usr/local/bin/claude"
+memory = "700M"                   # its memory cap (it needs about 200-400 MB)
+idle_minutes = 15                 # close it after this long unused, to free its memory; the next
+                                  # message restarts it with the conversation so far (0: never close)
+
+[conversations]
+# Several conversations can be open in the panel, and work at the same time. They share the
+# machine: the agent user, its work folder (Undo puts back the whole folder) and its limits.
+max_open = 8        # the oldest idle one closes when a new one would go over
+max_running = 3     # working at the same moment (each "my plan" one runs its own Claude Code)
+
+[made_tools]
+# Tools the agent builds and you approve (Tools tab). Each runs as its own user, from a copy the
+# agent can't change, and reaches only the sites it declared, through its own proxy.
+dir = "/var/lib/uvmc-tools"
+proxy_port = 3200   # tool proxies use this port and the next 99
+keep_runs = 30      # logs kept per tool
+
+[workspace]
+user = "agent"                    # every tool runs as this Linux user
+dir = "/home/agent/work"          # where commands start
+
+[tools]
+enabled = ["run_command", "read_file", "write_file", "list_dir", "install_system_package"]
+command_timeout_s = 120
+max_timeout_s = 900
+max_output_chars = 20000          # longer results keep the start and the end
+
+[rules]
+# Default decision per tool: "allow", "ask" or "deny".
+# The agent works freely inside its own space: the walls are enforced by Linux
+# (no root, firewall, resource limits), not by guessing at what commands do.
+read_file = "allow"
+list_dir = "allow"
+write_file = "allow"
+run_command = "allow"
+install_system_package = "ask"    # apt installs run as root, so you decide
+
+# Optional regular expressions checked against shell commands, deny first.
+# Useful for habits you want to stop, not for security.
+deny_patterns = []
+ask_patterns = []
+
+[network]
+# The agent has no direct internet. Everything goes through the supervisor's
+# proxy, which allows these sites (and their subdomains), asks you about others,
+# and logs every connection.
+proxy_port = 3128
+allow = [
+  "pypi.org",
+  "pythonhosted.org",
+  "github.com",
+  "githubusercontent.com",
+  "registry.npmjs.org",
+]
+ports = [80, 443]
+ask_unknown = true                # false: refuse unknown sites without asking
+approval_timeout_s = 120          # unanswered requests are refused after this
+
+[limits]
+# Applied to everything the agent runs, all together.
+memory = "1200M"
+cpu_percent = 150                 # 100 = one full core
+max_processes = 256
+home_size = "6G"                  # the agent's home is a disk of this size
+tmp_size = "512M"                 # /tmp and /var/tmp are memory disks of this size
+
+[checkpoints]
+keep = 20                         # copies of the work folder, one before each task
+
+[logs]
+dir = "/var/log/uvmc/runs"
