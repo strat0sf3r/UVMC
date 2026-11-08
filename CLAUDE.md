@@ -29,7 +29,7 @@ To look at the panel without a VM, run it the way the tests do: a `Controller` w
 - `extension/`: the Claude Desktop extension; rebuild `uvmc.mcpb` with `npx @anthropic-ai/mcpb pack` after changing it.
 - `windows/`, `unix/`: the scripts on the PC.
 
-## State (0.12.8, 2026-11-08)
+## State (0.12.9, 2026-11-08)
 
 Done: steps 1-5, 7 (tools the agent builds), 7b (several conversations), 7c (each conversation isolated, bring-in, agent-resolved conflicts), a model on the PC's graphics card (`local-model`, llama.cpp, not Ollama: the user doesn't want Ollama's subscription side). Step 6 (Codex on a ChatGPT plan) is parked: no plan to test with.
 

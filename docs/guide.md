@@ -11,7 +11,6 @@ UVMC runs as a real Ubuntu 24.04 VM through [Multipass](https://canonical.com/mu
 | Install | double-click `windows\install.cmd` | `unix/install.sh` |
 | **Open the control panel** (asks which folders to share first) | `UVMC Panel` shortcut, or `windows\panel.cmd` | `unix/panel.sh` |
 | Choose shared folders again | hold Shift on the shortcut, or `windows\panel.cmd --folders` | `unix/panel.sh --folders` |
-| Supervisor in the terminal | `windows\supervisor.cmd` | `unix/supervisor.sh` |
 | Plain shell in the VM | `windows\shell.cmd` | `unix/shell.sh` |
 | Sign in with your Claude plan (for the "my plan" models; easier: panel › Settings) | `windows\sign-in-claude.cmd` | `unix/sign-in-claude.sh` |
 | Let Claude Code / Claude Desktop on your PC use UVMC (see below) | `windows\connect-claude-apps.cmd` | `unix/connect-claude-apps.sh` |
@@ -81,7 +80,7 @@ The supervisor isn't tied to Claude. The loop talks to a **provider interface**,
 Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`.
 
 - Add keys in the panel: **Settings › API keys** (the profile's `key` name, e.g. `deepseek`). Keys stay in the VM where the agent can't read them. (The `set-key` scripts were removed in 0.12.6: piping a key into `multipass exec` hangs with Multipass 1.16 on Windows; the installer no longer asks for one either.)
-- Pick the model per conversation in the panel's header, even mid-conversation. The supervisor runs `uvmc --model deepseek` in the terminal.
+- Pick the model per conversation in the panel's header, even mid-conversation; from a terminal, `uvmc ask --model deepseek "..."`.
 - Tools, rules, walls, logs and the panel are the same whatever the model. How well a model uses the tools varies a lot, so try a new one on small tasks first.
 
 ### A model on your PC
@@ -252,7 +251,7 @@ The apps then get five tools: `run_task` (waits up to a few minutes for the resu
 | [supervisor/tests/](../supervisor/tests/) | Offline tests with a fake Claude |
 
 - In the VM it runs as the `uvmc` systemd service (`uvmc serve`), with the panel on port 8080.
-- The terminal version still works for quick tests: `supervisor.cmd` gives a `task>` prompt with y/N approvals; `supervisor "do X"` runs one task and exits; `--no-ask` refuses everything that would need approval.
+- From a terminal or a script, use `uvmc ask "..."` on your PC ([Using UVMC from a terminal or scripts](#using-uvmc-from-a-terminal-or-scripts)): it talks to this service, so its tasks show up in the panel too. (The old `supervisor` scripts, which started a second supervisor inside the VM, were removed in 0.12.9.)
 - Every conversation is logged as JSON Lines in `/var/log/uvmc/runs/` inside the VM. `stop`, `reset` and `uninstall` first copy them to the repo's `logs/runs` folder, so history survives a reset.
 - After editing anything in `supervisor/`, run `update` to push it into the VM. A factory reset returns to the version installed at setup, so run `update` after a reset too.
 
@@ -273,7 +272,7 @@ Run the tests on any machine with Python 3.11+ and the packages in `requirements
 ## Inside the VM
 
 - The agent works as user `agent` in `/home/agent/work`.
-- `uvmc` starts the supervisor (as `ubuntu`; it refuses to run as `agent`).
+- `uvmc serve` is the supervisor; the `uvmc` systemd service runs it (as `ubuntu`; it refuses to run as `agent`). Plain `uvmc` is an old terminal mode that starts a second supervisor next to the service; nothing uses it, so use the panel or `uvmc ask` on your PC instead.
 - `uvmc-agent shell` opens a shell as the agent (what `shell` on your PC does).
 - `uvmc-setkey [name]` replaces a stored API key (reads it from stdin; run with sudo).
 - `uvmc-install-claude` installs or updates Claude Code (run with sudo; `update-claude` on your PC does it).
