@@ -34,6 +34,9 @@ function Find-Multipass {
 
 # Multipass straight from its GitHub release, checked against the hash winget lists for it.
 # (Update the version and hash together, from winget-pkgs: manifests/c/Canonical/Multipass.)
+# Pinned to the version UVMC is tested with; winget uses it too. 1.17.0 (2026-10-19) is out and
+# the upgrade is planned (docs/design.md, Planned work, "Multipass 1.17"): check for a newer
+# release before each piece of work, and move this pin up once it's tested.
 $MultipassVersion = '1.16.4'
 $MultipassSha256  = 'B0C417FB8254FA61E4AA63895F59354BB3717C58100816651A9300DD98124AEA'
 function Install-MultipassDirect {
@@ -137,8 +140,9 @@ try {
             $mp = Find-Multipass
         }
         # 2) winget, given at most 5 minutes (it can hang when GitHub's downloads misbehave).
+        #    The same version as the direct download, so every PC gets the one UVMC is tested with.
         if (-not $mp -and (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            $w = Start-Process winget.exe -ArgumentList 'install -e --id Canonical.Multipass --silent --accept-package-agreements --accept-source-agreements' -NoNewWindow -PassThru
+            $w = Start-Process winget.exe -ArgumentList "install -e --id Canonical.Multipass --version $MultipassVersion --silent --accept-package-agreements --accept-source-agreements" -NoNewWindow -PassThru
             if (-not $w.WaitForExit(300000)) {
                 Write-Host 'winget is taking too long; stopping it.'
                 Stop-Process -Id $w.Id -Force -ErrorAction SilentlyContinue

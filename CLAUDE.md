@@ -4,6 +4,7 @@ UVMC: an Ubuntu VM (Multipass) where an AI agent works only through our supervis
 
 ## Working here
 
+- Before building on a library or tool (Multipass, llama.cpp, Python packages), check its latest release and bring it up to date first, or say why not.
 - Test each step before going on, and explain what you're about to do before building something big. Ask when a request is unclear instead of guessing.
 - Try things with test data (`make-testdata` makes `testdata/`), never with the user's real projects.
 - The user handles git. Commits use the address 147395095+strat0sf3r@users.noreply.github.com, never a personal email.
@@ -34,6 +35,6 @@ Done: steps 1-5, 7 (tools the agent builds), 7b (several conversations), 7c (eac
 
 Not yet confirmed on the VM: the proposal card and transcripts (0.12.2-0.12.3), the handed-file fix and folded UVMC tasks (0.12.4), the model on the PC end to end and `httpx` now in requirements.txt (0.12.5; anthropic 2.x stopped bringing it, which broke every OpenAI-compatible model). `unix/local-model.sh` is untested (no Mac or Linux PC here). 0.12.6: piped input into `multipass exec` hangs with Multipass 1.16 on Windows, so `set-key` was removed (keys go in the panel), the installers no longer ask for a key, and `local-model` sends its key as a file.
 
-Next: step 8, a proper installer (`UVMC-Setup.exe` with Inno Setup, Multipass bundled). Needs the user's decision on code signing first.
+Next: step 7e, Multipass 1.17 (UVMC is pinned to 1.16.4; the upgrade and what to test are in design.md), then 7f, Ubuntu 26.04 in the VM. Then step 8, a proper installer (`UVMC-Setup.exe` with Inno Setup, Multipass bundled). Needs the user's decision on code signing first.
 
 Later, when asked: agents talking to each other through the supervisor; tools reaching email protocols (IMAP/SMTP); approved tools offered to the models and the PC's Claude apps; "propose again with another model" on a resolution.
