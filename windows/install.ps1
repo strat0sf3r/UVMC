@@ -6,6 +6,7 @@ $Name     = 'uvmc'
 $Repo     = Split-Path -Parent $PSScriptRoot
 $StateDir = Join-Path $env:ProgramData 'UVMC'
 $TaskName = 'UVMC install (continue after restart)'
+. (Join-Path $PSScriptRoot 'timeouts.ps1')
 
 function Step($text) { Write-Host ''; Write-Host "==> $text" -ForegroundColor Cyan }
 function Fail($text) {
@@ -254,8 +255,10 @@ try {
     if (-not (Test-Path $DoneFile)) {
         Step 'Finishing setup inside the machine'
         & $mp exec $Name -- sudo cloud-init status --wait | Out-Null
-        & $mp exec $Name -- sudo test -d /home/agent/work
-        if ($LASTEXITCODE -ne 0) {
+        & $mp exec $Name -- timeout -k 5 30 sudo test -d /home/agent/work
+        $code = $LASTEXITCODE
+        if (Confirm-VmTimeout 'install' 'sudo test -d /home/agent/work' 30 $code) { Fail 'The machine did not answer. Run install.cmd again to continue.' }
+        if ($code -ne 0) {
             Fail "Setup inside the machine did not finish (the agent's work folder is missing). Details: multipass exec $Name -- sudo cat /var/log/cloud-init-output.log"
         }
 
@@ -290,8 +293,10 @@ try {
             $on = $false
             for ($i = 0; $i -lt 30 -and -not $on; $i++) {
                 $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-                $r = & $mp exec $Name -- sudo uvmc-pc-apps on 2>$null
+                $r = & $mp exec $Name -- timeout -k 5 30 sudo uvmc-pc-apps on 2>$null
+                $code = $LASTEXITCODE
                 $ErrorActionPreference = $old
+                $null = Confirm-VmTimeout 'install' 'sudo uvmc-pc-apps on' 30 $code   # tried again below
                 if ("$r".Trim() -eq '200') { $on = $true } else { Start-Sleep -Seconds 2 }
             }
             if ($on) { Write-Host 'Switched on in UVMC.' -ForegroundColor Green }

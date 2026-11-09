@@ -18,6 +18,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+. (Join-Path $PSScriptRoot 'timeouts.ps1')
 $Name = 'uvmc'
 $Port = 8080
 
@@ -41,9 +42,16 @@ function Connect {
     if (-not $mp) { Fail 'Multipass is not installed. Run install.cmd first.' }
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & $mp start $Name *> $null
-    $ip = ((& $mp exec $Name -- hostname -I 2>$null | Out-String).Trim() -split '\s+')[0]
-    $token = (& $mp exec $Name -- sudo cat /etc/uvmc/panel_token 2>$null | Out-String).Trim()
     $ErrorActionPreference = $old
+    # Quick lookups with a time limit on both sides (see timeouts.ps1): one that never answers
+    # would leave the Claude apps waiting forever, and a Multipass client spinning a CPU core.
+    $who = if ($script:InRelay) { 'uvmc mcp (relay)' } else { "uvmc $Command" }
+    $r = Invoke-VmQuick $mp $Name 20 @('hostname', '-I') $who
+    if ($r.TimedOut) { Fail $r.Message }
+    $ip = ("$($r.Out)".Trim() -split '\s+')[0]
+    $r = Invoke-VmQuick $mp $Name 20 @('sudo', 'cat', '/etc/uvmc/panel_token') $who
+    if ($r.TimedOut) { Fail $r.Message }
+    $token = "$($r.Out)".Trim()
     if (-not $ip -or -not $token) { Fail 'Could not reach the UVMC machine. Is it installed and running?' }
     return @{ Base = "http://${ip}:$Port"; Token = $token }
 }

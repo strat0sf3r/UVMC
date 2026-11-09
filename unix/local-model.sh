@@ -18,6 +18,7 @@ set -euo pipefail
 PORT=8091
 VM=uvmc
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/timeouts.sh"
 STATE="$HOME/.config/uvmc/local-model.env"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -70,8 +71,10 @@ if_address() {
 find_vm_interface() {
   command -v multipass >/dev/null || return 1
   multipass start "$VM" >/dev/null 2>&1 || return 1
-  local gw
-  gw="$(multipass exec "$VM" -- ip -4 route show default 2>/dev/null | awk '/via/{print $3; exit}')"
+  local gw out code=0
+  out="$(multipass exec "$VM" -- timeout -k 5 20 ip -4 route show default 2>/dev/null)" || code=$?
+  check_timeout local-model "ip -4 route show default" 20 "$code" && return 1
+  gw="$(printf '%s\n' "$out" | awk '/via/{print $3; exit}')"
   [ -n "$gw" ] || return 1
   if [ "$OS" = Darwin ]; then
     for i in $(ifconfig -l); do [ "$(if_address "$i")" = "$gw" ] && { echo "$i"; return 0; }; done
@@ -231,12 +234,13 @@ no_autostart() {
 # (Multipass 1.16), so the key goes over as a file, into the ubuntu user's home (the agent users
 # can't read it), and is deleted right after.
 send_key() {
-  local name tmp ok=1
+  local name tmp ok=1 code=0
   name="uvmc-key-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
   tmp="$(mktemp)"; printf '%s\n' "$1" > "$tmp"
-  if multipass transfer "$tmp" "$VM:/home/ubuntu/$name" >/dev/null 2>&1 &&
-     multipass exec "$VM" -- sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=\$?; rm -f /home/ubuntu/$name; exit \$s" >/dev/null 2>&1
-  then ok=0; fi
+  if multipass transfer "$tmp" "$VM:/home/ubuntu/$name" >/dev/null 2>&1; then
+    multipass exec "$VM" -- timeout -k 5 20 sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=\$?; rm -f /home/ubuntu/$name; exit \$s" >/dev/null 2>&1 || code=$?
+    if ! check_timeout local-model "uvmc-setkey local" 20 "$code" && [ "$code" = 0 ]; then ok=0; fi
+  fi
   rm -f "$tmp"
   return $ok
 }

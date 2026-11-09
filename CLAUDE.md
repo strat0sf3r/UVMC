@@ -4,11 +4,13 @@ UVMC: an Ubuntu VM (Multipass) where an AI agent works only through our supervis
 
 ## Working here
 
+- **No access outside this project folder (`D:\code\UVMC`) and the folders the user has allowed, unless the user approves it first.** This means reading as well as changing: other files and folders on the PC, app settings, the registry, event logs, services, other processes. It applies to every session and every agent or subagent. Say exactly what you want to look at or do and why, then wait for a clear yes; a yes covers only that one access. Never change anything on the user's system unless they ask for that specific change, and describing a problem is not asking. The `uvmc` VM counts as part of the project.
 - Before building on a library or tool (Multipass, llama.cpp, Python packages), check its latest release and bring it up to date first, or say why not.
 - Test each step before going on, and explain what you're about to do before building something big. Ask when a request is unclear instead of guessing.
 - Try things with test data (`make-testdata` makes `testdata/`), never with the user's real projects.
 - The user handles git. Commits use the address 147395095+strat0sf3r@users.noreply.github.com, never a personal email.
 - After changing `supervisor/`, the user runs `windows\update.cmd` to push it into the VM. Bump `supervisor/uvmc/__init__.py` so the panel shows which version is running.
+- Running commands in the VM from here: with Multipass 1.16 on Windows, `multipass exec` keeps one CPU core at 100% the whole time it runs unless its input is a real console window, and Claude Code's shells never give it one. If anything in the VM keeps the command's output open (a `&` job, a server, a test that leaves a process behind), the exec never returns. On 2026-11-09, clients left this way had used hours of CPU. So keep every exec short. Start anything long (the test suite, a preview server) fully detached, then read its log with short execs: `multipass exec uvmc -- bash -c "cd /tmp/x && setsid nohup CMD > run.log 2>&1 < /dev/null &"`. Never end a command with a bare `&` job that still writes to the exec's output. If the PC gets slow, look for leftover `multipass.exe` processes (not `multipassd`) and stop them.
 
 ## Tests
 
@@ -27,7 +29,7 @@ To look at the panel without a VM, run it the way the tests do: a `Controller` w
 - `supervisor/uvmc/workcopies.py`: each conversation's copy, the three-way bring-in, resolutions waiting for review, files handed to another conversation.
 - `supervisor/setup.sh`: everything installed inside the VM (users, firewall, slices, services). `update` runs it again.
 - `extension/`: the Claude Desktop extension; rebuild `uvmc.mcpb` with `npx @anthropic-ai/mcpb pack` after changing it.
-- `windows/`, `unix/`: the scripts on the PC.
+- `windows/`, `unix/`: the scripts on the PC. A quick command a script sends to the VM gets `timeout` inside it and is checked with `windows/timeouts.ps1` / `unix/timeouts.sh`, which log timeouts on the PC (guide: "Time limits on the PC's commands to the VM"). Hidden runs (the relay, the extension) also get a limit on the PC (`Invoke-VmQuick`).
 
 ## State (0.14.0, 2026-11-09)
 

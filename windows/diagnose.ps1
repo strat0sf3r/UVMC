@@ -1,5 +1,6 @@
 # diagnose: collects what is needed to find out why the plan sign-in or the Claude apps
-# connection doesn't work, into diagnose.txt in the UVMC folder. Read-only: it changes nothing.
+# connection doesn't work, into diagnose.txt in the UVMC folder. Read-only: it changes nothing
+# (except a line in the timeout log if the machine doesn't answer a command in time).
 # Tokens are masked: the file shows no secret.
 $ErrorActionPreference = 'Continue'
 $Repo = Split-Path -Parent $PSScriptRoot
@@ -15,21 +16,38 @@ function Run($title, [scriptblock]$block) {
 
 $mp = (Get-Command multipass.exe -ErrorAction SilentlyContinue).Source
 if (-not $mp) { $mp = Join-Path $env:ProgramFiles 'Multipass\bin\multipass.exe' }
+. (Join-Path $PSScriptRoot 'timeouts.ps1')
+# Notes a command the machine didn't answer in time (in the report and in the timeout log).
+function TimedOutNote([string]$what, [int]$limit) {
+    if (Test-VmTimedOut $LASTEXITCODE) {
+        Write-TimeoutLog 'diagnose' $what "stopped in the VM after $limit s"
+        "(the machine did not answer within $limit s; stopped)"
+    }
+}
+# Runs a command in the machine, stopped after 60 s if it doesn't answer.
+function InVmCmd {
+    & $mp exec uvmc -- timeout -k 5 60 @args
+    TimedOutNote ($args -join ' ') 60
+}
 # Runs a bash script in the machine. Passed as base64: PowerShell 5 mangles quotes in native arguments.
 function InVm($script) {
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($script -replace "`r", '')))
     # The script runs from a file with no input, so nothing in it can wait for input; 60 s at most.
-    & $mp exec uvmc -- bash -c "echo $b64 | base64 -d > /tmp/uvmc-diagnose.sh && timeout 60 bash /tmp/uvmc-diagnose.sh < /dev/null"
+    & $mp exec uvmc -- timeout -k 5 70 bash -c "echo $b64 | base64 -d > /tmp/uvmc-diagnose.sh && timeout 60 bash /tmp/uvmc-diagnose.sh < /dev/null"
+    TimedOutNote 'a diagnose script' 60
 }
 Add "UVMC diagnose, $(Get-Date -Format s)"
 
 Run 'machine' { & $mp list }
-Run 'supervisor version and status' { & $mp exec uvmc -- bash -c 'cat /opt/uvmc/uvmc/__init__.py | grep version; systemctl is-active uvmc; /usr/local/bin/claude --version; ls -la /usr/local/bin/claude' }
-Run 'stored keys (names only)' { & $mp exec uvmc -- sudo ls -la /etc/uvmc/keys }
+Run 'supervisor version and status' { InVmCmd bash -c 'cat /opt/uvmc/uvmc/__init__.py | grep version; systemctl is-active uvmc; /usr/local/bin/claude --version; ls -la /usr/local/bin/claude' }
+Run 'stored keys (names only)' { InVmCmd sudo ls -la /etc/uvmc/keys }
 Run 'can the supervisor reach Claude' { InVm 'for u in https://platform.claude.com https://claude.ai https://api.anthropic.com; do printf "%s -> " $u; curl -s -o /dev/null -m 15 -w "%{http_code}\n" $u || echo failed; done' }
 Run 'panel settings for the Claude apps' { InVm 'curl -s -H "Authorization: Bearer $(sudo cat /etc/uvmc/panel_token)" http://127.0.0.1:8080/api/settings/mcp; echo' }
-Run 'supervisor log (last lines)' { & $mp exec uvmc -- sudo journalctl -u uvmc -n 300 --no-pager | Where-Object { $_ -notmatch 'pam_unix|uvmc-agent.slice|checkpoints|COMMAND=/usr/bin/cat|COMMAND=/usr/bin/stat|uvmc-shares-sync' } | ForEach-Object { if ($_.Length -gt 600) { $_.Substring(0, 600) } else { $_ } } }
-Run 'the last plan sign-in' { & $mp exec uvmc -- sudo ls -la /var/lib/uvmc/signin; & $mp exec uvmc -- sudo cat /var/lib/uvmc/signin/last.txt }
+Run 'supervisor log (last lines)' { InVmCmd sudo journalctl -u uvmc -n 300 --no-pager | Where-Object { $_ -notmatch 'pam_unix|uvmc-agent.slice|checkpoints|COMMAND=/usr/bin/cat|COMMAND=/usr/bin/stat|uvmc-shares-sync' } | ForEach-Object { if ($_.Length -gt 600) { $_.Substring(0, 600) } else { $_ } } }
+Run 'the last plan sign-in' { InVmCmd sudo ls -la /var/lib/uvmc/signin; InVmCmd sudo cat /var/lib/uvmc/signin/last.txt }
+Section 'commands the machine did not answer in time (last 20)'
+if (Test-Path $script:TimeoutLog) { Get-Content $script:TimeoutLog -Tail 20 -Encoding UTF8 | ForEach-Object { Add $_ } }
+else { Add 'none recorded' }
 
 # --- the PC side of the Claude apps ---
 Run 'Claude Code on this PC' {

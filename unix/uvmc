@@ -21,26 +21,68 @@ import urllib.request
 
 NAME, PORT = "uvmc", 8080
 HERE = os.path.dirname(os.path.abspath(__file__))
+TIMEOUT_LOG = os.path.expanduser("~/.config/uvmc/timeouts.log")
+
+
+class Failed(SystemExit):
+    """Exits like sys.exit, and keeps the message for the relay's error reply."""
+    def __init__(self, text, code):
+        super().__init__(code)
+        self.text = text
 
 
 def fail(text, code=2):
     print(f"uvmc: {text}", file=sys.stderr)
-    sys.exit(code)
+    raise Failed(text, code)
 
 
-def connect():
+def log_timeout(who, what, how):
+    """One line per command the machine didn't answer in time; the newest 500 are kept."""
+    try:
+        os.makedirs(os.path.dirname(TIMEOUT_LOG), exist_ok=True)
+        lines = []
+        if os.path.exists(TIMEOUT_LOG):
+            with open(TIMEOUT_LOG, encoding="utf-8") as f:
+                lines = f.read().splitlines()[-499:]
+        lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {who}  {what}  {how}")
+        with open(TIMEOUT_LOG, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def connect(who="uvmc"):
     # UVMC_URL and UVMC_TOKEN skip the lookup (e.g. from another machine, or in scripts).
     if os.environ.get("UVMC_URL") and os.environ.get("UVMC_TOKEN"):
         return os.environ["UVMC_URL"].rstrip("/"), os.environ["UVMC_TOKEN"]
 
-    def mp(*args):
+    def mp(*args, timeout=120):
         try:
-            return subprocess.run(["multipass", *args], capture_output=True, text=True, timeout=120)
+            return subprocess.run(["multipass", *args], capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
             fail("Multipass is not installed. Run unix/install.sh first.")
+        except subprocess.TimeoutExpired:
+            fail(f"Multipass did not answer within {timeout} seconds (multipass {args[0]}); it was stopped.")
+
+    def quick(*cmd, limit=20):
+        # A quick lookup with a limit on both sides: "timeout" in the machine, and the client
+        # stopped here 10 s later. One that never answered would leave the Claude apps waiting.
+        what = " ".join(cmd)
+        try:
+            r = subprocess.run(["multipass", "exec", NAME, "--", "timeout", "-k", "5", str(limit), *cmd],
+                               capture_output=True, text=True, timeout=limit + 10)
+        except FileNotFoundError:
+            fail("Multipass is not installed. Run unix/install.sh first.")
+        except subprocess.TimeoutExpired:
+            log_timeout(who, what, f"no answer from Multipass, client stopped after {limit + 10} s")
+            fail(f"Multipass did not answer within {limit + 10} seconds ({what}); it was stopped.")
+        if r.returncode in (124, 137):
+            log_timeout(who, what, f"stopped in the VM after {limit} s")
+            fail(f"The UVMC machine did not answer within {limit} seconds ({what}); the command was stopped.")
+        return r
     mp("start", NAME)
-    ip = (mp("exec", NAME, "--", "hostname", "-I").stdout.split() or [""])[0]
-    token = mp("exec", NAME, "--", "sudo", "cat", "/etc/uvmc/panel_token").stdout.strip()
+    ip = (quick("hostname", "-I").stdout.split() or [""])[0]
+    token = quick("sudo", "cat", "/etc/uvmc/panel_token").stdout.strip()
     if not ip or not token:
         fail("Could not reach the UVMC machine. Is it installed and running?")
     return f"http://{ip}:{PORT}", token
@@ -172,7 +214,7 @@ def mcp_relay():
         for attempt in (1, 2):   # the machine's address can change: look it up again once
             try:
                 if conn is None:
-                    conn = connect()
+                    conn = connect("uvmc mcp (relay)")
                 base, token = conn
                 req = urllib.request.Request(base + "/mcp", data=line.encode(), method="POST", headers={
                     "Authorization": f"Bearer {token}", "Content-Type": "application/json",
@@ -188,7 +230,7 @@ def mcp_relay():
                 conn = None
                 if attempt == 2 and mid is not None:
                     reply = json.dumps({"jsonrpc": "2.0", "id": mid, "error": {
-                        "code": -32002, "message": f"Could not reach the UVMC machine: {e}"}})
+                        "code": -32002, "message": f"Could not reach the UVMC machine: {getattr(e, 'text', e)}"}})
         if reply:
             sys.stdout.write(reply.replace("\n", " ") + "\n")
             sys.stdout.flush()

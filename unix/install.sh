@@ -2,6 +2,7 @@
 # UVMC installer for macOS and Linux. Safe to run again: finished steps are skipped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+. unix/timeouts.sh
 
 NAME=uvmc
 STATE="$HOME/.uvmc"
@@ -60,7 +61,10 @@ fi
 if [ ! -f "$DONE" ]; then
   step "Finishing setup inside the machine"
   multipass exec "$NAME" -- sudo cloud-init status --wait >/dev/null || true
-  multipass exec "$NAME" -- sudo test -d /home/agent/work \
+  code=0; multipass exec "$NAME" -- timeout -k 5 30 sudo test -d /home/agent/work || code=$?
+  check_timeout install "sudo test -d /home/agent/work" 30 "$code" \
+    && fail "The machine did not answer. Run unix/install.sh again to continue."
+  [ "$code" = 0 ] \
     || fail "Setup inside the machine did not finish (the agent's work folder is missing). Details: multipass exec $NAME -- sudo cat /var/log/cloud-init-output.log"
 
   step "Installing the supervisor"
@@ -89,7 +93,8 @@ if [ ! -f "$HOME/.uvmc/asked-claude-apps" ]; then
     unix/connect-claude-apps.sh --yes
     on=0
     for _ in $(seq 30); do
-      code="$(multipass exec "$NAME" -- sudo uvmc-pc-apps on 2>/dev/null)"
+      rc=0; code="$(multipass exec "$NAME" -- timeout -k 5 30 sudo uvmc-pc-apps on 2>/dev/null)" || rc=$?
+      check_timeout install "sudo uvmc-pc-apps on" 30 "$rc" || true   # tried again below
       [ "$code" = 200 ] && { on=1; break; }
       sleep 2
     done

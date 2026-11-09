@@ -27,6 +27,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'timeouts.ps1')
 $Port = 8091
 $VmName = 'uvmc'
 $RuleName = 'UVMC local model'
@@ -70,8 +71,10 @@ function Find-VmNetwork {
     if (-not $mp) { return $null }
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & $mp start $VmName *> $null
-    $route = (& $mp exec $VmName -- ip -4 route show default 2>$null | Out-String)
+    $route = (& $mp exec $VmName -- timeout -k 5 20 ip -4 route show default 2>$null | Out-String)
+    $code = $LASTEXITCODE
     $ErrorActionPreference = $old
+    if (Confirm-VmTimeout 'local-model' 'ip -4 route show default' 20 $code) { return $null }
     if ($route -notmatch 'via (\d+\.\d+\.\d+\.\d+)') { return $null }
     $gw = $Matches[1]
     $nic = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $gw -ErrorAction SilentlyContinue
@@ -245,8 +248,10 @@ function Send-Key($mp, $value) {
     try {
         & $mp transfer $name "${VmName}:/home/ubuntu/$name" *> $null
         if ($LASTEXITCODE -ne 0) { return $false }
-        & $mp exec $VmName -- sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=`$?; rm -f /home/ubuntu/$name; exit `$s" *> $null
-        return ($LASTEXITCODE -eq 0)
+        & $mp exec $VmName -- timeout -k 5 20 sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=`$?; rm -f /home/ubuntu/$name; exit `$s" *> $null
+        $code = $LASTEXITCODE
+        if (Confirm-VmTimeout 'local-model' 'uvmc-setkey local' 20 $code) { return $false }
+        return ($code -eq 0)
     } finally {
         Pop-Location
         Remove-Item $tmp -ErrorAction SilentlyContinue

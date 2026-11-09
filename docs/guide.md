@@ -231,6 +231,27 @@ Claude Code and Claude Desktop on your PC can hand tasks to the agent in the VM,
 
 The apps then get five tools: `run_task` (waits up to a few minutes for the result), `task_status`, `stop_task`, `list_files` and `read_file` in the work folder. Behind them the apps start `uvmc mcp`, a small relay that finds the machine through Multipass each time, so nothing goes stale when its address changes. Tasks from your apps run with the same rules and walls and show in the panel; anything needing approval waits for you there, and the apps can't approve anything. `run_task` starts a new conversation by default, in its own tab ("from a Claude app"), so it can work while you use the panel; its result names the conversation, which `task_status`, `stop_task` and a follow-up `run_task` can take.
 
+### Time limits on the PC's commands to the VM
+
+**What this fixes:** with Multipass 1.16 on Windows, a `multipass exec` keeps one CPU core at 100% for as long as it runs whenever its input isn't a console window, as with the Claude apps' relay and the extension, which run hidden. Also, an exec ends only when everything it started in the VM has let go of its output. So a command that never answered left a `multipass.exe` on the PC spinning a core until someone ended it in Task Manager (found 2026-11-09: clients that had used hours of CPU), and left the Claude app waiting forever for an answer.
+
+**What happens now:** the quick commands the scripts send get `timeout` inside the VM, which stops the command and everything it started, so the exec ends. Then the script says so, in its window or as the error the Claude app gets:
+
+| Where | Command | Limit |
+|---|---|---|
+| relay (`uvmc mcp`, `uvmc`), extension | address and token lookup | 20 s in the VM; the client is stopped on the PC after 30 s if Multipass itself doesn't answer |
+| panel | address and token | 20 s |
+| local-model | the VM's route, storing the key | 20 s |
+| install | checking setup finished, switching on the Claude apps | 30 s |
+| diagnose | each command | 60 s |
+| save-logs | packing the run logs | 300 s |
+
+A lookup normally takes about a second, so a limit only fires when the machine or Multipass is stuck, and then it would never have answered. The relay tries a second time before giving up, so a Claude app waits about 40 s at most and then gets a message such as "Could not reach the UVMC machine: The UVMC machine did not answer within 20 seconds (hostname -I); the command was stopped." Nothing is left running on the PC or in the VM.
+
+Left without a limit on purpose: `shell` and `sign-in-claude` (interactive), `update` (`setup.sh`), `update-claude`, install's wait for setup to finish, and `share` (copying a big shared folder can take long). These are long by nature, always run in a window, and stopping one halfway would do more harm than waiting. Uninstall's saving of the work folder is never cut short either.
+
+**The log:** each timeout adds a line to `%LOCALAPPDATA%\UVMC\timeouts.log` (Windows) or `~/.config/uvmc/timeouts.log` (Mac/Linux): when, what ran it, the command, and which limit fired. "stopped in the VM" means the VM was too slow; "no answer from Multipass" means the client didn't return at all. The newest 500 lines are kept, and `diagnose` includes the last 20. The helpers are [windows/timeouts.ps1](../windows/timeouts.ps1) and [unix/timeouts.sh](../unix/timeouts.sh).
+
 ## The supervisor
 
 | File | What it is |

@@ -6,6 +6,7 @@ param([switch]$ChooseFolders)
 
 $Name = 'uvmc'
 $Port = 8080
+. (Join-Path $PSScriptRoot 'timeouts.ps1')
 
 function Find-Multipass {
     $c = Get-Command multipass.exe -ErrorAction SilentlyContinue
@@ -35,8 +36,11 @@ Write-Host 'Sharing the chosen folders...'
 try { & (Join-Path $PSScriptRoot 'share.ps1') -Quiet }
 catch { Write-Host "Sharing folders failed: $($_.Exception.Message). The panel opens anyway." -ForegroundColor Yellow }
 
-$ip = ((& $mp exec $Name -- hostname -I | Out-String).Trim() -split '\s+')[0]
-$token = (& $mp exec $Name -- sudo cat /etc/uvmc/panel_token | Out-String).Trim()
+# Quick lookups, stopped after 20 s if the machine doesn't answer (see timeouts.ps1).
+$ip = ((& $mp exec $Name -- timeout -k 5 20 hostname -I | Out-String).Trim() -split '\s+')[0]
+if (Confirm-VmTimeout 'panel' 'hostname -I' 20 $LASTEXITCODE) { Fail 'Try again in a moment.' }
+$token = (& $mp exec $Name -- timeout -k 5 20 sudo cat /etc/uvmc/panel_token | Out-String).Trim()
+if (Confirm-VmTimeout 'panel' 'sudo cat /etc/uvmc/panel_token' 20 $LASTEXITCODE) { Fail 'Try again in a moment.' }
 if (-not $ip) { Fail 'Could not find the machine''s address.' }
 if (-not $token) { Fail 'The panel is not set up in the machine yet. Run update.cmd, then try again.' }
 
