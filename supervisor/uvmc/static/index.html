@@ -27,6 +27,8 @@
   --focus: #24506b;
   --sans: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* Chart series, in this order (checked for colour blindness against --surface) */
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c6: #008300;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -47,6 +49,7 @@
     --bad-bg: #341b19;
     --code-bg: #121a1f;
     --focus: #8cc3e3;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #008300;
     color-scheme: dark;
   }
 }
@@ -461,6 +464,95 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .form-msg.bad, .bad { color: var(--bad); }
 details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-size: 15px; }
 
+/* The Reports view (in place of the conversation), and the report blocks it shows */
+.left.reports-on .folderbar, .left.reports-on #feed, .left.reports-on .composer,
+.left.reports-on #keyBanner, .left.reports-on #pastBanner { display: none; }
+.left.reports-on { grid-template-rows: auto auto 1fr; }
+.reports { display: grid; grid-template-rows: 1fr; min-height: 0; }
+.reports[hidden] { display: none; }
+.repgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; }
+.repcard { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px 14px; display: grid; gap: 8px; align-content: start; }
+.repcard.bad { border-color: var(--bad); }
+.repcard .top { display: flex; gap: 8px; align-items: baseline; }
+.repcard .top strong { font-size: 16px; }
+.repcard .top .badge { margin-left: auto; }
+.repcard .rstatus { font-size: 13px; padding: 4px 8px; }
+.repcard .rstats { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 6px; }
+.repcard .rstats .v { font-size: 18px; }
+.repcard .when { font-size: 13px; color: var(--muted); }
+.repcard .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.repcard .row .btn { padding: 3px 12px; font-size: 14px; }
+.repback { margin-bottom: 10px; font-size: 14px; }
+.reppage { overflow-y: auto; padding: 18px 24px 40px; }
+.reppage > * { max-width: 980px; }
+.rephead { display: flex; gap: 12px 20px; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; }
+.rephead h2 { margin: 0; font-size: 20px; }
+.rephead .who p { margin: 2px 0 0; }
+.rephead .ctrls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rephead .ctrls .btn { padding: 4px 12px; font-size: 14px; }
+.rephead .nhint { flex: 1 1 100%; margin: 0; color: var(--signal); }
+.reppage label.pick, .repbar label.pick { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+.reppage select { font: inherit; font-size: 14px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; max-width: 100%; }
+.repbar { display: flex; gap: 8px 14px; flex-wrap: wrap; align-items: center; margin: 16px 0 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.repbar .btn { padding: 3px 12px; font-size: 14px; margin-left: auto; }
+.reppage pre.out, .reppage pre.log { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+.reppage .printed { margin-top: 16px; }
+.reppage .printed summary { font-size: 14px; }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--you); color: var(--surface); font-size: 12px; font-weight: 700; line-height: 18px; text-align: center; }
+.badge[hidden] { display: none; }
+.reptab .title { font-weight: 700; }
+@media (max-width: 900px) { .reppage { padding: 14px 16px 30px; } }
+.rep { display: grid; gap: 10px; margin-top: 8px; min-width: 0; }
+.rep h4 { margin: 4px 0 0; font-size: 15px; }
+.rep .rtitle { font-size: 17px; font-weight: 700; margin: 0; }
+.rep p { margin: 0 0 6px; } .rep p:last-child { margin: 0; }
+.rep ul, .rep ol { margin: 0; padding-left: 22px; }
+.rep code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.rep pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 13px; }
+.rstatus { display: flex; gap: 8px; align-items: center; border-radius: 6px; padding: 6px 10px; font-weight: 700; font-size: 14px; background: var(--code-bg); }
+.rstatus .ico { font-size: 15px; }
+.rstatus.ok { color: var(--ok); } .rstatus.bad { color: var(--bad); background: var(--bad-bg); }
+.rstatus.warn { color: var(--signal); background: var(--signal-bg); } .rstatus.info { color: var(--you); background: var(--you-bg); }
+.rstats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.rstats > div { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; min-width: 0; }
+.rstats .l { font-size: 13px; color: var(--muted); }
+.rstats .v { font-size: 22px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.rstats .n { font-size: 13px; color: var(--muted); }
+.rprog .top { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+.rprog .bar { height: 8px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--line); overflow: hidden; margin-top: 3px; }
+.rprog .bar span { display: block; height: 100%; background: var(--c1); border-radius: 4px; }
+.rprog .n { font-size: 13px; color: var(--muted); }
+.rtable { overflow-x: auto; max-height: 420px; border: 1px solid var(--line); border-radius: 6px; }
+.rtable table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.rtable th, .rtable td { text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.rtable th { position: sticky; top: 0; background: var(--surface); font-size: 13px; color: var(--muted); }
+.rtable td.num, .rtable th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.rtable tr:last-child td { border-bottom: 0; }
+.rlink a { color: var(--you); font-weight: 700; }
+.rlink .host { font-size: 13px; color: var(--muted); margin-left: 6px; }
+.rimg img { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--line); display: block; }
+.rimg figcaption { font-size: 13px; color: var(--muted); margin-top: 3px; }
+.rcols { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 12px; }
+.rcols > .rep { margin: 0; align-content: start; }
+@media (max-width: 700px) { .rcols { grid-template-columns: minmax(0, 1fr); } }
+.rsec { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; }
+.rsec > summary { margin: 6px 0; font-size: 14px; }
+.rsec > .rep { margin-bottom: 10px; }
+.rchart { position: relative; }
+.rchart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.rchart .axis { font: 12px var(--sans); fill: var(--muted); }
+.rchart .grid { stroke: var(--line); stroke-width: 1; }
+.rchart .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.rchart .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; margin-top: 4px; }
+.rchart .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--sw); margin-right: 5px; vertical-align: -1px; }
+.rchart .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 13px; box-shadow: 0 2px 8px rgb(0 0 0 / .15); white-space: nowrap; z-index: 2; }
+.rchart .tip b { display: block; }
+.rchart .tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; font-style: normal; }
+.rchart .astable { margin-top: 4px; }
+.rprobs { font-size: 13px; color: var(--muted); }
+.rprobs summary { font-size: 13px; font-weight: 400; margin: 0; }
+.ask .sample { border: 1px dashed var(--line); background: var(--surface); border-radius: 6px; padding: 8px 12px; margin: 6px 0 10px; }
+
 .ask pre.diff { max-height: 320px; }
 .diff .add { color: var(--ok); }
 .diff .del { color: var(--bad); }
@@ -505,6 +597,7 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
   <section class="left" aria-label="Conversation">
     <nav class="convs" aria-label="Conversations">
       <div class="convlist" id="convs" role="tablist" aria-label="Open conversations"></div>
+      <button class="btn newconv" id="reportsBtn" type="button" title="Reports from the tools the agent built">Reports <span class="badge" hidden></span></button>
       <button class="btn newconv" id="newBtn" type="button" title="Opens another conversation next to these; they can work at the same time.">New conversation</button>
     </nav>
     <div class="folderbar" id="folderbar" hidden></div>
@@ -514,6 +607,9 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
       <p class="banner" id="pastBanner" hidden><span id="pastText"></span><button class="btn" id="backLive" type="button">Back to the live conversation</button></p>
     </div>
     <div id="feed" tabindex="-1"><div class="thread" id="thread"></div></div>
+    <section class="reports" id="reports" aria-label="Reports" hidden>
+      <div class="reppage" id="reppage"></div>
+    </section>
     <div class="composer">
       <form id="form">
         <label for="task" class="small" hidden>Task</label>
@@ -553,16 +649,20 @@ const thread = $("thread"), feed = $("feed");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
 
-// Small, safe markdown: code blocks, inline code, bold, bullet lists, paragraphs.
+// Small, safe markdown: code blocks, inline code, bold, bullet lists, ### headings, paragraphs.
+const mdInline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 function md(text) {
   const parts = String(text).split(/```[a-zA-Z0-9_-]*\n?/);
   return parts.map((part, i) => {
     if (i % 2) return `<pre><code>${esc(part.replace(/\n$/, ""))}</code></pre>`;
     return part.trim().split(/\n{2,}/).filter(Boolean).map((block) => {
-      const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-      const lines = block.split("\n");
-      if (lines.every((l) => /^\s*[-*] /.test(l))) return "<ul>" + lines.map((l) => `<li>${inline(l.replace(/^\s*[-*] /, ""))}</li>`).join("") + "</ul>";
-      return `<p>${lines.map(inline).join("<br>")}</p>`;
+      let lines = block.split("\n"), head = "";
+      if (/^#{1,4} /.test(lines[0])) { head = `<h4>${mdInline(lines[0].replace(/^#+ /, ""))}</h4>`; lines = lines.slice(1); }
+      let out = head, run = [], list = null;   // runs of "- " lines become lists, the rest paragraphs
+      const flush = () => { if (run.length) out += list ? `<ul>${run.map((l) => `<li>${mdInline(l.replace(/^\s*[-*] /, ""))}</li>`).join("")}</ul>` : `<p>${run.map(mdInline).join("<br>")}</p>`; run = []; };
+      for (const l of lines) { const item = /^\s*[-*] /.test(l); if (item !== list) { flush(); list = item; } run.push(l); }
+      flush();
+      return out;
     }).join("");
   }).join("");
 }
@@ -767,6 +867,7 @@ function apply(ev) {
         : `<div class="box"><h3>The agent wants to use ${esc(ev.tool)}</h3><pre>${esc(what)}</pre>
            ${ev.tool === "install_system_package" && ev.args?.reason ? `<p class="why">Its reason: ${esc(ev.args.reason)}</p>` : `<p class="why">Your rules ask first: ${esc(ev.reason)}</p>`}
            <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`;
+      if (made && ev.sample) n.querySelector(".sample")?.appendChild(renderReport(ev.sample, ""));
       const buttons = [...n.querySelectorAll(".actions button")];
       for (const b of buttons) b.addEventListener("click", async () => {
         buttons.forEach((x) => x.disabled = true);
@@ -959,9 +1060,487 @@ function madeToolCard(ev) {
     <p class="why">Its reason: ${esc(ev.reason)}</p>
     <p class="why">${ev.update ? "What changes" : "Its files"} (${(ev.files || []).length} file${(ev.files || []).length === 1 ? "" : "s"}; click one to read it):</p>
     ${code || `<p class="why">No changes to the code.</p>`}
+    ${ev.sample ? `<p class="why">What its report looks like (from the agent's test run):</p><div class="sample"></div>` : ""}
     <p class="why">Once approved, it runs as its own user from a copy the agent can't change, and only the sites above. It starts switched off.</p>
     <div class="actions"><button type="button" class="btn allow" data-a="allow">Approve and install</button><button type="button" class="btn" data-a="deny">Decline</button></div></div>`;
 }
+
+// --- Reports from the tools the agent built -------------------------------------------
+// A report is data (see supervisor/uvmc/reports.py); the panel draws it with its own elements.
+// Everything from the tool goes through esc() or textContent; links are http(s) only and
+// images come only from the supervisor (or, on the approval card, as checked data: URLs).
+const STATUS_ICON = { ok: "✓", warn: "!", bad: "✕", info: "i" };
+const TREND = { up: "↑", down: "↓", flat: "→" };
+const fmtNum = (v) => v == null ? "" : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const imgSrcOk = (s) => /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(s || "");
+
+function renderReport(r, base) {
+  const root = el("div", "rep");
+  if (r.title) root.appendChild(el("p", "rtitle", esc(r.title)));
+  if (r.status) {
+    const st = el("div", `rstatus ${esc(r.status.state)}`, `<span class="ico" aria-hidden="true">${STATUS_ICON[r.status.state] || ""}</span><span>${esc(r.status.text || r.status.state)}</span>`);
+    st.setAttribute("role", "status");
+    root.appendChild(st);
+  }
+  renderBlocks(r.blocks || [], root, base);
+  return root;
+}
+function renderBlocks(blocks, into, base) {
+  for (const b of blocks) {
+    try { const n = renderBlock(b, base); if (n) into.appendChild(n); }
+    catch { into.appendChild(el("p", "rprobs", "(a part of this report could not be shown)")); }
+  }
+}
+function renderBlock(b, base) {
+  switch (b.type) {
+    case "heading": return el("h4", "", esc(b.text));
+    case "text": return el("div", "rtext", md(b.md || ""));
+    case "code": { const p = el("pre"); p.textContent = b.text || ""; return p; }
+    case "diff": return el("pre", "diff", diffHtml(b.text || ""));
+    case "stats": {
+      const g = el("div", "rstats");
+      for (const it of b.items || []) {
+        const t = TREND[it.trend] ? ` <span class="n" title="${esc(it.trend)}">${TREND[it.trend]}</span>` : "";
+        g.appendChild(el("div", "", `<div class="l">${esc(it.label)}</div><div class="v">${esc(it.value)}${t}</div>${it.note ? `<div class="n">${esc(it.note)}</div>` : ""}`));
+      }
+      return g;
+    }
+    case "progress": {
+      const pct = Math.max(0, Math.min(100, (Number(b.value) / Number(b.max)) * 100 || 0));
+      return el("div", "rprog", `<div class="top"><span>${esc(b.label)}</span><span>${Math.round(pct)}%</span></div>
+        <div class="bar" role="progressbar" aria-label="${esc(b.label)}" aria-valuemin="0" aria-valuemax="${esc(b.max)}" aria-valuenow="${esc(b.value)}"><span style="width:${pct.toFixed(1)}%"></span></div>
+        ${b.note ? `<div class="n">${esc(b.note)}</div>` : ""}`);
+    }
+    case "table": return tableEl(b.columns || [], b.rows || []);
+    case "list": {
+      const l = el(b.numbered ? "ol" : "ul");
+      for (const i of b.items || []) l.appendChild(el("li", "", mdInline(i)));
+      return l;
+    }
+    case "chart": return chartEl(b);
+    case "image": {
+      const src = b.src ? (imgSrcOk(b.src) ? b.src : "") : b.n ? `${base}/images/${encodeURIComponent(b.n)}` : "";
+      if (!src) return el("p", "rprobs", `(the image ${esc(b.file)} is missing)`);
+      const f = el("figure", "rimg"); f.style.margin = "0";
+      const img = el("img"); img.alt = b.alt || ""; img.loading = "lazy"; img.src = src;
+      f.appendChild(img);
+      if (b.alt) f.appendChild(el("figcaption", "", esc(b.alt)));
+      return f;
+    }
+    case "link": {
+      if (!/^https?:\/\//i.test(b.url || "")) return null;
+      let host = ""; try { host = new URL(b.url).host; } catch { return null; }
+      const p = el("p", "rlink");
+      const a = el("a"); a.href = b.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = b.text || b.url;
+      p.append(a, el("span", "host", esc(host)));
+      return p;
+    }
+    case "columns": {
+      const g = el("div", "rcols"); g.style.setProperty("--n", String((b.columns || []).length || 1));
+      for (const c of b.columns || []) { const col = el("div", "rep"); renderBlocks(c, col, base); g.appendChild(col); }
+      return g;
+    }
+    case "section": {
+      const d = el("details", "rsec"); d.open = !!b.open;
+      d.appendChild(el("summary", "", esc(b.title || "Details")));
+      const inner = el("div", "rep"); renderBlocks(b.blocks || [], inner, base); d.appendChild(inner);
+      return d;
+    }
+  }
+  return null;
+}
+function tableEl(cols, rows) {
+  const isNum = (v) => /^[-+]?[\d\s.,]+%?$/.test(String(v).trim());
+  const width = cols.length || Math.max(0, ...rows.map((r) => r.length));
+  const num = [...Array(width).keys()].map((i) => rows.some((r) => r[i] !== "") && rows.every((r) => r[i] === "" || isNum(r[i])));
+  const w = el("div", "rtable");
+  w.tabIndex = 0;   // it scrolls: reachable with the keyboard
+  w.innerHTML = `<table>${cols.length ? `<thead><tr>${cols.map((c, i) => `<th scope="col" class="${num[i] ? "num" : ""}">${esc(c)}</th>`).join("")}</tr></thead>` : ""}
+    <tbody>${rows.map((r) => `<tr>${r.map((c, i) => `<td class="${num[i] ? "num" : ""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  return w;
+}
+function niceScale(lo, hi) {
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const raw = (hi - lo) / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const a = Math.floor(lo / step) * step, z = Math.ceil(hi / step) * step;
+  const ticks = [];
+  for (let t = a; t <= z + step / 2; t += step) ticks.push(+t.toFixed(10));
+  return { lo: a, hi: z, ticks };
+}
+function chartEl(b) {
+  const series = b.series || [], xs = b.x || [], bar = b.kind === "bar", unit = b.unit ? ` ${b.unit}` : "";
+  const vals = series.flatMap((s) => s.values).filter((v) => v != null);
+  const wrap = el("div", "rchart");
+  if (!vals.length || !xs.length) { wrap.appendChild(el("p", "rprobs", "(no numbers to draw)")); return wrap; }
+  // Drawn at its real width (again when that changes), so its text stays the panel's size.
+  let drawnAt = 0;
+  const draw = (W) => { drawnAt = W; wrap.innerHTML = ""; drawChart(wrap, b, W); };
+  draw(600);
+  if (window.ResizeObserver) new ResizeObserver((es) => {
+    const w = Math.round(es[0].contentRect.width);
+    if (w > 0 && Math.abs(w - drawnAt) > 4) draw(Math.max(240, w));
+  }).observe(wrap);
+  return wrap;
+}
+function drawChart(wrap, b, W) {
+  const series = b.series || [], xs = b.x || [], bar = b.kind === "bar", unit = b.unit ? ` ${b.unit}` : "";
+  const vals = series.flatMap((s) => s.values).filter((v) => v != null);
+  const labelled = !bar && series.length > 1 && series.length <= 4 && W >= 360;   // names at the ends of the lines
+  const H = W < 400 ? 180 : 220, L = 46, R = labelled ? 84 : 12, T = 10, B = 26;
+  const sc = niceScale(Math.min(0, ...vals), Math.max(...vals, bar ? 0 : -Infinity));
+  const pw = W - L - R, ph = H - T - B;
+  const y = (v) => T + ph - ((v - sc.lo) / (sc.hi - sc.lo)) * ph;
+  const band = pw / xs.length;
+  const x = (i) => bar ? L + band * (i + 0.5) : L + (xs.length === 1 ? pw / 2 : (pw * i) / (xs.length - 1));
+  const col = (k) => `var(--c${(k % 6) + 1})`;
+  let svg = "";
+  for (const t of sc.ticks) svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text class="axis" x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${esc(fmtNum(t))}</text>`;
+  const every = Math.max(1, Math.ceil(xs.length / 8));
+  xs.forEach((lab, i) => { if (i % every === 0) svg += `<text class="axis" x="${x(i)}" y="${H - 6}" text-anchor="middle">${esc(String(lab).slice(0, 12))}</text>`; });
+  if (bar) {
+    const gap = 2, group = band * 0.8, bw = Math.max(2, (group - gap * (series.length - 1)) / series.length), z = y(Math.max(0, sc.lo));
+    series.forEach((s, k) => s.values.forEach((v, i) => {
+      if (v == null) return;
+      const x0 = x(i) - group / 2 + k * (bw + gap), end = y(v), r = Math.min(4, bw / 2, Math.abs(z - end));
+      const d = v >= 0   // rounded at the end away from zero, flat on the baseline
+        ? `M${x0},${z}V${end + r}Q${x0},${end} ${x0 + r},${end}H${x0 + bw - r}Q${x0 + bw},${end} ${x0 + bw},${end + r}V${z}Z`
+        : `M${x0},${z}V${end - r}Q${x0},${end} ${x0 + r},${end}H${x0 + bw - r}Q${x0 + bw},${end} ${x0 + bw},${end - r}V${z}Z`;
+      svg += `<path d="${d}" fill="${col(k)}"/>`;
+    }));
+    svg += `<line x1="${L}" x2="${W - R}" y1="${z}" y2="${z}" stroke="var(--muted)" stroke-width="1"/>`;
+  } else {
+    series.forEach((s, k) => {
+      let d = "", pen = false;
+      s.values.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`; pen = true; });
+      svg += `<path d="${d}" fill="none" stroke="${col(k)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      if (xs.length <= 30) s.values.forEach((v, i) => { if (v != null) svg += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${col(k)}" stroke="var(--surface)" stroke-width="2"/>`; });
+      if (labelled) {
+        const last = s.values.map((v, i) => [v, i]).filter(([v]) => v != null).pop();
+        if (last) svg += `<text class="axis" x="${x(last[1]) + 8}" y="${y(last[0]) + 4}" style="fill: var(--ink)">${esc(String(s.name).slice(0, 11))}</text>`;
+      }
+    });
+  }
+  svg += `<line class="cross" x1="0" x2="0" y1="${T}" y2="${T + ph}" visibility="hidden"/><rect x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent"/>`;
+  const names = series.map((s) => s.name).filter(Boolean).join(", ");
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" tabindex="0" aria-label="${bar ? "Bar" : "Line"} chart${names ? ": " + esc(names) : ""}. Use the arrow keys to read the values.">${svg}</svg>`;
+  if (series.length > 1) wrap.appendChild(el("div", "legend", series.map((s, k) => `<span style="--sw: ${col(k)}">${esc(s.name)}</span>`).join("")));
+  const tip = el("div", "tip"); tip.hidden = true; wrap.appendChild(tip);
+  const svgEl = wrap.querySelector("svg"), cross = wrap.querySelector(".cross");
+  let at = -1;
+  const show = (i) => {
+    at = Math.max(0, Math.min(xs.length - 1, i));
+    cross.setAttribute("x1", x(at)); cross.setAttribute("x2", x(at)); cross.setAttribute("visibility", "visible");
+    tip.innerHTML = `<b>${esc(xs[at])}</b>` + series.map((s, k) => `<div><i style="background: ${col(k)}"></i>${s.name ? esc(s.name) + ": " : ""}${s.values[at] == null ? "no value" : esc(fmtNum(s.values[at]) + unit)}</div>`).join("");
+    tip.hidden = false;
+    const box = svgEl.getBoundingClientRect(), px = (x(at) / W) * box.width;
+    tip.style.top = "4px";
+    tip.style.left = `${Math.min(Math.max(0, px + 12), Math.max(0, box.width - tip.offsetWidth))}px`;
+  };
+  const hide = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
+  svgEl.addEventListener("mousemove", (e) => {
+    const box = svgEl.getBoundingClientRect(), px = ((e.clientX - box.left) / box.width) * W;
+    show(bar ? Math.floor((px - L) / band) : Math.round(((px - L) / pw) * (xs.length - 1)));
+  });
+  svgEl.addEventListener("mouseleave", hide);
+  svgEl.addEventListener("blur", hide);
+  svgEl.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); show(at < 0 ? 0 : at + (e.key === "ArrowRight" ? 1 : -1)); }
+    else if (e.key === "Escape") hide();
+  });
+  const t = el("button", "linkish", "Show as a table"); t.type = "button";
+  let table = null;
+  const toggle = () => {
+    if (!table) {
+      table = tableEl(["", ...series.map((s) => s.name + unit)], xs.map((lab, i) => [lab, ...series.map((s) => fmtNum(s.values[i]))]));
+      table.classList.add("astable"); t.after(table);
+    } else table.hidden = !table.hidden;
+    t.textContent = table.hidden ? "Show as a table" : "Hide the table";
+    wrap.dataset.table = table.hidden ? "" : "1";   // kept when it's drawn again at another width
+  };
+  t.addEventListener("click", toggle);
+  wrap.appendChild(t);
+  if (wrap.dataset.table === "1") toggle();
+  return wrap;
+}
+// The report as plain text, for "Work on this tool".
+function reportText(r) {
+  const out = [];
+  if (r.title) out.push(`# ${r.title}`);
+  if (r.status) out.push(`Status: ${r.status.state}${r.status.text ? `, ${r.status.text}` : ""}`);
+  const walk = (blocks) => {
+    for (const b of blocks) {
+      if (b.type === "heading") out.push(`## ${b.text}`);
+      else if (b.type === "text") out.push(b.md);
+      else if (b.type === "code" || b.type === "diff") out.push("```\n" + b.text + "\n```");
+      else if (b.type === "stats") out.push(b.items.map((i) => `- ${i.label}: ${i.value}${i.note ? ` (${i.note})` : ""}`).join("\n"));
+      else if (b.type === "progress") out.push(`${b.label}: ${b.value} of ${b.max}${b.note ? ` (${b.note})` : ""}`);
+      else if (b.type === "table") out.push([b.columns.join(" | "), ...b.rows.map((row) => row.join(" | "))].filter(Boolean).join("\n"));
+      else if (b.type === "list") out.push(b.items.map((i, n) => `${b.numbered ? n + 1 + "." : "-"} ${i}`).join("\n"));
+      else if (b.type === "chart") out.push(`Chart: ${b.x.map((lab, i) => `${lab}: ${b.series.map((s) => `${s.name} ${s.values[i] ?? "-"}`).join(", ")}`).join("; ")}`);
+      else if (b.type === "image") out.push(`[image: ${b.alt || b.file}]`);
+      else if (b.type === "link") out.push(`${b.text}: ${b.url}`);
+      else if (b.type === "columns") b.columns.forEach(walk);
+      else if (b.type === "section") { out.push(`## ${b.title}`); walk(b.blocks); }
+    }
+  };
+  walk(r.blocks || []);
+  return out.join("\n\n");
+}
+// What a tool printed, when it left no report: Markdown if it worked, the end of it if it failed.
+function outputEl(text, ok) {
+  text = String(text || "");
+  if (!text.trim()) return el("p", "rprobs", "It printed nothing.");
+  const lines = text.replace(/\n+$/, "").split("\n");
+  if (!ok) { const p = el("pre", "out"); p.textContent = lines.slice(-40).join("\n"); return p; }
+  const w = el("div", "rep");
+  const short = lines.length > 30;
+  const body = el("div", "rtext", md(short ? lines.slice(0, 30).join("\n") : text));
+  w.appendChild(body);
+  if (short) {
+    const b = el("button", "linkish", `Show all ${lines.length} lines`); b.type = "button";
+    b.addEventListener("click", () => { body.innerHTML = md(text); b.remove(); });
+    w.appendChild(b);
+  }
+  return w;
+}
+function problemsEl(problems) {
+  const d = el("details", "rprobs");
+  d.innerHTML = `<summary>${problems.length} part${problems.length > 1 ? "s" : ""} of the report couldn't be shown</summary><ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>`;
+  return d;
+}
+const runBase = (name, id) => `/api/made-tools/${encodeURIComponent(name)}/runs/${encodeURIComponent(id)}`;
+const runWhen = (r) => `${r.why === "schedule" ? "On schedule" : "Run by you"}, ${fmtWhen(r.ended || r.started)}`;
+function runBody(res) {
+  const w = el("div");
+  if (res.report) w.appendChild(renderReport(res.report, runBase(res.name, res.run.id)));
+  else w.appendChild(outputEl(res.text, res.run.ok));
+  if (res.problems?.length) w.appendChild(problemsEl(res.problems));
+  return w;
+}
+// --- The Reports tab: each tool's latest report, at full width ---------------------------
+// The Reports button opens it as a tab beside the conversations. A run counts as new until
+// you look at it here; a browser notification comes when the tool's setting asks for one.
+const reports = { open: false, active: false, tools: [], tool: null, run: null, timer: null };
+try { reports.open = localStorage.getItem("uvmc.reports") === "1"; } catch {}
+const NOTIFY = [["asks", "When it asks, fails or reports a problem"], ["always", "After every run"], ["never", "Never"]];
+
+function setReportsView(on) {
+  reports.active = on;
+  if (on && !reports.open) { reports.open = true; try { localStorage.setItem("uvmc.reports", "1"); } catch {} }
+  document.querySelector("section.left").classList.toggle("reports-on", on);
+  $("reports").hidden = !on;
+  renderConvs();
+  if (on) loadReports();
+}
+function openReports(name, runId) {
+  if (name) { reports.tool = name; reports.run = runId || null; }
+  askNotifyPermission();
+  setReportsView(true);
+}
+function closeReports() {
+  reports.open = false;
+  try { localStorage.removeItem("uvmc.reports"); } catch {}
+  if (reports.active) setReportsView(false); else renderConvs();
+}
+// The tab in the conversations' strip (renderConvs adds it).
+function reportsTab() {
+  const tab = el("div", "conv reptab");
+  const n = newReports();
+  tab.setAttribute("aria-selected", String(reports.active));
+  tab.innerHTML = `<button type="button" class="pick" role="tab" aria-selected="${reports.active}" title="Reports from your tools">
+      <span class="title">Reports</span>${n ? `<span class="badge">${n}<span class="visually-hidden"> new</span></span>` : ""}</button>
+    <button type="button" class="close" aria-label="Close Reports" title="Close Reports (the button next to New conversation opens it again)">&times;</button>`;
+  tab.querySelector(".pick").addEventListener("click", () => { if (!reports.active) setReportsView(true); });
+  tab.querySelector(".close").addEventListener("click", closeReports);
+  return tab;
+}
+const newReports = () => reports.tools.reduce((n, t) => n + (t.unseen || 0), 0);
+function showReportCounts() {
+  const n = newReports(), b = $("reportsBtn");
+  b.querySelector(".badge").textContent = n || "";
+  b.querySelector(".badge").hidden = !n;
+  b.title = n ? `${n} new report${n > 1 ? "s" : ""} from your tools` : "Reports from the tools the agent built";
+  b.setAttribute("aria-label", n ? `Reports, ${n} new` : "Reports");
+  if (reports.open) renderConvs();
+  if (reports.active && !reports.tool) showReportsOverview();
+}
+async function refreshReportCounts() {
+  try { reports.tools = await api("/api/made-tools"); } catch { return; }
+  showReportCounts();
+}
+function refreshReportsSoon() { clearTimeout(reports.timer); reports.timer = setTimeout(refreshReportCounts, 300); }
+
+async function loadReports() {
+  await refreshReportCounts();
+  if (reports.tool && !reports.tools.some((t) => t.name === reports.tool)) { reports.tool = null; reports.run = null; }
+  if (reports.tool) showReportPage(); else showReportsOverview();
+}
+function openReport(name, runId) { reports.tool = name; reports.run = runId || null; showReportPage(); $("reppage").scrollTop = 0; }
+function backToOverview() { reports.tool = null; reports.run = null; showReportsOverview(); }
+// Every tool as a card: how its last run went, its first few numbers, and the way into its report.
+function showReportsOverview() {
+  const page = $("reppage");
+  if (!reports.tools.length) {
+    page.innerHTML = `<div class="empty"><h2>No reports yet.</h2><p>Tools the agent builds show their results here. Ask the agent for one, for example: <em>"every morning, check this page and tell me what changed"</em>.</p></div>`;
+    return;
+  }
+  const keep = page.scrollTop;
+  page.innerHTML = `<h2>Reports</h2><p class="small">The latest result of each tool the agent built. Open one for the whole report and its earlier runs.</p>`;
+  const grid = el("div", "repgrid");
+  for (const t of reports.tools) {
+    const r = t.last_run, rep = r?.report;
+    const card = el("div", `repcard${r && !r.ok ? " bad" : ""}`);
+    const status = !r ? `<p class="small">Never run yet.${t.missing.length ? " Fill in its settings first." : ""}</p>`
+      : !r.ok ? `<div class="rstatus bad"><span class="ico" aria-hidden="true">✕</span><span>Failed${r.note ? ": " + esc(r.note) : r.exit != null ? ` (exit code ${esc(r.exit)})` : ""}</span></div>`
+      : rep?.status ? `<div class="rstatus ${esc(rep.status.state)}"><span class="ico" aria-hidden="true">${STATUS_ICON[rep.status.state] || ""}</span><span>${esc(rep.status.text || rep.status.state)}</span></div>`
+      : `<div class="rstatus ok"><span class="ico" aria-hidden="true">✓</span><span>${esc(rep?.title || "Ran fine")}</span></div>`;
+    card.innerHTML = `<div class="top"><strong>${esc(t.title)}</strong>${t.unseen ? `<span class="badge">${t.unseen} new</span>` : ""}</div>
+      ${status}
+      <div class="glance"></div>
+      <div class="when">${r ? `${esc(runWhen(r))}. ` : ""}Runs ${esc(t.schedule_text)}${t.enabled || !t.schedule ? "" : " (switched off)"}.${t.running ? " <strong>Running now.</strong>" : ""}</div>
+      <div class="row"></div>`;
+    if (r?.ok && rep?.stats?.length) card.querySelector(".glance").appendChild(renderBlock({ type: "stats", items: rep.stats }, ""));
+    const row = card.querySelector(".row");
+    const open = el("button", "btn primary", "Open report"); open.type = "button";
+    open.disabled = !r;
+    open.addEventListener("click", () => openReport(t.name));
+    const run = el("button", "btn", t.running ? "Stop" : "Run now"); run.type = "button";
+    if (t.missing.length) { run.disabled = true; run.title = "Fill in its settings first: " + t.missing.join(", "); }
+    run.addEventListener("click", async () => {
+      run.disabled = true;
+      try { await api(t.running ? "/api/made-tools/stop" : "/api/made-tools/run", { name: t.name }); }
+      catch (e) { card.appendChild(el("p", "small bad", esc(e.message))); }
+      refreshReportCounts();
+    });
+    row.append(open, run);
+    grid.appendChild(card);
+  }
+  page.appendChild(grid);
+  page.scrollTop = keep;
+}
+async function showReportPage() {
+  const page = $("reppage");
+  const name = reports.tool;
+  let t, res = null;
+  try {
+    t = await api(`/api/made-tools/${encodeURIComponent(name)}`);
+    const id = reports.run || t.runs[0]?.id;
+    if (id) res = await api(`${runBase(name, id)}/result`);
+  } catch (e) { page.innerHTML = `<p class="small bad">${esc(e.message)}</p>`; return; }
+  if (reports.tool !== name) return;   // another tool was picked meanwhile
+  page.innerHTML = "";
+  const back = el("button", "linkish repback", "← All reports"); back.type = "button";
+  back.addEventListener("click", backToOverview);
+  page.appendChild(back);
+  const head = el("div", "rephead");
+  head.innerHTML = `<div class="who"><h2>${esc(t.title)}</h2><p class="small">${esc(t.description)}</p>
+      <p class="small">Runs ${esc(t.schedule_text)}${t.enabled || !t.schedule ? "" : " (switched off)"}.${t.running ? " <strong>Running now.</strong>" : ""}</p></div>
+    <div class="ctrls"></div>`;
+  const ctrls = head.querySelector(".ctrls");
+  const run = el("button", "btn primary", t.running ? "Stop" : "Run now"); run.type = "button";
+  run.addEventListener("click", async () => {
+    run.disabled = true;
+    try { await api(t.running ? "/api/made-tools/stop" : "/api/made-tools/run", { name }); reports.run = null; }
+    catch (e) { ctrls.appendChild(el("p", "small bad", esc(e.message))); }
+    showReportPage();
+  });
+  if (t.missing.length) { run.disabled = true; run.title = "Fill in its settings first: " + t.missing.join(", "); }
+  const settings = el("button", "btn", t.missing.length ? "Set it up" : "Settings"); settings.type = "button";
+  settings.addEventListener("click", () => { toolsOpen = name; selectTab($("tab-tools")); });
+  let shown = null;   // the run on screen, once loaded: its report goes into the message
+  const work = workButton(name, () => shown, ctrls);
+  ctrls.append(run, work, settings);
+  const notify = el("label", "pick", `<span>Notify me</span><select>${NOTIFY.map(([v, l]) => `<option value="${v}" ${t.notify === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`);
+  notify.querySelector("select").addEventListener("change", async (e) => {
+    try { await api("/api/made-tools/notify", { name, mode: e.target.value }); askNotifyPermission(); showNotifyHint(head); }
+    catch (err) { ctrls.appendChild(el("p", "small bad", esc(err.message))); }
+  });
+  ctrls.appendChild(notify);
+  page.appendChild(head);
+  showNotifyHint(head);
+  if (!res) {
+    page.appendChild(el("p", "small", t.missing.length ? "It hasn't run yet. Fill in its settings first, then run it." : "It hasn't run yet. Run it now, or wait for its schedule."));
+    return;
+  }
+  const r = res.run;
+  const bar = el("div", "repbar");
+  const failed = r.ok ? "" : ` <span class="bad">Failed${r.note ? ": " + esc(r.note) : r.exit != null ? ` (exit code ${esc(r.exit)})` : ""}.</span>`;
+  bar.innerHTML = `<span class="small">${esc(runWhen(r))}, version ${esc(r.version)}.${failed}</span>`;
+  if (t.runs.length > 1) {
+    const sel = el("select", "", t.runs.map((x, i) => `<option value="${esc(x.id)}" ${x.id === r.id ? "selected" : ""}>${i ? "" : "Latest: "}${esc(fmtWhen(x.started))}${x.ok ? "" : " (failed)"}</option>`).join(""));
+    sel.setAttribute("aria-label", "Earlier runs");
+    sel.addEventListener("change", () => { reports.run = sel.value === t.runs[0].id ? null : sel.value; showReportPage(); });
+    bar.appendChild(el("label", "pick", "<span>Run</span>")).appendChild(sel);
+  }
+  page.appendChild(bar);
+  shown = res;
+  page.appendChild(runBody(res));
+  if (res.report) {   // what it printed, too, folded
+    const d = el("details", "printed", "<summary>What it printed</summary>");
+    const pre = el("pre", "log"); d.appendChild(pre);
+    d.addEventListener("toggle", async () => {
+      if (!d.open || pre.textContent) return;
+      try { pre.textContent = (await api(runBase(name, r.id))).text || "(it printed nothing)"; } catch (e) { pre.textContent = e.message; }
+    });
+    page.appendChild(d);
+  }
+  if (r.seen === false && !document.hidden) api("/api/made-tools/seen", { name, id: r.id }).catch(() => {});
+}
+// "Work on this tool" (in Reports and in the Tools tab): a fresh conversation with the tool's
+// code in its folder, and a start of a message saying so (with the report on screen, if any).
+function workButton(name, report, msgs) {
+  const b = el("button", "btn", "Work on this tool"); b.type = "button";
+  b.title = "Opens a new conversation with this tool's code in its folder: say what to change and press Run. The agent proposes a new version for you to approve.";
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    let w;
+    try { w = await api(`/api/made-tools/${encodeURIComponent(name)}/work`, {}); }
+    catch (e) { b.disabled = false; msgs.appendChild(el("p", "small bad", esc(e.message))); return; }
+    const parts = [`This is about my tool "${w.title}" (${w.name}, version ${w.version}). UVMC copied its code into ${w.folder} in your work folder.`];
+    const res = report();
+    if (res) parts.push(`Its report from ${fmtWhen(res.run.ended || res.run.started)}:\n\n${res.report ? reportText(res.report) : String(res.text || "(it printed nothing)").slice(-8000)}`);
+    if (reports.active) setReportsView(false);
+    await refreshConvs();
+    await selectConv(w.conv);
+    const box = $("task");
+    box.value = parts.join("\n\n") + "\n\nWhat I'd like: ";
+    box.dispatchEvent(new Event("input"));
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+    b.disabled = false;
+  });
+  return b;
+}
+function showNotifyHint(head) {
+  head.querySelector(".nhint")?.remove();
+  const t = reports.tools.find((x) => x.name === reports.tool);
+  const mode = head.querySelector(".ctrls select")?.value || t?.notify;
+  if (mode === "never") return;
+  const why = !("Notification" in window) ? "This browser can't show notifications."
+    : Notification.permission === "denied" ? "Your browser blocks notifications from this panel; allow them in its site settings to get them."
+    : "";
+  if (why) head.appendChild(el("p", "small nhint", esc(why)));
+}
+function askNotifyPermission() {   // only ever from a click, as browsers want
+  if ("Notification" in window && Notification.permission === "default" && reports.tools.some((t) => t.notify !== "never"))
+    Notification.requestPermission().catch(() => {});
+}
+// A run ended. Like the memory alert: a browser notification only when you're not looking
+// at the panel, and only when the tool's setting (and its report) asks for one.
+function toolRunEnded(ev) {
+  refreshReportsSoon();
+  if (reports.active && reports.tool === ev.name && !reports.run) showReportPage();   // the overview follows the counts
+  const r = ev.run, rep = ev.report, mode = ev.notify || "asks";
+  const problem = !r.ok || rep?.status?.state === "bad";
+  if (mode === "never" || (mode === "asks" && !problem && !rep?.notify)) return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (!document.hidden && document.hasFocus()) return;
+  const body = rep?.notify || (!r.ok ? `The run failed${r.note ? ": " + r.note : ""}.` : rep?.status?.text || rep?.title || "A new result.");
+  const n = new Notification(`UVMC: ${ev.title}`, { body, tag: `uvmc-tool-${ev.name}` });
+  n.onclick = () => { window.focus(); openReports(ev.name); n.close(); };
+}
+$("reportsBtn").addEventListener("click", () => openReports());
 
 let toolsOpen = null;   // the tool whose details are open
 let toolsTimer = null;
@@ -1005,7 +1584,7 @@ async function loadTools() {
     const more = el("button", "btn", toolsOpen === t.name ? "Hide details" : (t.missing.length ? "Set it up" : "Details")); more.type = "button";
     more.setAttribute("aria-expanded", String(toolsOpen === t.name));
     more.addEventListener("click", () => { toolsOpen = toolsOpen === t.name ? null : t.name; loadTools(); });
-    row.append(run, sw, more);
+    row.append(run, sw, workButton(t.name, () => null, li), more);
     if (toolsOpen === t.name) li.appendChild(el("div", "", "")).appendChild(await toolDetails(t.name));
     ul.appendChild(li);
   }
@@ -1034,7 +1613,7 @@ async function toolDetails(name) {
     <dl class="facts"><dt>Reaches</dt><dd>${t.sites.length ? t.sites.map(esc).join(", ") : "no sites"}</dd>
       <dt>Command</dt><dd><code>${esc(t.command)}</code>, at most ${t.timeout_seconds} s</dd></dl>
     <details><summary>Its code (version ${t.version}, read-only)</summary><div class="filelist"></div><pre class="log" hidden></pre></details>
-    <details ${t.runs.length ? "" : "hidden"}><summary>Runs (${t.runs.length})</summary><div class="runlist"></div><pre class="log" hidden></pre></details>
+    <details ${t.runs.length ? "" : "hidden"}><summary>Runs (${t.runs.length}; click one to open it in Reports)</summary><div class="runlist"></div></details>
     <div class="row"><button type="button" class="btn stop" data-remove>Remove this tool</button></div>`;
   const form = box.querySelector("form");
   form?.addEventListener("submit", async (e) => {
@@ -1062,11 +1641,7 @@ async function toolDetails(name) {
   const runs = box.querySelector(".runlist");
   for (const r of t.runs) {
     const b = el("button", r.ok ? "" : "bad", `${esc(fmtWhen(r.started))}: ${r.ok ? "OK" : "failed" + (r.note ? ", " + esc(r.note) : "")} (${r.why === "schedule" ? "on schedule" : "by you"}, version ${r.version ?? t.version})`); b.type = "button";
-    b.addEventListener("click", async () => {
-      const pre = runs.nextElementSibling;
-      try { show(pre, (await api(`/api/made-tools/${encodeURIComponent(t.name)}/runs/${encodeURIComponent(r.id)}`)).text || "(it printed nothing)"); }
-      catch (e) { show(pre, e.message); }
-    });
+    b.addEventListener("click", () => openReports(t.name, r.id));
     runs.appendChild(b);
   }
   let armed = null;
@@ -1162,7 +1737,7 @@ function renderConvs() {
     const state = c.waiting ? "waiting" : c.state;
     const tab = el("div", "conv");
     tab.dataset.state = state;
-    const selected = c.id === view.conv && view.live;   // none while a past run is on screen
+    const selected = c.id === view.conv && view.live && !reports.active;   // none while a past run or Reports is on screen
     tab.setAttribute("aria-selected", String(selected));
     const words = { idle: "", running: ", working", waiting: ", waiting for you", stopping: ", stopping" };
     const title = c.title || "New conversation";
@@ -1171,11 +1746,15 @@ function renderConvs() {
         <span class="title">${esc(title)}</span>${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
         <span class="visually-hidden">${words[state] || ""}</span></button>
       <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="Close this conversation (it stays under Runs)" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
-    tab.querySelector(".pick").addEventListener("click", () => { if (c.id !== view.conv || !view.live) selectConv(c.id); });
+    tab.querySelector(".pick").addEventListener("click", () => {
+      if (reports.active) { setReportsView(false); if (c.id === view.conv && view.live) return; }
+      if (c.id !== view.conv || !view.live) selectConv(c.id);
+    });
     tab.querySelector(".close").addEventListener("click", () => closeConv(c.id));
     list.appendChild(tab);
     if (c.id === focused) tab.querySelector(".pick").focus();
   }
+  if (reports.open) list.prepend(reportsTab());
   list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
   showTitle();
 }
@@ -1375,11 +1954,13 @@ function connect() {
     const mine = view.conv && convs.some((c) => c.id === view.conv) ? view.conv : s.conv;
     if (!view.live) { renderConvs(); return; }    // looking at a past run: stay there
     selectConv(mine, { focus: mine !== s.conv });
+    refreshReportCounts();
   });
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.kind === "conversations") { refreshConvsSoon(); return; }
-    if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); return; }
+    if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); refreshReportsSoon(); return; }
+    if (ev.kind === "tool_run") { toolRunEnded(ev); return; }
     if (ev.kind === "shared_folder") { refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "plan_usage") { planUsage = ev; showTokens(); }
     if (ev.kind === "memory_full") memoryAlert(ev);

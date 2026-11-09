@@ -95,7 +95,8 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
         listed = made.summary_for_agent() if made is not None else ""
         if listed:
             lines.append(f"- Tools you built that the user approved: {listed}. Their approved copies are frozen; "
-                         "to change one, edit your copy in the work folder and call propose_tool again.")
+                         "to change one, get its code with get_tool_code (if it isn't in your folder already), "
+                         "change and test it there, and call propose_tool again.")
     if on("panel"):
         lines.append("- The user watches every step in the UVMC panel. They approve what the rules mark as "
                      "risky, can stop you at any moment, and can undo a whole task (the work folder is "

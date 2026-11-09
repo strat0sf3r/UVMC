@@ -37,7 +37,7 @@ from .executor import (agent_users, conversation_slice, kill_all_agent_processes
                        no_sudo, oom_kills, root, slice_of_pid, slice_usage)
 from .executor import SLICE as SLICE_AGENT
 from .log import ChildLog, RunLog, read_log
-from .made_tools import PROPOSE_SPEC, ToolBox, ToolError
+from .made_tools import GET_CODE_SPEC, PROPOSE_SPEC, ToolBox, ToolError
 from .workcopies import MERGE_DIR, SyncError, WorkCopies
 from .transcript import transcript
 from .netproxy import Proxy, SiteList
@@ -155,7 +155,9 @@ class Controller:
         self.mcp_conv: str | None = None          # the conversation the Claude apps used last
         self.plan_usage = self._load_plan_usage()   # the latest from Claude Code, for the header
         self.watcher: ExecWatcher | None = None
-        self.made = ToolBox(cfg, notify=lambda: self._broadcast({"kind": "made_tools"}))   # tools the agent built
+        self.made = ToolBox(cfg, notify=lambda: self._broadcast({"kind": "made_tools"}),   # tools the agent built
+                            on_run=lambda name, record: self._broadcast(
+                                {"kind": "tool_run", **self.made.result(name, record["id"])}))
         self.copies = WorkCopies(cfg)             # each conversation's own copy of the work folder
         self.copy_lock = threading.Lock()
         self.pool_missing = self._pool_missing()  # setup makes the conversations' users
@@ -777,10 +779,49 @@ class Controller:
         folder is shared."""
         specs = [PROPOSE_SPEC]
         handlers = {"propose_tool": lambda args, call_id, c=c: self._propose_tool(c, args, call_id)}
+        if self.made.registry:
+            specs.append(GET_CODE_SPEC)
+            handlers["get_tool_code"] = lambda args, call_id, c=c: self._get_tool_code(c, args)
         if self.shares.names():
             specs.append(SHARE_SPEC)
             handlers["update_shared_file"] = lambda args, call_id, c=c: self._update_shared(c, args, call_id)
         return specs, handlers
+
+    def copy_tool_code(self, c: Conversation, name: str) -> tuple[str, int, list[str]]:
+        """An approved tool's code, copied into the conversation's work folder (tools/<name>, or
+        tools/<name>-v<version> if that folder is already there, so nothing of the agent's is lost)."""
+        version, files = self.made.code(name)
+        self.ensure_copy(c)
+        folder = f"tools/{name}"
+        if (Path(c.copy_dir) / folder).exists():
+            folder = f"tools/{name}-v{version}"
+            if (Path(c.copy_dir) / folder).exists():
+                return folder, version, sorted(files)   # this version is there already
+        self.copies.put_files(c.id, c.user, folder, files)
+        return folder, version, sorted(files)
+
+    def _get_tool_code(self, c: Conversation, args: dict) -> tuple[str, bool]:
+        name = str(args.get("name", "")).strip()
+        try:
+            folder, version, files = self.copy_tool_code(c, name)
+        except KeyError as e:
+            known = ", ".join(sorted(self.made.registry)) or "none"
+            return f"{e.args[0]} The approved tools: {known}.", True
+        except (OSError, SyncError) as e:
+            return f"Could not copy it: {e}", True
+        return (f"Version {version} of {name} is now in {folder} in your work folder: {', '.join(files[:40])}. "
+                f"Change it there, test it (set UVMC_REPORT=uvmc-report.json to see its report), and propose "
+                f"it again with propose_tool and folder {folder}."), False
+
+    def work_on_tool(self, name: str) -> dict:
+        """A fresh conversation for working on one tool: its code is already in its folder."""
+        self.made.get(name)  # KeyError if unknown
+        c = self.new_conversation()
+        folder, version, _ = self.copy_tool_code(c, name)
+        title = self.made.registry[name]["manifest"]["title"]
+        c.log.event("notice", text=f"UVMC copied version {version} of the tool {title} ({name}) into {folder} "
+                                   "in this conversation's folder, for you and the agent to work on.")
+        return {"conv": c.id, "folder": folder, "version": version, "name": name, "title": title}
 
     def _propose_tool(self, c: Conversation, args: dict, call_id: str) -> tuple[str, bool]:
         """A tool the agent built: shown to you in full; installed only if you approve."""
@@ -2070,6 +2111,18 @@ def create_app(ctl: Controller, token: str | None):
     def made_tools():
         return ctl.made.view()
 
+    @app.post("/api/made-tools/notify")
+    async def made_tool_notify(request: Request):
+        body = await request.json()
+        made_call(ctl.made.set_notify, str(body.get("name", "")), str(body.get("mode", "")))
+        return {"ok": True}
+
+    @app.post("/api/made-tools/seen")
+    async def made_tools_seen(request: Request):
+        body = await request.json()
+        made_call(ctl.made.mark_seen, str(body.get("name", "")), str(body.get("id", "")) or None)
+        return {"ok": True}
+
     @app.get("/api/made-tools/{name}")
     def made_tool(name: str):
         return made_call(ctl.made.view, name)
@@ -2077,6 +2130,26 @@ def create_app(ctl: Controller, token: str | None):
     @app.get("/api/made-tools/{name}/runs/{run_id}")
     def made_tool_log(name: str, run_id: str):
         return {"text": made_call(ctl.made.log, name, run_id)}
+
+    @app.post("/api/made-tools/{name}/work")
+    def made_tool_work(name: str):
+        """Work on this tool: a new conversation with its code in its folder."""
+        try:
+            return made_call(ctl.work_on_tool, name)
+        except Busy as e:
+            fail(409, str(e))
+
+    @app.get("/api/made-tools/{name}/runs/{run_id}/result")
+    def made_tool_result(name: str, run_id: str):
+        return made_call(ctl.made.result, name, run_id)
+
+    @app.get("/api/made-tools/{name}/runs/{run_id}/images/{n}")
+    def made_tool_image(name: str, run_id: str, n: int):
+        data, kind = made_call(ctl.made.image, name, run_id, n)
+        # Only ever drawn as a picture: its type comes from its bytes, and nothing in it may run.
+        return Response(data, media_type=kind, headers={
+            "Content-Security-Policy": "default-src 'none'; sandbox", "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=86400"})
 
     @app.get("/api/made-tools/{name}/file")
     def made_tool_file(name: str, path: str):

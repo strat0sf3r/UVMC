@@ -519,13 +519,25 @@ class WorkCopies:
             mode = r.stdout.decode().strip() or "644"
         self._run(["install", "-m", mode, *self._owner(owner), str(src), str(dst)])
 
-    def _write(self, dst: Path, data: bytes, owner: str, replace: bool = False) -> None:
+    def put_files(self, cid: str, user: str, folder: str, files: dict[str, tuple[bytes, bool]]) -> None:
+        """Writes files into a conversation's copy under folder, owned by its user (for example an
+        approved tool's code). files: relative path -> (data, executable)."""
+        top = self.copy_dir(cid)
+        for rel, (data, exe) in sorted(files.items()):
+            dst = (top / folder / rel)
+            if top.resolve() not in dst.resolve().parents:
+                raise SyncError(f"{rel}: outside the work folder.")
+            self._write(dst, data, user, mode="755" if exe else "644")
+
+    def _write(self, dst: Path, data: bytes, owner: str, replace: bool = False, mode: str | None = None) -> None:
+        keep = mode
         mode = "644"
         if dst.exists():
             try:
                 mode = oct(dst.stat().st_mode & 0o777)[2:]
             except OSError:
                 pass
+        mode = keep or mode
         with tempfile.NamedTemporaryFile(delete=False, dir=str(self.state) if self.state.exists() else None) as f:
             f.write(data)
         try:

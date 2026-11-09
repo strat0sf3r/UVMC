@@ -266,6 +266,150 @@ class MadeToolsTest(ServiceBase):
         for p in ctl.made.proxies.values():
             p.stop()
 
+    def test_a_run_leaves_a_report_shown_as_a_card(self):
+        tool = {**GOOD, "name": "reporter", "settings": [], "schedule": None}
+        main = REPORTER
+        ctl = self.ctl([])
+        ctl.made.install(validate(tool), {"uvmc-tool.json": json.dumps(tool).encode(), "main.py": main.encode()})
+        runs = []
+        q = ctl.subscribe()
+        import queue
+        c = TestClient(create_app(ctl, "t"))
+        rid = c.post("/api/made-tools/run", headers=H, json={"name": "reporter"}).json()["id"]
+        self.assertTrue(wait_for(lambda: not ctl.made.running, 10))
+        try:
+            while True:
+                e = q.get(timeout=2)
+                if e.get("kind") == "tool_run":
+                    runs.append(e)
+                    break
+        except queue.Empty:
+            pass
+        self.assertEqual(len(runs), 1)                                   # a card for the panel
+        card = runs[0]
+        self.assertEqual((card["name"], card["title"], card["run"]["id"]), ("reporter", "Greeter", rid))
+        self.assertEqual(card["report"]["title"], "Run 1")
+        self.assertEqual(card["run"]["report"]["stats"], [{"label": "Runs", "value": "1", "note": "", "trend": ""}])  # for the overview card
+        self.assertEqual(card["report"]["blocks"][2]["n"], 1)             # its image, copied out
+        self.assertEqual(card["problems"], ["image missing.png: not found."])
+        self.assertNotIn("text", card)                                    # a report: the log stays in Tools
+        img = c.get(f"/api/made-tools/reporter/runs/{rid}/images/1", headers=H)
+        self.assertEqual(img.headers["content-type"], "image/png")
+        self.assertIn("sandbox", img.headers["content-security-policy"])
+        self.assertEqual(c.get(f"/api/made-tools/reporter/runs/{rid}/images/2", headers=H).status_code, 404)
+        # New in Reports until you look at it there.
+        self.assertEqual(c.get("/api/made-tools", headers=H).json()[0]["unseen"], 1)
+        c.post("/api/made-tools/seen", headers=H, json={"name": "reporter", "id": rid})
+        self.assertEqual(c.get("/api/made-tools", headers=H).json()[0]["unseen"], 0)
+        # Notifications: by default when it asks, fails or reports a problem; your choice per tool.
+        self.assertEqual(card["notify"], "asks")
+        self.assertEqual(c.post("/api/made-tools/notify", headers=H, json={"name": "reporter", "mode": "loud"}).status_code, 409)
+        c.post("/api/made-tools/notify", headers=H, json={"name": "reporter", "mode": "never"})
+        self.assertEqual(c.get("/api/made-tools/reporter", headers=H).json()["notify"], "never")
+        self.assertEqual(ctl.made.result("reporter", rid)["notify"], "never")
+        self.assertEqual(c.get(f"/api/made-tools/reporter/runs/{rid}/result", headers=H).json()["report"]["title"], "Run 1")
+
+        # The next run removes the old report first; a link it plants is not followed.
+        home = ctl.made.home("reporter")
+        (home / "plant").write_text("1")
+        time.sleep(1.1)
+        rid2 = ctl.made.run("reporter")["id"]
+        self.assertTrue(wait_for(lambda: not ctl.made.running, 10))
+        self.assertTrue((home / "uvmc-report.json").is_symlink())
+        res = ctl.made.result("reporter", rid2)
+        self.assertIsNone(res["report"])
+        self.assertIn("planted", res["text"])                            # no report: what it printed instead
+        for p in ctl.made.proxies.values():
+            p.stop()
+
+    def test_the_sample_report_is_checked_and_shown_on_the_card(self):
+        (self.folder / "uvmc-report.json").write_text(json.dumps({"title": "Sample", "blocks": [{"type": "nope"}]}))
+        ctl = self.ctl([propose("t1"), reply(TextBlock(type="text", text="ok"), stop="end_turn"),
+                        propose("t2"), reply(TextBlock(type="text", text="ok"), stop="end_turn")])
+        ctl.start_task("make it")
+        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertFalse([e for e in self.events if e["kind"] == "approval"])   # back to the agent first
+        result = [e for e in self.events if e["kind"] == "result"][-1]
+        self.assertIn("unknown block type 'nope'", result["text"])
+        copy = Path(ctl.conv().copy_dir) / "tools/greeter"
+        (copy / "uvmc-report.json").write_text(json.dumps(
+            {"title": "Sample", "blocks": [{"type": "image", "file": "p.png"}]}))
+        (copy / "p.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 20)
+        ctl.start_task("try again")
+        card = self.approve_next(ctl, "deny")
+        self.assertEqual(card["sample"]["title"], "Sample")
+        self.assertTrue(card["sample"]["blocks"][0]["src"].startswith("data:image/png;base64,"))
+        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+
+
+class WorkOnToolTest(MadeToolsTest):
+    """Changing an approved tool from any conversation: its code comes into the agent's folder."""
+    test_propose_approve_configure_run = test_new_version_shows_the_changes_and_can_be_declined = None
+    test_bad_proposals_are_refused_before_asking_you = test_schedule_runs_and_switches_off_when_settings_go_missing = None
+    test_time_limit_and_api = test_in_the_machine_secrets_stay_off_the_command_line = None
+    test_the_agent_is_told_about_its_tools = test_a_run_leaves_a_report_shown_as_a_card = None
+    test_the_sample_report_is_checked_and_shown_on_the_card = None
+
+    def install(self, ctl):
+        ctl.ensure_copy(ctl.conv())
+        manifest, files = ctl.made.read_folder(ctl.conv().tools._as_agent, "tools/greeter")
+        files["run.sh"], files["run.sh\0x"] = b"#!/bin/sh\necho hi\n", b""
+        ctl.made.install(manifest, files)
+        ctl.made.save_settings("greeter", {"who": "you", "token": "s3cret-token"})
+
+    def test_work_on_this_tool_opens_a_conversation_with_its_code(self):
+        ctl = self.ctl([])
+        self.install(ctl)
+        first = ctl.conv().id
+        import shutil
+        shutil.rmtree(self.folder)   # built in a conversation whose work never went into the main folder
+        c = TestClient(create_app(ctl, "t"))
+        w = c.post("/api/made-tools/greeter/work", headers=H, json={}).json()
+        self.assertNotEqual(w["conv"], first)                            # a fresh conversation
+        self.assertEqual((w["folder"], w["version"], w["title"]), ("tools/greeter", 1, "Greeter"))
+        folder = Path(ctl.convs[w["conv"]].copy_dir) / "tools/greeter"
+        self.assertIn("count", (folder / "main.py").read_text())
+        self.assertTrue(os.access(folder / "run.sh", os.X_OK))           # executables stay executable
+        self.assertEqual(json.loads((folder / "uvmc-tool.json").read_text())["name"], "greeter")
+        everything = "".join(p.read_text(errors="replace") for p in folder.rglob("*") if p.is_file())
+        self.assertNotIn("s3cret-token", everything)                     # code only, no secrets
+        self.assertEqual(c.post("/api/made-tools/nope/work", headers=H, json={}).status_code, 404)
+        for p in ctl.made.proxies.values():
+            p.stop()
+
+    def test_the_agent_gets_the_code_without_losing_its_own(self):
+        get = lambda cid: reply(ToolUseBlock(type="tool_use", id=cid, name="get_tool_code", input={"name": "greeter"}))
+        ctl = self.ctl([get("g1"), get("g2"), reply(TextBlock(type="text", text="ok"), stop="end_turn")])
+        self.install(ctl)
+        ctl.start_task("make the greeter friendlier")
+        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        results = [e for e in self.events if e["kind"] == "result"]
+        # This conversation built it: its own folder tools/greeter stays; the copy goes next to it.
+        self.assertIn("tools/greeter-v1", results[0]["text"])
+        self.assertFalse(results[0]["is_error"])
+        copy = Path(ctl.conv().copy_dir)
+        self.assertTrue((copy / "tools/greeter-v1/main.py").exists())
+        self.assertIn("tools/greeter-v1", results[1]["text"])            # asked again: still there
+        self.assertIn("get_tool_code", json.dumps(ctl._share_tools(ctl.conv())[0]))
+        for p in ctl.made.proxies.values():
+            p.stop()
+
+
+REPORTER = """import json, os, pathlib, sys
+home = pathlib.Path(os.environ["HOME"])
+report = pathlib.Path(os.environ["UVMC_REPORT"])
+assert not report.exists(), "the old report should be gone"
+if (home / "plant").exists():
+    report.symlink_to("/etc/hostname")
+    print("planted a link")
+    sys.exit(0)
+(home / "plot.png").write_bytes(b"\\x89PNG\\r\\n\\x1a\\n" + b"\\0" * 20)
+report.write_text(json.dumps({"title": "Run 1", "blocks": [
+    {"type": "columns", "columns": [[{"type": "stats", "items": [{"label": "Runs", "value": 1}]}], []]},
+    {"type": "text", "md": "hello"}, {"type": "image", "file": "plot.png"}, {"type": "image", "file": "missing.png"}]}))
+print("wrote a report")
+"""
+
 
 if __name__ == "__main__":
     unittest.main()

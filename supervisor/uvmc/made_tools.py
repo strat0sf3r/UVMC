@@ -18,6 +18,7 @@ The agent never sees the secrets you type into a tool's settings.
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import difflib
 import io
@@ -34,6 +35,7 @@ from typing import Callable
 
 from .executor import no_sudo, root
 from .netproxy import Proxy, SiteList, valid_site
+from . import reports
 
 MANIFEST = "uvmc-tool.json"
 NAME = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
@@ -60,7 +62,11 @@ FORMAT_HELP = """A tool is a folder in your work folder with its code and a uvmc
 When it runs, it gets each setting as an environment variable UVMC_SETTING_<NAME> (uppercase),
 its own data folder in HOME (kept between runs), and its output (stdout and stderr) is its log.
 It runs as its own user with the programs installed on the machine; it can't install packages.
-The approved copy is frozen: to change the tool, edit your folder and propose it again."""
+The approved copy is frozen: to change the tool, edit your folder and propose it again.
+
+""" + reports.FORMAT_HELP
+NOTIFY_MODES = ("never", "asks", "always")
+REPORT_FILE = "uvmc-report.json"   # in the tool's HOME; its path is in UVMC_REPORT
 
 
 class ToolError(Exception):
@@ -170,8 +176,10 @@ def _is_text(data: bytes) -> bool:
 class ToolBox:
     """The approved tools: their frozen copies, settings, users, proxies, schedule and runs."""
 
-    def __init__(self, cfg, notify: Callable[[], None] = lambda: None):
+    def __init__(self, cfg, notify: Callable[[], None] = lambda: None,
+                 on_run: Callable[[str, dict], None] = lambda name, record: None):
         self.cfg = cfg
+        self.on_run = on_run   # a run ended: its record (the panel shows it as a card)
         self.base = Path(cfg.made_tools_dir)
         self.secrets_dir = Path(cfg.state_dir) / "tool-secrets"
         self.logs = Path(cfg.log_dir).parent / "tools"
@@ -287,10 +295,39 @@ class ToolBox:
             budget -= len(text)
             shown.append({"path": rel, "text": text, "change": "added" if old is None else
                           "removed" if new is None else "changed"})
-        return {"manifest": manifest, "update": bool(current),
+        return {"manifest": manifest, "update": bool(current), "sample": self.sample(plain),
                 "current_version": current["version"] if current else None,
                 "files": [{"path": k, "size": len(v)} for k, v in sorted(plain.items())],
                 "shown": shown, "schedule_text": schedule_text(manifest["schedule"])}
+
+    def sample(self, files: dict[str, bytes]) -> dict | None:
+        """The report the agent left in the folder when it tested the tool: checked (its problems
+        go back to the agent before you're asked), and shown on the approval card."""
+        data = files.get(REPORT_FILE)
+        if data is None:
+            return None
+        report, problems = reports.parse(data)
+        if problems:
+            raise ToolError(f"The sample report ({REPORT_FILE}) has problems; fix them and propose again:\n- "
+                            + "\n- ".join(problems[:20]) + "\n\n" + reports.FORMAT_HELP)
+        budget = 1_500_000   # its images go on the card itself, so keep them small
+        def fix(blocks):
+            nonlocal budget
+            for b in blocks:
+                if b["type"] == "image":
+                    data = files.get(b["file"])
+                    kind = reports.image_type(data or b"")
+                    if kind is None or len(data) > reports.MAX_IMAGE:
+                        raise ToolError(f"The sample report's image {b['file']} is missing or not a PNG, JPEG, "
+                                        "GIF or WebP up to 2 MB (in the test, images come from the folder).")
+                    if len(data) <= budget:
+                        budget -= len(data)
+                        b["src"] = f"data:{kind};base64,{base64.b64encode(data).decode()}"
+                for inner in (b.get("columns") or []) + [b.get("blocks") or []]:
+                    fix(inner)
+        fix(report["blocks"])
+        report["images"] = 0
+        return report
 
     def install(self, manifest: dict, files: dict[str, bytes]) -> int:
         """Freezes an approved version and makes the tool's user, home and way online."""
@@ -461,6 +498,16 @@ class ToolBox:
             self._save()
         self.notify()
 
+    def set_notify(self, name: str, mode: str) -> None:
+        """When the panel pops up a browser notification after a run: "never"; "asks" (when the
+        run fails, its report's status is bad, or the report asks with "notify"); "always"."""
+        if mode not in NOTIFY_MODES:
+            raise ToolError("notify: never, asks or always.")
+        with self.lock:
+            self.get(name)["notify"] = mode
+            self._save()
+        self.notify()
+
     def remove(self, name: str) -> None:
         with self.lock:
             self.get(name)
@@ -487,7 +534,7 @@ class ToolBox:
 
     def command(self, name: str, e: dict, env: dict) -> list[str]:
         m = e["manifest"]
-        inner = ["timeout", "-k", "5", str(m["timeout_seconds"]), "bash", "-c", 'cd -- "$1" && exec bash -c "$2"',
+        inner = ["timeout", "-k", "5", str(m["timeout_seconds"]), "bash", "-c", 'rm -f -- "$UVMC_REPORT"; cd -- "$1" && exec bash -c "$2"',
                  "uvmc-tool", str(self.version_dir(name, e["version"])), m["command"]]
         if no_sudo():
             return inner
@@ -505,6 +552,7 @@ class ToolBox:
     def env(self, name: str, e: dict) -> dict:
         proxy = f"http://127.0.0.1:{e['port']}"
         env = {"HOME": str(self.home(name)), "UVMC_TOOL": name, "UVMC_DATA": str(self.home(name)),
+               "UVMC_REPORT": str(self.home(name) / REPORT_FILE),
                "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy,
                "NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1"}
         secrets = self._secrets(name)
@@ -573,8 +621,10 @@ class ToolBox:
         if size > 1_000_000:   # keep the end, where the error usually is
             data = path.read_bytes()[-1_000_000:]
             path.write_bytes(b"(the beginning was cut off)\n" + data)
+        report = self._take_report(name, run["id"], log_dir)
         record = {"id": run["id"], "started": run["started"], "ended": time.time(), "why": run["why"],
                   "version": run["version"], "exit": code, "ok": code == 0 and not note, "note": note,
+                  "report": report, "seen": False,
                   "net": [{"host": n.get("host"), "verdict": n.get("verdict"), "bytes_out": n.get("bytes_out"),
                            "bytes_in": n.get("bytes_in")} for n in run["net"][-50:]]}
         with self.lock:
@@ -585,10 +635,103 @@ class ToolBox:
                 e["last_start"] = run["started"]
                 self._save()
                 keep = {r["id"] for r in e["runs"]}
-                for old in log_dir.glob("*.log"):
-                    if old.stem not in keep:
-                        old.unlink(missing_ok=True)
+                for old in log_dir.iterdir():
+                    if old.name.split(".")[0] not in keep:
+                        shutil.rmtree(old, ignore_errors=True) if old.is_dir() else old.unlink(missing_ok=True)
         self.notify()
+        try:
+            self.on_run(name, record)
+        except Exception as err:   # the card is a nicety; the run is recorded either way
+            print(f"Warning: could not announce the run of {name}: {err}")
+
+    # --- reports ---------------------------------------------------------------------------
+
+    def _read_as_tool(self, name: str, rel: str, limit: int) -> bytes | None:
+        """A file from the tool's HOME, read as the tool's own user: a link it plants can't
+        make the supervisor read anything the tool couldn't read itself."""
+        path = self.home(name) / rel
+        if no_sudo():
+            try:
+                if path.is_symlink() or not path.is_file():
+                    return None
+                with open(path, "rb") as f:
+                    return f.read(limit + 1)
+            except OSError:
+                return None
+        p = root(["setpriv", f"--reuid={self.user(name)}", f"--regid={self.cfg.made_tools_group}", "--clear-groups",
+                  "timeout", "5", "head", "-c", str(limit + 1), "--", str(path)], timeout=15)
+        return p.stdout if p.returncode == 0 else None
+
+    def _take_report(self, name: str, run_id: str, log_dir: Path) -> dict | None:
+        """The run's report, checked, saved next to its log with its images. A summary for the record."""
+        data = self._read_as_tool(name, REPORT_FILE, reports.MAX_REPORT)
+        if data is None:
+            return None
+        report, problems = reports.parse(data)
+        if report is not None:
+            reports.attach_images(report, lambda rel: self._read_as_tool(name, rel, reports.MAX_IMAGE),
+                                  log_dir / f"{run_id}.images", problems)
+        saved = {"report": report, "problems": problems[:20]}
+        (log_dir / f"{run_id}.report.json").write_text(json.dumps(saved), encoding="utf-8")
+        return {"title": report["title"] if report else "", "status": report["status"] if report else None,
+                "problems": len(problems), "stats": reports.first_stats(report)[:4] if report else []}
+
+    def result(self, name: str, run_id: str) -> dict:
+        """One run as the panel's card shows it: its record, its report, or what it printed."""
+        e = self.get(name)
+        record = next((r for r in e.get("runs", []) if r["id"] == run_id), None)
+        if record is None:
+            raise KeyError("No such run.")
+        out = {"name": name, "title": e["manifest"]["title"], "run": record, "report": None, "problems": [],
+               "notify": e.get("notify", "asks")}
+        if record.get("report"):
+            try:
+                out.update(json.loads((self.logs / name / f"{run_id}.report.json").read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                out["problems"] = ["The report is gone."]
+        if out["report"] is None:
+            try:
+                text = self.log(name, run_id)
+            except KeyError:
+                text = ""
+            out["text"] = text[-20_000:]
+        return out
+
+    def image(self, name: str, run_id: str, n: int) -> tuple[bytes, str]:
+        self.get(name)
+        if not re.match(r"^[0-9]{8}-[0-9]{6}$", run_id):
+            raise KeyError("No such run.")
+        try:
+            data = (self.logs / name / f"{run_id}.images" / str(int(n))).read_bytes()
+        except (OSError, ValueError):
+            raise KeyError("No such image.") from None
+        kind = reports.image_type(data)
+        if kind is None:
+            raise KeyError("No such image.")
+        return data, kind
+
+    def mark_seen(self, name: str, run_id: str | None = None) -> None:
+        """You looked at a run in Reports: it and the tool's earlier ones stop counting as new."""
+        with self.lock:
+            e = self.get(name)
+            for r in e.get("runs", []):
+                if r.get("seen") is False:
+                    r["seen"] = True
+                if r["id"] == run_id:
+                    break
+            self._save()
+        self.notify()   # the counts in every open panel
+
+    def code(self, name: str) -> tuple[int, dict[str, tuple[bytes, bool]]]:
+        """The approved version's files (its code and manifest; not its data or secrets):
+        version, {relative path: (data, executable)}."""
+        e = self.get(name)
+        vdir = self.version_dir(name, e["version"])
+        files = {}
+        for p in sorted(vdir.rglob("*")):
+            if p.is_file() and not p.is_symlink():
+                files[str(p.relative_to(vdir))] = (p.read_bytes(), bool(p.stat().st_mode & 0o100))
+        return e["version"], files
 
     def log(self, name: str, run_id: str) -> str:
         self.get(name)
@@ -661,7 +804,8 @@ class ToolBox:
                         "running_since": self.running[n]["started"] if n in self.running else None,
                         "last_run": runs[-1] if runs else None, "runs": runs[::-1] if name else None,
                         "next_run": next_run(m["schedule"], e.get("last_start"), now) if e["enabled"] else None,
-                        "updated": e.get("updated"),
+                        "updated": e.get("updated"), "notify": e.get("notify", "asks"),
+                        "unseen": sum(1 for r in runs if r.get("seen") is False),   # new in Reports
                         "files": sorted(str(p.relative_to(self.version_dir(n, e["version"])))
                                         for p in self.version_dir(n, e["version"]).rglob("*") if p.is_file())
                         if name else None})
@@ -681,6 +825,20 @@ class ToolBox:
         return ", ".join(parts)
 
 
+GET_CODE_SPEC = {
+    "name": "get_tool_code",
+    "description": (
+        "Copy the code of a tool the user approved (its files and uvmc-tool.json, not its data or the "
+        "secrets in its settings) into your work folder, to read it or change it. The installed tool "
+        "stays as it is: change your copy, test it, and propose it again with propose_tool, which shows "
+        "the user the changes. Returns the folder it was copied to."),
+    "input_schema": {
+        "type": "object",
+        "properties": {"name": {"type": "string", "description": "The tool's name, e.g. bustehrad-weather."}},
+        "required": ["name"],
+    },
+}
+
 PROPOSE_SPEC = {
     "name": "propose_tool",
     "description": (
@@ -689,7 +847,9 @@ PROPOSE_SPEC = {
         "a daily report or a watcher. The user sees its description, settings, sites and full code "
         "(or the changes, for a new version) and approves or declines. Once approved it runs as its own "
         "user from a frozen copy, reaching only the sites it declares. Build and test it in your work "
-        "folder first.\n\n" + FORMAT_HELP),
+        "folder first. When its job is to tell the user something, give it a report (see below): "
+        "the user then sees each run as a card in the conversation, with tables and charts, "
+        "instead of reading a log.\n\n" + FORMAT_HELP),
     "input_schema": {
         "type": "object",
         "properties": {
