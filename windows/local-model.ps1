@@ -30,6 +30,7 @@ $ProgressPreference = 'SilentlyContinue'
 $Port = 8091
 $VmName = 'uvmc'
 $RuleName = 'UVMC local model'
+$OutRuleName = 'UVMC local model (no outgoing)'
 $StateFile = Join-Path $env:LOCALAPPDATA 'UVMC\local-model.json'
 $Startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'UVMC local model.lnk'
 
@@ -172,17 +173,24 @@ function Settings-For($card) {
 }
 
 function Open-Firewall($s, $net) {
-    # Windows asks for administrator rights once, for this one rule: llama-server may accept
-    # connections on the network to the UVMC machine, on its port only.
+    # Windows asks for administrator rights once, for these two rules: llama-server may accept
+    # connections on the network to the UVMC machine, on its port only, and may not open any
+    # connection itself. (It never needs to: answers to the UVMC machine go back on the connection
+    # it opened, and downloads are done by this script. The firewall doesn't filter 127.0.0.1.)
     # Already there for this llama-server? (netsh, since Get-NetFirewallRule sees nothing without
     # administrator rights, which would ask for them again on every run.)
-    $have = (& netsh advfirewall firewall show rule name="$RuleName" verbose 2>$null | Out-String)
-    if ($have -match [regex]::Escape((Server-Exe $s))) { return }
-    Say "Allowing the UVMC machine to reach the model (Windows will ask for administrator rights)..."
+    $exeRx = [regex]::Escape((Server-Exe $s))
+    $haveIn = (& netsh advfirewall firewall show rule name="$RuleName" verbose 2>$null | Out-String)
+    $haveOut = (& netsh advfirewall firewall show rule name="$OutRuleName" verbose 2>$null | Out-String)
+    if ($haveIn -match $exeRx -and $haveOut -match $exeRx) { return }
+    Say "Allowing the UVMC machine to reach the model, and nothing else (Windows will ask for administrator rights)..."
     $exe = (Server-Exe $s).Replace("'", "''")
     $cmd = "Remove-NetFirewallRule -DisplayName '$RuleName' -ErrorAction SilentlyContinue; " +
+           "Remove-NetFirewallRule -DisplayName '$OutRuleName' -ErrorAction SilentlyContinue; " +
            "New-NetFirewallRule -DisplayName '$RuleName' -Direction Inbound -Action Allow -Protocol TCP " +
-           "-LocalPort $Port -Program '$exe' -InterfaceAlias '$($net.Interface)' | Out-Null"
+           "-LocalPort $Port -Program '$exe' -InterfaceAlias '$($net.Interface)' | Out-Null; " +
+           "New-NetFirewallRule -DisplayName '$OutRuleName' -Direction Outbound -Action Block " +
+           "-Program '$exe' | Out-Null"
     $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
         -ArgumentList @('-NoProfile', '-Command', $cmd)
     if ($p.ExitCode -ne 0) { Fail 'The firewall rule was not added (administrator rights refused?).' }
@@ -300,14 +308,18 @@ if ($Start) {
 }
 if ($Remove) {
     if (-not $Yes) {
-        $a = Read-Host "Delete $($state.dir) (llama.cpp and the model) and the firewall rule? [y/N]"
+        $a = Read-Host "Delete $($state.dir) (llama.cpp and the model) and the firewall rules? [y/N]"
         if ($a -notmatch '^[yY]') { exit 0 }
     }
     Stop-Server
     Remove-Item $Startup -ErrorAction SilentlyContinue
-    if ((& netsh advfirewall firewall show rule name="$RuleName" 2>$null | Out-String) -match [regex]::Escape($RuleName)) {
+    $rules = @($RuleName, $OutRuleName) | Where-Object {
+        (& netsh advfirewall firewall show rule name="$_" 2>$null | Out-String) -match [regex]::Escape($_)
+    }
+    if ($rules) {
+        $cmd = ($rules | ForEach-Object { "Remove-NetFirewallRule -DisplayName '$_'" }) -join '; '
         Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden `
-            -ArgumentList @('-NoProfile', '-Command', "Remove-NetFirewallRule -DisplayName '$RuleName'")
+            -ArgumentList @('-NoProfile', '-Command', $cmd)
     }
     if (Test-Path $state.dir) { Remove-Item -Recurse -Force $state.dir }
     $mp = Find-Multipass
