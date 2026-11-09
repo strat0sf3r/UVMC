@@ -55,6 +55,8 @@ class Config:
     delegate_enabled: bool = True
     delegate_workers: list[str] = field(default_factory=list)   # empty: every profile
     delegate_max_steps: int = 30
+    delegate_parallel: int = 3                       # workers at once, per coordinator
+    delegate_slots: int = 6                          # users for workers, all conversations together
     orchestrator_rules: str = ""
     # Claude Code on your plan (see brain.py)
     brain_user: str = "uvmc-brain"
@@ -139,6 +141,8 @@ def load(path: Path = DEFAULT_PATH) -> Config:
         delegate_enabled=bool(dele.get("enabled", True)),
         delegate_workers=[str(w) for w in dele.get("workers", [])],
         delegate_max_steps=int(dele.get("max_steps", 30)),
+        delegate_parallel=max(1, int(dele.get("parallel", 3))),
+        delegate_slots=max(1, int(dele.get("worker_users", 6))),
         orchestrator_rules=orch_file.read_text(encoding="utf-8") if orch_file.exists() else "",
         brain_user=str(sub.get("user", "uvmc-brain")),
         brain_proxy_port=int(sub.get("proxy_port", 3129)),

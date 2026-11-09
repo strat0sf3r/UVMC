@@ -90,13 +90,16 @@ key = "local"                     # local-model.cmd stores it, like set-key
 
 # --- Delegation ------------------------------------------------------------------
 # In the panel you can give a conversation a worker: the model you talk to then
-# coordinates (plans, delegates, checks) and a worker model does the work on the machine,
-# with the same tools, walls and approvals.
+# coordinates (plans, delegates, checks) and workers do the work on the machine, with the
+# same tools, walls and approvals. Each job runs as its own user (agent9, agent10, ...) in
+# its own copy of the coordinator's folder; the coordinator brings the results in.
 
 [delegation]
 enabled = true
 workers = []                      # profiles allowed as workers; empty = all of them
 max_steps = 30                    # model turns per delegated job
+parallel = 3                      # jobs one coordinator can run at the same time
+worker_users = 6                  # users setup makes for jobs, all conversations together
 orchestrator_rules = "orchestrator_rules.md"
 
 [subscription]

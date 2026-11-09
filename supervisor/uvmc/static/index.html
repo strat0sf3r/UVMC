@@ -985,6 +985,34 @@ function apply(ev) {
       add(note);
       break;
     }
+    case "job":   // a delegated job, in its own copy of the coordinator's folder
+      put(el("div", "item line", `Job ${esc(ev.id)}: works as ${esc(ev.user || "its own user")} in its own copy of the folder (<code>${esc(ev.folder)}</code>).`));
+      break;
+    case "job_done": {
+      const ch = ev.changes || [], cf = ev.conflicts || [];
+      const what = ev.error ? `its changes could not be compared: ${ev.error}`
+        : ch.length || cf.length ? `changed ${[...ch, ...cf].join(", ")}; the coordinator brings it in or drops it`
+        : "it changed no files";
+      put(el("div", "item line", esc(`Job ${ev.id}: ${what}.`)));
+      break;
+    }
+    case "job_brought_in": {
+      const bits = [];
+      if ((ev.brought_in || []).length) bits.push(`brought in ${ev.brought_in.join(", ")}`);
+      if ((ev.merged || []).length) bits.push(`merged ${ev.merged.join(", ")}`);
+      if ((ev.kept || []).length) bits.push(`kept its own version of ${ev.kept.join(", ")}`);
+      if ((ev.open_conflicts || []).length) bits.push(`still to decide: ${ev.open_conflicts.join(", ")}`);
+      const row = view.tools[ev.call];
+      const note = el("div", "note quiet", esc(`Job ${ev.id} into the coordinator's folder: ${bits.join("; ") || "nothing to bring in"}.`));
+      (row || thread).appendChild(note);
+      if (!view.loading) refreshFolderSoon();
+      break;
+    }
+    case "job_discarded": {
+      const row = view.tools[ev.call];
+      (row || thread).appendChild(el("div", "note quiet", esc(`Job ${ev.id} dropped; its folder is removed.`)));
+      break;
+    }
     case "worker_mode": add(el("div", "item line", ev.worker
         ? `From now on, ${esc(ev.label || ev.worker)} does the work on the machine, and the model you talk to plans, delegates and checks.`
         : "From now on, the model you talk to does the work itself.")); break;

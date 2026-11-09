@@ -123,8 +123,8 @@ def slice_of_pid(pid: int | None) -> str | None:
 
 
 def agent_users(cfg: Config) -> list[str]:
-    """The agent user and the conversations' users (agent1, agent2, ...)."""
-    return [cfg.user] + [f"{cfg.conv_user_prefix}{i}" for i in range(1, cfg.conv_max_open + 1)]
+    """The agent user, the conversations' users (agent1, agent2, ...) and the workers' after them."""
+    return [cfg.user] + [f"{cfg.conv_user_prefix}{i}" for i in range(1, cfg.conv_max_open + cfg.delegate_slots + 1)]
 
 
 def kill_all_agent_processes(cfg: Config) -> None:

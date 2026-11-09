@@ -59,6 +59,7 @@ mt = c.get("made_tools", {})
 cv = c.get("conversations", {})
 vals = {
     "CONV_MAX": cv.get("max_open", 8),
+    "WORKER_MAX": c.get("delegation", {}).get("worker_users", 6),
     "CONV_PORT": cv.get("proxy_port", 3300),
     "TOOLS_DIR": mt.get("dir", "/var/lib/uvmc-tools"),
     "TOOLS_PORT": mt.get("proxy_port", 3200),
@@ -110,8 +111,11 @@ install -d -m 755 /opt/uvmc/brain-cwd
 # proxy, so its files, its programs and every site it contacts are its own. They're in the
 # agent's group: they can read the shared work folder, not change it; the supervisor (also in
 # the group) compares their copies with it when you bring their changes in.
+# After the conversations' users come the workers' (a coordinator's jobs, each in its own
+# copy of the coordinator's folder): agent9, agent10, ... with the default settings.
+POOL=$((CONV_MAX + WORKER_MAX))
 CONV_UIDS=""
-for i in $(seq 1 "$CONV_MAX"); do
+for i in $(seq 1 "$POOL"); do
   u="$AGENT$i"
   id "$u" >/dev/null 2>&1 || useradd --no-create-home --home-dir "/home/agent/homes/$u" --gid "$AGENT" \
     --shell /bin/bash "$u"
@@ -505,7 +509,7 @@ install -d -m 750 -o "$AGENT" -g "$AGENT" /home/agent/work
 chmod 750 /home/agent && chgrp "$AGENT" /home/agent   # the conversations' users pass through
 install -d -m 750 -o root -g "$AGENT" /home/agent/conv /home/agent/homes
 install -d -m 700 -o "$OWNER" -g "$OWNER" /home/agent/conv/.state
-for i in $(seq 1 "$CONV_MAX"); do
+for i in $(seq 1 "$POOL"); do
   install -d -m 700 -o "$AGENT$i" -g "$AGENT" "/home/agent/homes/$AGENT$i"
   ln -sfn /mnt/shared "/home/agent/homes/$AGENT$i/shared"
 done

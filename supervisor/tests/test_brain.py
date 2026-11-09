@@ -174,7 +174,7 @@ class BrainTest(ServiceBase):
         report = boss.sent[1]["messages"][-1]["content"][0]
         self.assertFalse(report["is_error"])
         self.assertIn("Result (ok)", report["content"])
-        self.assertIsNone(ctl.conv().worker_session)             # its Claude Code is closed after the job
+        self.assertEqual(ctl.conv().running_jobs(), [])          # its Claude Code is closed after the job
         self.assertIsNone(ctl.session.brain)                     # the coordinator never started one
         self.assertTrue(config.load(ROOT / "config.toml").models["claude-plan"].key == "claude-subscription")
 

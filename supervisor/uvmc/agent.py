@@ -34,6 +34,7 @@ class Session:
         self.tool_names: list[str] | None = None   # None: every enabled tool
         self.extra_tools: list[dict] = []           # definitions of tools handled below
         self.handlers: dict[str, Callable[[dict, str], tuple[str, bool]]] = {}
+        self.parallel_tools: set[str] = set()       # calls of these in one reply run at the same time
         self.system: str | None = None              # None: the house rules
         self.max_steps: int | None = None
         self.owns_cancel = True                     # a worker leaves the shared stop signal alone
@@ -84,12 +85,7 @@ class Session:
                         return self._end("reply cut off at the length limit", used)
                     return self._end("done", used)
 
-                results = []
-                for c in reply.tool_calls:
-                    if self.cancel.is_set():
-                        results.append({"id": c.id, "content": "Stopped by the user.", "is_error": True})
-                    else:
-                        results.append(self._handle(c))
+                results = self._handle_all(reply.tool_calls)
                 self.messages.append({"role": "tool_results", "results": results})
                 if self.cancel.is_set():
                     raise KeyboardInterrupt
@@ -113,6 +109,39 @@ class Session:
             self.brain = None
 
     # -----------------------------------------------------------------------
+
+    def _handle_all(self, calls: list[ToolCall]) -> list[dict]:
+        """Every call of a reply, in order; the ones in parallel_tools (a coordinator's delegate
+        calls) all at once, next to the others. The results keep the calls' order."""
+        results: list[dict | None] = [None] * len(calls)
+
+        def one(i: int) -> None:
+            c = calls[i]
+            if self.cancel.is_set():
+                results[i] = {"id": c.id, "content": "Stopped by the user.", "is_error": True}
+            else:
+                results[i] = self._handle(c)
+
+        def in_thread(i: int) -> None:
+            try:
+                one(i)
+            except Exception as e:  # a bug in one job must not lose the others' results
+                c = calls[i]
+                self.log.event("result", id=c.id, tool=c.name, is_error=True, text=f"{type(e).__name__}: {e}")
+                results[i] = {"id": c.id, "content": f"It failed: {type(e).__name__}: {e}", "is_error": True}
+
+        together = [i for i, c in enumerate(calls) if c.name in self.parallel_tools]
+        if len(together) < 2:
+            together = []
+        threads = [threading.Thread(target=in_thread, args=(i,), daemon=True) for i in together]
+        for t in threads:
+            t.start()
+        for i in range(len(calls)):
+            if i not in together:
+                one(i)
+        for t in threads:
+            t.join()
+        return results  # type: ignore[return-value]
 
     def _handle(self, call: ToolCall) -> dict:
         args = call.input if isinstance(call.input, dict) else {}
@@ -173,6 +202,8 @@ def _summary(name: str, args: dict) -> str:
         text = str(args.get("folder", ""))
     elif name == "delegate":
         text = f"{args.get('model', 'worker')}: {args.get('instructions', '')}"
+    elif name in ("bring_in_worker", "discard_worker"):
+        text = str(args.get("job", ""))
     else:
         text = str(args.get("path", "."))
     text = text.replace("\n", " ")

@@ -10,6 +10,7 @@ import hmac
 import json
 import os
 import queue
+import re
 import secrets
 import shutil
 import subprocess
@@ -79,6 +80,34 @@ class Unsaved(Exception):
     pass
 
 
+BRING_IN_SPEC = {
+    "name": "bring_in_worker",
+    "description": (
+        "Brings a finished job's changes into your work folder. Files only the worker changed are copied; a "
+        "text file also changed in your folder since the job started (another job brought in) is merged line "
+        "by line when the changes are in different places. Changed in the same place, it's a conflict: say "
+        "which version to keep with choices, or leave it open. When nothing is left open, the job's folder "
+        "is removed."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "job": {"type": "string", "description": "The job's id, from delegate's result."},
+            "choices": {"type": "object", "additionalProperties": {"type": "string", "enum": ["worker", "mine"]},
+                        "description": 'For conflicts: path -> "worker" (its version) or "mine" (keep yours).'},
+        },
+        "required": ["job"],
+    },
+}
+
+DISCARD_SPEC = {
+    "name": "discard_worker",
+    "description": "Drops a finished job: none of its changes reach your folder, and its folder is removed.",
+    "input_schema": {"type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]},
+}
+
+JOB_ID = re.compile(r"^[0-9a-f]{8}w\d+$")   # a job's folder: its conversation's id, w, a number
+
+
 class Conversation:
     """One conversation in the panel: its own model, timeline, approvals, Stop and box, its own
     Linux user (agent1, agent2, ...), its own copy of the work folder and its own proxy.
@@ -100,7 +129,9 @@ class Conversation:
         self.origin = origin                    # panel | api | claude-app
         self.model = model
         self.worker_model: str | None = None    # set: the model coordinates and this profile works
-        self.worker_session: Session | None = None
+        self.jobs: dict[str, Worker] = {}       # its workers' jobs: running, or done and not brought in yet
+        self.job_seq = 0
+        self.job_room = threading.Semaphore(cfg.delegate_parallel)   # jobs at once
         self.cancel = threading.Event()
         self.state = "idle"                     # idle | running | waiting | stopping
         self.thread: threading.Thread | None = None
@@ -109,8 +140,6 @@ class Conversation:
         self.created = self.last_active = time.time()
         self.slice = conversation_slice(self.id)
         self.bridge_lock = threading.Lock()     # Claude Code's tool calls, one at a time (per conversation)
-        self.worker_key = secrets.token_hex(16)  # the same, for a Claude Code worker
-        self.worker_bridge_lock = threading.Lock()  # its own: the coordinator's delegate call holds the other
         self.tools = Tools(cfg, make_executor(cfg, self.slice, user=self.user, workdir=copy_dir))
         self.log: RunLog
         self.session: Session
@@ -118,6 +147,37 @@ class Conversation:
     @property
     def busy(self) -> bool:
         return self.state != "idle"
+
+    def running_jobs(self) -> list["Worker"]:
+        return [w for w in list(self.jobs.values()) if w.session is not None]
+
+
+class Worker:
+    """One job a coordinator handed over: a worker model in its own sandbox, like a
+    conversation's: its own user (after the conversations' ones), its own copy of the
+    coordinator's folder, its own proxy and box. Several can run at once. When the job ends
+    its folder is frozen, and the coordinator brings its changes in (or drops them)."""
+
+    def __init__(self, cfg: config.Config, conv: Conversation, jid: str, slot: int, copy_dir: str,
+                 profile: Profile, call: str, instructions: str):
+        self.id = jid
+        self.conv = conv
+        self.slot = slot
+        self.user = f"{cfg.conv_user_prefix}{slot}" if not no_sudo() else cfg.user
+        self.port = cfg.conv_proxy_port + slot if not no_sudo() else 0
+        self.copy_dir = copy_dir
+        self.profile = profile
+        self.call = call                         # the coordinator's delegate call: its steps nest under it
+        self.instructions = instructions
+        self.proxy: Proxy | None = None
+        self.task_sites: dict[str, bool] = {}
+        self.key = secrets.token_hex(16)         # a Claude Code worker's tool calls name it with this
+        self.bridge_lock = threading.Lock()
+        self.slice = conversation_slice(jid)
+        self.tools = Tools(cfg, make_executor(cfg, self.slice, user=self.user, workdir=copy_dir))
+        self.session: Session | None = None      # while it works
+        self.reason = ""                         # how it ended
+        self.report = ""
 
 
 class Controller:
@@ -161,6 +221,9 @@ class Controller:
         self.copies = WorkCopies(cfg)             # each conversation's own copy of the work folder
         self.copy_lock = threading.Lock()
         self.pool_missing = self._pool_missing()  # setup makes the conversations' users
+        first = cfg.conv_max_open + 1               # the workers' users come after them
+        self.job_slots = list(range(first, first + cfg.delegate_slots))   # free ones
+        self.job_slot_cond = threading.Condition()
         self.oom_seen: dict[str, int] = {}        # memory boxes: processes stopped for lack of memory, so far
         self.net_on = False
         self.convs: dict[str, Conversation] = {}  # open conversations, oldest first
@@ -334,7 +397,7 @@ class Controller:
 
         if grew("uvmc-brain.slice"):
             using = [c for c in convs if c.session.brain is not None
-                     or (c.worker_session is not None and c.worker_session.brain is not None)]
+                     or any(w.session.brain is not None for w in c.running_jobs())]
             alert(using, "claude-code",
                   f"Claude Code ran out of memory: its box ({cap('uvmc-brain.slice')} for all \"my plan\" "
                   "conversations and workers together) was full, so the system stopped one of its processes and "
@@ -343,7 +406,7 @@ class Controller:
         agent_box = cap(SLICE_AGENT)
         hit = []
         for c in convs:
-            if grew(f"{SLICE_AGENT}/{c.slice}"):
+            if grew(f"{SLICE_AGENT}/{c.slice}") or any(grew(f"{SLICE_AGENT}/{w.slice}") for w in c.running_jobs()):
                 hit.append(c)
         whole = grew(SLICE_AGENT)
         if hit or whole:
@@ -395,17 +458,18 @@ class Controller:
         """A request from Claude Code's MCP server: list the tools, or run one."""
         given = str(req.get("conv", ""))
         c = next((c for c in self.convs.values() if hmac.compare_digest(c.key, given)), None)
-        as_worker = False
+        w = None
         if c is None and given:   # a Claude Code worker's calls
-            c = next((c for c in self.convs.values() if hmac.compare_digest(c.worker_key, given)), None)
-            as_worker = c is not None
+            w = next((w for c in self.convs.values() for w in c.running_jobs()
+                      if hmac.compare_digest(w.key, given)), None)
+            c = w.conv if w is not None else None
         if c is None and not given:   # an MCP server from before conversations had keys
             with_brain = [c for c in self.convs.values() if c.session.brain is not None]
             c = with_brain[0] if len(with_brain) == 1 else None
         if c is None:
             closed = "This conversation was closed" if given else "No task is running"
             return {"text": f"{closed}, so nothing was done.", "is_error": True}
-        s = c.worker_session if as_worker else c.session
+        s = w.session if w is not None else c.session
         if s is None:
             return {"text": "The worker's job has ended, so nothing was done.", "is_error": True}
         if req.get("op") == "list":
@@ -421,8 +485,11 @@ class Controller:
         if s.cancel.is_set():
             s.log.event("result", id=call_id, tool=name, is_error=True, text="Stopped by the user.")
             return {"text": "Stopped by the user.", "is_error": True}
-        with c.worker_bridge_lock if as_worker else c.bridge_lock:  # one at a time, like the other models' calls
+        if w is None and name == "delegate":   # jobs handed over together run together
             result = s._handle(ToolCall(call_id, name, args))
+        else:
+            with w.bridge_lock if w is not None else c.bridge_lock:  # one at a time, like the other models' calls
+                result = s._handle(ToolCall(call_id, name, args))
         return {"text": result["content"], "is_error": result["is_error"]}
 
     # --- conversations and events ----------------------------------------------------
@@ -497,6 +564,12 @@ class Controller:
             metas = sorted(self.copies.state.glob("*/meta.json"), key=lambda p: p.stat().st_mtime)
         except OSError:
             return
+        try:   # jobs don't survive a restart: their coordinator starts afresh
+            for d in self.copies.root.iterdir():
+                if JOB_ID.match(d.name):
+                    self.copies.remove(d.name)
+        except (OSError, SyncError):
+            pass
         for meta in metas[: self.cfg.conv_max_open]:
             cid = meta.parent.name
             try:
@@ -567,6 +640,8 @@ class Controller:
         c.session.close()
         if c.proxy is not None:
             c.proxy.stop()
+        for jid in list(c.jobs):
+            self._drop_job(c, jid)
         try:
             self.copies.remove(c.id)
         except (SyncError, OSError) as e:
@@ -720,10 +795,13 @@ class Controller:
         return {
             "name": "delegate",
             "description": (
-                "Hand a piece of work to a worker agent that operates the machine (shell, files, packages). "
-                "The worker starts with no memory of this conversation, so the instructions must contain "
-                "everything it needs: goal, context, constraints, what done looks like, and where to save "
-                "results. It returns the worker's final report."),
+                "Hand a job to a worker agent that operates the machine (shell, files, packages). The worker "
+                "starts with no memory of this conversation, so the instructions must contain everything it "
+                "needs: goal, context, constraints, what done looks like, and where to save results. It works "
+                "in its own copy of your work folder, so its changes reach your folder only when you bring "
+                f"them in (bring_in_worker). Several delegate calls in one reply run at the same time (up to "
+                f"{self.cfg.delegate_parallel}), each in its own copy: give them independent jobs. Returns the "
+                "worker's final report and the files it changed."),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -743,27 +821,43 @@ class Controller:
             b = self.settings.briefing()
             s.briefing = (b, self.cfg.house_rules, self._live_briefing(b, c=c) if b["enabled"] else "")
         b, rules, live_text = s.briefing
+        job_specs, job_handlers = self._job_tools(c)
         if c.worker_model and self.cfg.delegate_enabled:
             s.tool_names = [n for n in ("read_file", "list_dir") if n in self.cfg.tools_enabled]
             own, own_handlers = self._share_tools(c)
-            s.extra_tools = [self._delegate_definition(c), PROPOSE_SPEC]
+            s.extra_tools = [self._delegate_definition(c), *job_specs, PROPOSE_SPEC]
             s.handlers = {"delegate": lambda args, call_id, c=c: self._delegate(c, args, call_id),
-                          "propose_tool": own_handlers["propose_tool"]}
+                          **job_handlers, "propose_tool": own_handlers["propose_tool"]}
+            s.parallel_tools = {"delegate"}
             s.system = briefing_mod.compose(self.cfg.orchestrator_rules or rules, b, live_text)
         else:
             s.tool_names = None
             s.system = briefing_mod.compose(rules, b, live_text)
             s.extra_tools, s.handlers = self._share_tools(c)
+            s.parallel_tools = set()
+            if c.jobs:   # the worker was switched off with jobs not brought in: they can still be
+                s.extra_tools = s.extra_tools + job_specs
+                s.handlers = {**s.handlers, **job_handlers}
 
-    def _live_briefing(self, b: dict, worker: str | None = None, c: Conversation | None = None) -> str:
+    def _job_tools(self, c: Conversation) -> tuple[list[dict], dict]:
+        return [BRING_IN_SPEC, DISCARD_SPEC], {
+            "bring_in_worker": lambda args, call_id, c=c: self._bring_in_job(c, args, call_id),
+            "discard_worker": lambda args, call_id, c=c: self._discard_job(c, args, call_id)}
+
+    def _live_briefing(self, b: dict, worker: str | None = None, c: Conversation | None = None,
+                       job: Worker | None = None) -> str:
         c = c or self.conv()
 
         def work_names():
+            if job is not None:   # its own copy, which the supervisor (in the agent's group) can read
+                top = Path(job.copy_dir)
+                return sorted(n.name + ("/" if n.is_dir() else "") for n in top.iterdir() if n.name != MERGE_DIR)
             return [e["name"] + ("/" if e["dir"] else "") for e in self.list_files(".", c.id)["entries"]]
         view = SimpleNamespace(cfg=self.cfg, model=c.model, worker_model=c.worker_model,
                                shares=self.shares, sites=self.sites, made=self.made,
-                               workdir=c.copy_dir or self.cfg.workdir, shared_workdir=self.cfg.workdir,
-                               user=c.user)
+                               workdir=(job.copy_dir if job else c.copy_dir) or self.cfg.workdir,
+                               shared_workdir=self.cfg.workdir, coordinator_workdir=c.copy_dir,
+                               user=job.user if job else c.user)
         return briefing_mod.live(view, b["parts"], work_names, worker=worker)
 
     def briefing_view(self) -> dict:
@@ -774,36 +868,39 @@ class Controller:
                 "preview": briefing_mod.compose(self.cfg.house_rules, b, live_text),
                 "current": self.session.system if self.session.briefing is not None else None}
 
-    def _share_tools(self, c: Conversation) -> tuple[list[dict], dict]:
+    def _share_tools(self, c: Conversation, job: Worker | None = None) -> tuple[list[dict], dict]:
         """Tools handled by the supervisor itself: propose_tool, and update_shared_file when a
-        folder is shared."""
+        folder is shared. job: for a worker, whose files are in its own folder."""
         specs = [PROPOSE_SPEC]
-        handlers = {"propose_tool": lambda args, call_id, c=c: self._propose_tool(c, args, call_id)}
+        handlers = {"propose_tool": lambda args, call_id, c=c: self._propose_tool(c, args, call_id, job)}
         if self.made.registry:
             specs.append(GET_CODE_SPEC)
-            handlers["get_tool_code"] = lambda args, call_id, c=c: self._get_tool_code(c, args)
+            handlers["get_tool_code"] = lambda args, call_id, c=c: self._get_tool_code(c, args, job)
         if self.shares.names():
             specs.append(SHARE_SPEC)
-            handlers["update_shared_file"] = lambda args, call_id, c=c: self._update_shared(c, args, call_id)
+            handlers["update_shared_file"] = lambda args, call_id, c=c: self._update_shared(c, args, call_id, job)
         return specs, handlers
 
-    def copy_tool_code(self, c: Conversation, name: str) -> tuple[str, int, list[str]]:
-        """An approved tool's code, copied into the conversation's work folder (tools/<name>, or
-        tools/<name>-v<version> if that folder is already there, so nothing of the agent's is lost)."""
+    def copy_tool_code(self, c: Conversation, name: str, job: Worker | None = None) -> tuple[str, int, list[str]]:
+        """An approved tool's code, copied into the conversation's work folder (or a job's) as
+        tools/<name>, or tools/<name>-v<version> if that folder is already there, so nothing of
+        the agent's is lost."""
         version, files = self.made.code(name)
-        self.ensure_copy(c)
+        if job is None:
+            self.ensure_copy(c)
+        at = job or c
         folder = f"tools/{name}"
-        if (Path(c.copy_dir) / folder).exists():
+        if (Path(at.copy_dir) / folder).exists():
             folder = f"tools/{name}-v{version}"
-            if (Path(c.copy_dir) / folder).exists():
+            if (Path(at.copy_dir) / folder).exists():
                 return folder, version, sorted(files)   # this version is there already
-        self.copies.put_files(c.id, c.user, folder, files)
+        self.copies.put_files(at.id, at.user, folder, files)
         return folder, version, sorted(files)
 
-    def _get_tool_code(self, c: Conversation, args: dict) -> tuple[str, bool]:
+    def _get_tool_code(self, c: Conversation, args: dict, job: Worker | None = None) -> tuple[str, bool]:
         name = str(args.get("name", "")).strip()
         try:
-            folder, version, files = self.copy_tool_code(c, name)
+            folder, version, files = self.copy_tool_code(c, name, job)
         except KeyError as e:
             known = ", ".join(sorted(self.made.registry)) or "none"
             return f"{e.args[0]} The approved tools: {known}.", True
@@ -823,11 +920,11 @@ class Controller:
                                    "in this conversation's folder, for you and the agent to work on.")
         return {"conv": c.id, "folder": folder, "version": version, "name": name, "title": title}
 
-    def _propose_tool(self, c: Conversation, args: dict, call_id: str) -> tuple[str, bool]:
+    def _propose_tool(self, c: Conversation, args: dict, call_id: str, job: Worker | None = None) -> tuple[str, bool]:
         """A tool the agent built: shown to you in full; installed only if you approve."""
         folder = str(args.get("folder", "")).strip()
         try:
-            manifest, files = self.made.read_folder(c.tools._as_agent, folder)
+            manifest, files = self.made.read_folder((job or c).tools._as_agent, folder)
             info = self.made.preview(manifest, files)
         except ToolError as e:
             return str(e), True
@@ -848,11 +945,11 @@ class Controller:
                 f"The installed copy is frozen; keep your folder {folder} to make changes and propose "
                 f"them again. {nxt}"), False
 
-    def _update_shared(self, c: Conversation, args: dict, call_id: str) -> tuple[str, bool]:
+    def _update_shared(self, c: Conversation, args: dict, call_id: str, job: Worker | None = None) -> tuple[str, bool]:
         share, rel = str(args.get("share", "")), str(args.get("path", ""))
         try:
             target = self.shares.target(share, rel)
-            src = self.shares.source(c.tools._as_agent, str(args.get("source", "")))
+            src = self.shares.source((job or c).tools._as_agent, str(args.get("source", "")))
             info = self.shares.preview(src, target)
         except ShareError as e:
             return str(e), True
@@ -876,6 +973,9 @@ class Controller:
         return text
 
     def _delegate(self, c: Conversation, args: dict, call_id: str) -> tuple[str, bool]:
+        """One job, in its own sandbox: a user from the workers' pool, a copy of the coordinator's
+        folder, its own proxy and box. Several run at once when the coordinator asks for several
+        in one reply. The coordinator brings the result in afterwards (bring_in_worker)."""
         instructions = str(args.get("instructions", "")).strip()
         if not instructions:
             return "No instructions given.", True
@@ -889,36 +989,199 @@ class Controller:
             return f"The worker could not start: {e}", True
         if provider is None:
             return f"The worker could not start: no API key for {profile.label}.", True
-        worker = Session(self.cfg, provider, lambda tool, a, reason, cid="": self._approve(c, tool, a, reason, cid),
-                         ChildLog(c.log, parent=call_id, agent=profile.name),
-                         out=lambda *_: None, cancel=c.cancel, tools=c.tools)
-        worker.owns_cancel = False
-        worker.max_steps = self.cfg.delegate_max_steps
-        worker.tool_names = [n for n in self.cfg.tools_enabled if n != "delegate"]
-        worker.extra_tools, worker.handlers = self._share_tools(c)
-        # The same three parts as the agent you talk to: house rules, a live briefing (as a worker),
-        # your notes. The coordinator gets its own role's rules instead of the house rules.
-        b, rules, _ = c.session.briefing or (self.settings.briefing(), self.cfg.house_rules, "")
-        worker_live = self._live_briefing(b, worker=profile.name, c=c) if b["enabled"] else ""
-        worker.system = briefing_mod.compose(rules, b, worker_live)
-        # Claude Code on your plan as the worker: its own process, whose tool calls name the worker.
-        worker.bridge_key = c.worker_key
-        c.worker_session = worker
+        missing = self._job_pool_missing()
+        if missing:
+            return (f"Workers need their own users, and {missing} doesn't exist yet: the user has to run update "
+                    "on their PC first. Nothing was done."), True
+        while not c.job_room.acquire(timeout=0.5):   # this coordinator's jobs at once
+            if c.cancel.is_set():
+                return "Stopped by the user.", True
+        slot = None
         try:
-            reason = worker.run_task(instructions)
-        except ProviderError as e:
-            return f"The worker ({profile.label}) failed: {e}", True
+            slot = self._take_job_slot(c)            # all conversations' jobs at once
+            if slot is None:
+                return "Stopped by the user.", True
+            with self.lock:
+                c.job_seq += 1
+                jid = f"{c.id}w{c.job_seq}"
+            w = Worker(self.cfg, c, jid, slot, str(self.copies.copy_dir(jid)), profile, call_id, instructions)
+            log = ChildLog(c.log, parent=call_id, agent=profile.name)
+            try:
+                self.copies.create_job(jid, c.copy_dir, w.user)
+            except (SyncError, OSError) as e:
+                return f"Could not make the job's own folder, so nothing was done: {e}", True
+            c.jobs[jid] = w
+            log.event("job", id=jid, folder=w.copy_dir, user=w.user)
+            if self.net_on:
+                self._start_job_proxy(c, w)
+            worker = Session(self.cfg, provider, lambda tool, a, reason, cid="": self._approve(c, tool, a, reason, cid),
+                             log, out=lambda *_: None, cancel=c.cancel, tools=w.tools)
+            worker.owns_cancel = False
+            worker.max_steps = self.cfg.delegate_max_steps
+            worker.tool_names = [n for n in self.cfg.tools_enabled if n != "delegate"]
+            worker.extra_tools, worker.handlers = self._share_tools(c, w)
+            # The same three parts as the agent you talk to: house rules, a live briefing (as a worker),
+            # your notes. The coordinator gets its own role's rules instead of the house rules.
+            b, rules, _ = c.session.briefing or (self.settings.briefing(), self.cfg.house_rules, "")
+            worker_live = self._live_briefing(b, worker=profile.name, c=c, job=w) if b["enabled"] else ""
+            worker.system = briefing_mod.compose(rules, b, worker_live)
+            # Claude Code on your plan as the worker: its own process, whose tool calls name this job.
+            worker.bridge_key = w.key
+            w.session = worker
+            failed = None
+            try:
+                w.reason = worker.run_task(instructions)
+            except ProviderError as e:
+                failed = str(e)
+                w.reason = "failed"
+            finally:
+                w.session = None
+                worker.close()   # each job starts fresh, so a Claude Code worker doesn't linger
+                self._end_job(c, w, log)
+            w.report = worker.last_text or "(it gave no final report)"
+            return self._job_result(c, w, log, failed)
         finally:
-            c.worker_session = None
-            worker.close()  # each job starts fresh, so a Claude Code worker doesn't linger
-        report = worker.last_text or "(it gave no final report)"
-        return f"The worker ({profile.label}) ended: {reason}.\n\nIts final report:\n{report}", reason != "done"
+            if slot is not None:
+                self._free_job_slot(slot)
+            c.job_room.release()
 
-    def _active_call(self, c: Conversation) -> str | None:
-        """The tool call running right now in a conversation, the worker's if one is busy."""
-        w = c.worker_session
-        if w is not None and w.current_call:
-            return w.current_call
+    def _job_result(self, c: Conversation, w: Worker, log, failed: str | None) -> tuple[str, bool]:
+        head = (f"Job {w.id}: the worker ({w.profile.label}) " +
+                (f"failed: {failed}" if failed else f"ended: {w.reason}.\n\nIts final report:\n{w.report}"))
+        try:
+            plan = self.copies.job_plan(w.id, c.copy_dir)
+        except (SyncError, OSError) as e:
+            log.event("job_done", id=w.id, changes=[], conflicts=[], error=str(e))
+            return (f"{head}\n\nIts changes could not be compared with your folder ({e}). Its folder is "
+                    f"{w.copy_dir}; discard_worker drops it."), True
+        changes = [f"{x['path']} ({x['change']})" for x in plan["changed"] + plan["merged"]]
+        conflicts = [f"{x['path']} ({x['kind']})" for x in plan["conflicts"]]
+        log.event("job_done", id=w.id, changes=changes, conflicts=conflicts)
+        if not changes and not conflicts:
+            self._drop_job(c, w.id)
+            tail = "It changed no files, so there is nothing to bring in."
+        else:
+            listed = ", ".join(changes + conflicts)
+            tail = (f"Its changes are in its own folder, {w.copy_dir}, not in yours yet: {listed}. "
+                    f"Check them there with read_file if you need to, then bring them in with bring_in_worker "
+                    f'(job "{w.id}"), or drop them with discard_worker.')
+            if conflicts:
+                tail += (" Some of them were also changed in your folder since the job started (another job "
+                         "brought in): bring_in_worker will ask you which version to keep.")
+        return f"{head}\n\n{tail}", bool(failed) or w.reason != "done"
+
+    def _end_job(self, c: Conversation, w: Worker, log) -> None:
+        """Nothing of the job keeps running, and its folder can't change any more: its user does
+        the next job."""
+        kill_slice(w.slice)
+        if not no_sudo():
+            root(["pkill", "-KILL", "-u", w.user], timeout=15)
+        if w.proxy is not None:
+            w.proxy.stop()
+            w.proxy = None
+        w.task_sites.clear()
+        try:
+            self.copies.freeze_job(w.id)
+        except (SyncError, OSError) as e:
+            log.event("notice", text=f"The job's folder could not be locked: {e}")
+
+    def _start_job_proxy(self, c: Conversation, w: Worker) -> None:
+        try:
+            w.proxy = Proxy(w.port, self.cfg.net_ports, self.sites,
+                            lambda host, port, c=c, w=w: self.decide_site(c, host, port, w),
+                            lambda info, c=c, w=w: self._on_net(c, info, w)).start()
+            w.tools.executor.proxy_port = w.proxy.port
+        except OSError as e:
+            c.log.event("notice", text=f"A worker's proxy could not start ({e}), so it has no internet.")
+
+    def _job_pool_missing(self) -> str:
+        """Setup makes the workers' users after the conversations'; an older setup doesn't."""
+        if no_sudo():
+            return ""
+        import pwd
+        first = self.cfg.conv_max_open + 1
+        for i in range(first, first + self.cfg.delegate_slots):
+            try:
+                pwd.getpwnam(f"{self.cfg.conv_user_prefix}{i}")
+            except KeyError:
+                return f"{self.cfg.conv_user_prefix}{i}"
+        return ""
+
+    def _take_job_slot(self, c: Conversation) -> int | None:
+        with self.job_slot_cond:
+            while not self.job_slots:
+                if c.cancel.is_set():
+                    return None
+                self.job_slot_cond.wait(0.5)
+            return self.job_slots.pop(0)
+
+    def _free_job_slot(self, slot: int) -> None:
+        with self.job_slot_cond:
+            self.job_slots.append(slot)
+            self.job_slots.sort()
+            self.job_slot_cond.notify_all()
+
+    def _drop_job(self, c: Conversation, jid: str) -> None:
+        c.jobs.pop(jid, None)
+        try:
+            self.copies.remove(jid)
+        except (SyncError, OSError) as e:
+            print(f"Warning: could not remove the folder of job {jid}: {e}")
+
+    def _waiting_jobs(self, c: Conversation) -> str:
+        done = [w.id for w in c.jobs.values() if w.session is None]
+        return f"Jobs waiting to be brought in: {', '.join(done)}." if done else "No job is waiting to be brought in."
+
+    def _bring_in_job(self, c: Conversation, args: dict, call_id: str) -> tuple[str, bool]:
+        """A finished job's changes into the coordinator's folder, the three-way way."""
+        jid = str(args.get("job", "")).strip()
+        w = c.jobs.get(jid)
+        if w is None:
+            return f"There is no job {jid!r}. {self._waiting_jobs(c)}", True
+        if w.session is not None:
+            return f"Job {jid} is still working; bring it in when it has reported.", True
+        raw = args.get("choices")
+        choices = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        bad = sorted(k for k, v in choices.items() if v not in ("worker", "mine"))
+        if bad:
+            return f'Choices are "worker" or "mine"; not for: {", ".join(bad)}. Nothing was brought in.', True
+        try:
+            r = self.copies.bring_in_job(jid, c.copy_dir, c.user, choices)
+        except (SyncError, OSError) as e:
+            return f"Bringing it in failed: {e}", True
+        c.log.event("job_brought_in", id=jid, call=call_id, **r)
+        parts = []
+        if r["brought_in"]:
+            parts.append(f"brought in: {', '.join(r['brought_in'])}")
+        if r["merged"]:
+            parts.append(f"merged line by line with your changes: {', '.join(r['merged'])}")
+        if r["kept"]:
+            parts.append(f"kept your version: {', '.join(r['kept'])}")
+        text = (f"Job {jid}: " + "; ".join(parts) + ".") if parts else f"Job {jid}: nothing to bring in."
+        if r["open_conflicts"]:
+            text += (f" Still open, changed both in its folder and in yours: {', '.join(r['open_conflicts'])}. "
+                     f"Its versions are in {w.copy_dir}. Call bring_in_worker again with choices for each of "
+                     'these files ("worker" or "mine"); or delegate combining them (a worker can read both '
+                     "folders), bring that job in, and then call discard_worker for this one.")
+            return text, False
+        self._drop_job(c, jid)
+        return text + " Its folder is removed.", False
+
+    def _discard_job(self, c: Conversation, args: dict, call_id: str) -> tuple[str, bool]:
+        jid = str(args.get("job", "")).strip()
+        w = c.jobs.get(jid)
+        if w is None:
+            return f"There is no job {jid!r}. {self._waiting_jobs(c)}", True
+        if w.session is not None:
+            return f"Job {jid} is still working.", True
+        self._drop_job(c, jid)
+        c.log.event("job_discarded", id=jid, call=call_id)
+        return f"Job {jid} is dropped: none of its changes are in your folder, and its folder is removed.", False
+
+    def _active_call(self, c: Conversation, w: Worker | None = None) -> str | None:
+        """The tool call running right now in a conversation, or in one of its jobs."""
+        if w is not None:
+            return w.session.current_call if w.session is not None else None
         return c.session.current_call
 
     def snapshot(self, cid: str | None = None) -> dict:
@@ -1087,6 +1350,8 @@ class Controller:
             if all(self.convs[x].cancel.is_set() for x in p["convs"] if x in self.convs):
                 p["event"].set()
         kill_slice(c.slice)
+        for w in c.running_jobs():
+            kill_slice(w.slice)
         if not [x for x in self.running() if x is not c]:
             kill_all_agent_processes(self.cfg)   # nothing else works: also whatever escaped its box
 
@@ -1392,14 +1657,16 @@ class Controller:
     # Each conversation has its own proxy, and the firewall lets its user reach only that one,
     # so every connection and every question about a new site belongs to one conversation.
 
-    def decide_site(self, c: Conversation, host: str, port: int) -> bool:
-        """Called by a conversation's proxy for a site that is not on the allowed list."""
-        if not c.busy or c.cancel.is_set():
+    def decide_site(self, c: Conversation, host: str, port: int, w: Worker | None = None) -> bool:
+        """Called by a conversation's proxy (or one of its jobs') for a site that is not on the
+        allowed list. The question appears in the conversation, on the step that asked."""
+        if not c.busy or c.cancel.is_set() or (w is not None and w.session is None):
             return False  # nobody is watching a task here, so nothing new goes out
-        key = f"{c.id}/{host}"
+        at = w or c
+        key = f"{at.id}/{host}"
         with self.site_lock:
-            if host in c.task_sites:
-                return c.task_sites[host]
+            if host in at.task_sites:
+                return at.task_sites[host]
             wait = self.site_waits.get(key)
             owner = wait is None
             if owner:
@@ -1410,13 +1677,13 @@ class Controller:
         result = False
         try:
             if self.cfg.net_ask_unknown:
-                answer = self._ask("site", {"host": host, "port": port, "call": self._active_call(c),
+                answer = self._ask("site", {"host": host, "port": port, "call": self._active_call(c, w),
                                             "reason": "This site is not on your allowed list."},
                                    [c], timeout=self.cfg.net_approval_timeout_s)
                 if answer == "always":
                     self.sites.add(host)
                 result = answer != "deny"
-            c.task_sites[host] = result
+            at.task_sites[host] = result
         finally:
             wait["result"] = result
             wait["event"].set()
@@ -1424,8 +1691,8 @@ class Controller:
                 self.site_waits.pop(key, None)
         return result
 
-    def _on_net(self, c: Conversation, info: dict) -> None:
-        info = {**info, "call": self._active_call(c)}
+    def _on_net(self, c: Conversation, info: dict, w: Worker | None = None) -> None:
+        info = {**info, "call": self._active_call(c, w)}
         self.net_recent.append({**info, "conv": c.id, "t": time.time()})
         c.log.event("net", **info)
 
@@ -1442,20 +1709,30 @@ class Controller:
 
     # --- activity ------------------------------------------------------------
 
-    def _conv_of_process(self, info: dict) -> Conversation | None:
-        """Which conversation started a program: from its box, else the only one working."""
+    def _conv_of_process(self, info: dict) -> tuple[Conversation | None, Worker | None]:
+        """Which conversation (and which of its jobs) started a program: from its box, else the
+        only one working."""
         for pid in (info.get("pid"), info.get("ppid")):
             name = slice_of_pid(pid)
             if name:
-                return next((c for c in self.convs.values() if c.slice == name), None)
+                for c in list(self.convs.values()):
+                    if c.slice == name:
+                        return c, None
+                    w = next((w for w in c.running_jobs() if w.slice == name), None)
+                    if w is not None:
+                        return c, w
+                return None, None
         working = self.running()
-        return working[0] if len(working) == 1 else None
+        if len(working) == 1:
+            jobs = working[0].running_jobs()
+            return working[0], (jobs[0] if len(jobs) == 1 else None)
+        return None, None
 
     def _on_exec(self, info: dict) -> None:
         if not self.exec_filter.keep(info):
             return
-        c = self._conv_of_process(info)
-        info = {**info, "call": self._active_call(c) if c else None}
+        c, w = self._conv_of_process(info)
+        info = {**info, "call": self._active_call(c, w) if c else None}
         self.exec_recent.append({**info, "conv": c.id if c else None})
         if c is not None:
             c.log.event("exec", **{k: v for k, v in info.items() if k != "t"}, at=info.get("t"))
@@ -1475,7 +1752,8 @@ class Controller:
             if len(parts) < 7:
                 continue
             user, pid, ppid, age, cpu, rss, args = parts
-            conv = next((c for c in self.convs.values() if c.user == user and user != self.cfg.user), None)
+            conv = next((c for c in self.convs.values() if user != self.cfg.user
+                         and (c.user == user or any(w.user == user for w in c.running_jobs()))), None)
             out.append({"pid": int(pid), "ppid": int(ppid), "seconds": int(age), "cpu": float(cpu),
                         "memory": int(rss) * 1024, "args": args, "user": user,
                         "conv": conv.id if conv else None, "conv_title": conv.title if conv else None})

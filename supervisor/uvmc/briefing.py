@@ -46,11 +46,12 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
         profile = ctl.cfg.profile(worker or ctl.model)
         role = ""
         if worker:
-            role = (f" You are a worker: you take one job at a time from the coordinator "
-                    f"({ctl.cfg.profile(ctl.model).label}) and report back to it.")
+            role = (f" You are a worker: you do one job for the coordinator "
+                    f"({ctl.cfg.profile(ctl.model).label}) and report back to it. Other workers may be doing "
+                    "other jobs at the same time, each in its own folder.")
         elif ctl.worker_model and ctl.cfg.delegate_enabled:
             role = (f" You are the coordinator: the worker that does the work on the machine is "
-                    f"{ctl.cfg.profile(ctl.worker_model).label}.")
+                    f"{ctl.cfg.profile(ctl.worker_model).label}, up to {ctl.cfg.delegate_parallel} jobs at once.")
         lines.append(f"- This is UVMC {__version__}. You are {profile.label} ({profile.model}).{role}")
     if on("date"):
         lines.append(f"- Today is {dt.date.today().isoformat()} (the machine's clock).")
@@ -81,7 +82,11 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
             names = []
         work = getattr(ctl, "workdir", ctl.cfg.workdir)
         shared = getattr(ctl, "shared_workdir", ctl.cfg.workdir)
-        if work != shared:
+        if worker and getattr(ctl, "coordinator_workdir", ""):
+            lines.append(f"- Your work folder is {work}: your own copy of the coordinator's folder "
+                         f"({ctl.coordinator_workdir}), made for this job. Commands start there. When you report, "
+                         "the coordinator checks your changes and brings them into its folder.")
+        elif work != shared:
             lines.append(f"- Your work folder is {work}: this conversation's own copy of the main work folder "
                          f"({shared}, read-only for you). Commands start there. The user brings your changes into "
                          "the main folder when they're ready, and the latest files from it into your copy.")

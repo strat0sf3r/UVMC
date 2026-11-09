@@ -504,6 +504,87 @@ class WorkCopies:
     def undo_bring_in(self, checkpoint: str) -> None:
         self.main_undo.restore(checkpoint)
 
+    # --- a worker's copy of its coordinator's folder ------------------------------------------
+    # A coordinator's job runs in a copy of the coordinator's folder, as the worker's own user.
+    # When it ends, the copy is frozen (the worker's user may do the next job), and the
+    # coordinator brings its changes in, the same three-way way as a bring-in to the main
+    # folder, but in one direction only: into the coordinator's folder.
+
+    def create_job(self, jid: str, source: str, user: str) -> None:
+        """Copies the coordinator's folder for a job, and keeps it as the base: a real copy, since
+        the worker edits its files in place."""
+        copy, base = self.copy_dir(jid), self.base_dir(jid)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        self._run(["install", "-d", "-m", "750", *self._owner(user), str(copy)])
+        # .uvmc-merge too: a coordinator resolving a conflict hands the merging to a worker, which
+        # finds the other versions where the task says. (Like everywhere, it isn't brought back.)
+        self._run(["rsync", "-a", "--delete", f"{source}/", f"{copy}/"], "copying the coordinator's folder")
+        self._run(["rsync", "-a", "--delete", f"{copy}/", f"{base}/"], "saving the base")
+        if not no_sudo():
+            self._run(["chown", "-R", f"{user}:{self.cfg.user}", str(copy)])
+
+    def freeze_job(self, jid: str) -> None:
+        """A finished job's folder: nobody can change it any more (its user does other jobs);
+        the conversations can still read it."""
+        if no_sudo() or not self.exists(jid):
+            return
+        copy = str(self.copy_dir(jid))
+        self._run(["chown", "-R", f"{self.cfg.user}:{self.cfg.user}", copy])
+        self._run(["chmod", "-R", "go-w", copy])
+
+    def job_plan(self, jid: str, target: str) -> dict:
+        """What bringing a job in would do to the coordinator's folder (target)."""
+        B, C, M = _files(self.base_dir(jid)), _files(self.copy_dir(jid)), _files(Path(target))
+        changed, merged, conflicts = [], [], []
+        for rel in sorted(set(B) | set(C)):
+            b = self._hash(B[rel]) if rel in B else None
+            c = self._hash(C[rel]) if rel in C else None
+            if c == b:
+                continue   # the worker didn't change it
+            m = self._hash(M[rel]) if rel in M else None
+            change = "added" if b is None else "removed" if c is None else "changed"
+            if m == c:
+                continue   # already like this in the coordinator's folder
+            if m == b:
+                changed.append({"path": rel, "change": change})
+            elif self._merge(B.get(rel), C.get(rel), M.get(rel)) is not None:
+                merged.append({"path": rel, "change": change})
+            else:
+                kind = ("removed by the worker" if c is None else "removed in your folder" if m is None
+                        else "added in both" if b is None else "changed in both")
+                conflicts.append({"path": rel, "kind": kind})
+        return {"changed": changed, "merged": merged, "conflicts": conflicts}
+
+    def bring_in_job(self, jid: str, target: str, owner: str, choices: dict[str, str] | None = None) -> dict:
+        """Brings a job's changes into the coordinator's folder. choices, for conflicts: path ->
+        "worker" (its version) or "mine" (keep the coordinator's). Others stay open."""
+        choices = choices or {}
+        plan = self.job_plan(jid, target)
+        B, C, M = _files(self.base_dir(jid)), _files(self.copy_dir(jid)), _files(Path(target))
+        top = Path(target)
+        done, merged, kept, still = [], [], [], []
+        for x in plan["changed"]:
+            self._put(C.get(x["path"]), top / x["path"], owner)
+            done.append(x["path"])
+        for x in plan["merged"]:
+            rel = x["path"]
+            data = self._merge(B.get(rel), C.get(rel), M.get(rel))
+            if data is None:
+                still.append(rel)
+                continue
+            self._write(top / rel, data, owner)
+            merged.append(rel)
+        for x in plan["conflicts"]:
+            rel, pick = x["path"], choices.get(x["path"])
+            if pick == "worker":
+                self._put(C.get(rel), top / rel, owner)
+                done.append(rel)
+            elif pick == "mine":
+                kept.append(rel)
+            else:
+                still.append(rel)
+        return {"brought_in": done, "merged": merged, "kept": kept, "open_conflicts": still}
+
     # --- writing as the right user ------------------------------------------------------------
 
     def _put(self, src: Path | None, dst: Path, owner: str) -> None:
