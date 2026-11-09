@@ -137,6 +137,20 @@ def kill_all_agent_processes(cfg: Config) -> None:
         root(["pkill", "-KILL", "-u", user], timeout=15)
 
 
+def oom_kills(path: str) -> int | None:
+    """How many processes the system has stopped in a box because it was out of memory
+    (memory.events, counted for the box and everything in it). path is under uvmc.slice,
+    e.g. "uvmc-brain.slice" or "uvmc-agent.slice/uvmc-agent-<id>.slice". None outside the VM."""
+    try:
+        for line in (Path("/sys/fs/cgroup/uvmc.slice") / path / "memory.events").read_text().splitlines():
+            k, v = line.split()
+            if k == "oom_kill":
+                return int(v)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def slice_usage(name: str = SLICE) -> dict:
     """Current use and limits of a resource box: the agent's by default (empty outside the VM)."""
     base = Path("/sys/fs/cgroup/uvmc.slice") / name

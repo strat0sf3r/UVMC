@@ -34,7 +34,8 @@ from .brain import Bridge
 from .audit import ExecFilter, ExecWatcher
 from .checkpoints import Checkpoints
 from .executor import (agent_users, conversation_slice, kill_all_agent_processes, kill_slice, make_executor,
-                       no_sudo, root, slice_of_pid, slice_usage)
+                       no_sudo, oom_kills, root, slice_of_pid, slice_usage)
+from .executor import SLICE as SLICE_AGENT
 from .log import ChildLog, RunLog, read_log
 from .made_tools import PROPOSE_SPEC, ToolBox, ToolError
 from .workcopies import MERGE_DIR, SyncError, WorkCopies
@@ -108,6 +109,8 @@ class Conversation:
         self.created = self.last_active = time.time()
         self.slice = conversation_slice(self.id)
         self.bridge_lock = threading.Lock()     # Claude Code's tool calls, one at a time (per conversation)
+        self.worker_key = secrets.token_hex(16)  # the same, for a Claude Code worker
+        self.worker_bridge_lock = threading.Lock()  # its own: the coordinator's delegate call holds the other
         self.tools = Tools(cfg, make_executor(cfg, self.slice, user=self.user, workdir=copy_dir))
         self.log: RunLog
         self.session: Session
@@ -156,6 +159,7 @@ class Controller:
         self.copies = WorkCopies(cfg)             # each conversation's own copy of the work folder
         self.copy_lock = threading.Lock()
         self.pool_missing = self._pool_missing()  # setup makes the conversations' users
+        self.oom_seen: dict[str, int] = {}        # memory boxes: processes stopped for lack of memory, so far
         self.net_on = False
         self.convs: dict[str, Conversation] = {}  # open conversations, oldest first
         self.current: str = ""                    # the default for calls that name none
@@ -246,6 +250,8 @@ class Controller:
             self.watcher = ExecWatcher(self._on_exec).start()
         if brain:
             self.start_brain_support()
+        if audit:   # outside the VM (tests) there are no boxes to watch
+            threading.Thread(target=self._memory_watch, name="uvmc-memory", daemon=True).start()
 
     def start_brain_support(self) -> None:
         """For Claude Code on your plan. Failures only disable that mode."""
@@ -289,6 +295,66 @@ class Controller:
                                        "to free memory. Your next message starts it again with the conversation so far.")
         return bool(closed)
 
+    # --- memory boxes ----------------------------------------------------------------------
+
+    def _memory_watch(self, every: float = 5) -> None:
+        self.check_memory()   # the counts so far: only what happens from now on is news
+        while True:
+            time.sleep(every)
+            try:
+                self.check_memory()
+            except Exception as e:  # never let the watch die
+                print(f"Warning: memory watch: {e}")
+
+    def check_memory(self) -> list[dict]:
+        """Tells you in the panel when a memory box was full and the system had to stop a
+        process in it (its oom_kill count went up). Returns the alerts it posted."""
+        def grew(path: str) -> bool:
+            n = oom_kills(path)
+            if n is None:
+                return False
+            before = self.oom_seen.get(path)
+            self.oom_seen[path] = n
+            return before is not None and n > before
+
+        def cap(name: str) -> str:
+            m = slice_usage(name).get("memory_max")
+            return f"{m // (1024 * 1024)} MB" if m else "its limit"
+
+        with self.lock:
+            convs = list(self.convs.values())
+        alerts = []
+
+        def alert(targets, box, text):
+            for c in targets or convs[:1]:
+                c.log.event("memory_full", box=box, text=text)
+                alerts.append({"conv": c.id, "box": box})
+
+        if grew("uvmc-brain.slice"):
+            using = [c for c in convs if c.session.brain is not None
+                     or (c.worker_session is not None and c.worker_session.brain is not None)]
+            alert(using, "claude-code",
+                  f"Claude Code ran out of memory: its box ({cap('uvmc-brain.slice')} for all \"my plan\" "
+                  "conversations and workers together) was full, so the system stopped one of its processes and "
+                  "a reply may have broken off. Fewer \"my plan\" conversations at once helps; or raise "
+                  "[subscription] memory in config.toml (or give the VM more memory), then run update.")
+        agent_box = cap(SLICE_AGENT)
+        hit = []
+        for c in convs:
+            if grew(f"{SLICE_AGENT}/{c.slice}"):
+                hit.append(c)
+        whole = grew(SLICE_AGENT)
+        if hit or whole:
+            alert(hit or [c for c in convs if c.busy], "agent",
+                  f"A program the agent ran ran out of memory: the agent's box ({agent_box}, shared by all "
+                  "conversations) was full, so the system stopped it. Ask the agent to use less memory or work in "
+                  "smaller steps; or raise [limits] memory in config.toml (or give the VM more memory), then run update.")
+        if grew("uvmc-tools.slice"):
+            alert([], "tools",
+                  f"A tool the agent built ran out of memory: the tools' box ({cap('uvmc-tools.slice')}) was full, "
+                  "so the system stopped it. Its run log is in the Tools tab.")
+        return alerts
+
     # --- Claude Code itself (for the "my plan" models) --------------------------------
 
     def claude_version(self) -> str:
@@ -325,14 +391,21 @@ class Controller:
 
     def _bridge(self, req: dict) -> dict:
         """A request from Claude Code's MCP server: list the tools, or run one."""
-        c = next((c for c in self.convs.values() if hmac.compare_digest(c.key, str(req.get("conv", "")))), None)
-        if c is None and not req.get("conv"):   # an MCP server from before conversations had keys
+        given = str(req.get("conv", ""))
+        c = next((c for c in self.convs.values() if hmac.compare_digest(c.key, given)), None)
+        as_worker = False
+        if c is None and given:   # a Claude Code worker's calls
+            c = next((c for c in self.convs.values() if hmac.compare_digest(c.worker_key, given)), None)
+            as_worker = c is not None
+        if c is None and not given:   # an MCP server from before conversations had keys
             with_brain = [c for c in self.convs.values() if c.session.brain is not None]
             c = with_brain[0] if len(with_brain) == 1 else None
         if c is None:
-            closed = "This conversation was closed" if req.get("conv") else "No task is running"
+            closed = "This conversation was closed" if given else "No task is running"
             return {"text": f"{closed}, so nothing was done.", "is_error": True}
-        s = c.session
+        s = c.worker_session if as_worker else c.session
+        if s is None:
+            return {"text": "The worker's job has ended, so nothing was done.", "is_error": True}
         if req.get("op") == "list":
             return {"tools": s.tools.definitions(s.tool_names) + s.extra_tools}
         if req.get("op") != "call":
@@ -346,7 +419,7 @@ class Controller:
         if s.cancel.is_set():
             s.log.event("result", id=call_id, tool=name, is_error=True, text="Stopped by the user.")
             return {"text": "Stopped by the user.", "is_error": True}
-        with c.bridge_lock:  # one at a time within a conversation, like the other models' calls
+        with c.worker_bridge_lock if as_worker else c.bridge_lock:  # one at a time, like the other models' calls
             result = s._handle(ToolCall(call_id, name, args))
         return {"text": result["content"], "is_error": result["is_error"]}
 
@@ -624,8 +697,7 @@ class Controller:
         if not self.cfg.delegate_enabled:
             return []
         names = self.cfg.delegate_workers or list(self.cfg.models)
-        # Claude Code on your plan can coordinate, but not work under another model.
-        return [n for n in names if n in self.cfg.models and self.cfg.models[n].provider != "claude-code"]
+        return [n for n in names if n in self.cfg.models]
 
     def set_worker(self, name: str | None, cid: str | None = None) -> None:
         name = name or None
@@ -788,6 +860,8 @@ class Controller:
         b, rules, _ = c.session.briefing or (self.settings.briefing(), self.cfg.house_rules, "")
         worker_live = self._live_briefing(b, worker=profile.name, c=c) if b["enabled"] else ""
         worker.system = briefing_mod.compose(rules, b, worker_live)
+        # Claude Code on your plan as the worker: its own process, whose tool calls name the worker.
+        worker.bridge_key = c.worker_key
         c.worker_session = worker
         try:
             reason = worker.run_task(instructions)
@@ -795,6 +869,7 @@ class Controller:
             return f"The worker ({profile.label}) failed: {e}", True
         finally:
             c.worker_session = None
+            worker.close()  # each job starts fresh, so a Claude Code worker doesn't linger
         report = worker.last_text or "(it gave no final report)"
         return f"The worker ({profile.label}) ended: {reason}.\n\nIts final report:\n{report}", reason != "done"
 

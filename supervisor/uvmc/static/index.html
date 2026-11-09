@@ -202,6 +202,7 @@ main {
 }
 .banner button { margin-left: 8px; }
 .banner[hidden] { display: none; }
+.banner.bad { background: var(--bad-bg); }
 
 /* Feed: one thread of steps ------------------------------------------------ */
 #feed {
@@ -509,6 +510,7 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
     <div class="folderbar" id="folderbar" hidden></div>
     <div>
       <p class="banner" id="keyBanner" hidden></p>
+      <p class="banner bad" id="memBanner" role="alert" hidden><span id="memText"></span><button class="btn" id="memClose" type="button">Dismiss</button></p>
       <p class="banner" id="pastBanner" hidden><span id="pastText"></span><button class="btn" id="backLive" type="button">Back to the live conversation</button></p>
     </div>
     <div id="feed" tabindex="-1"><div class="thread" id="thread"></div></div>
@@ -888,6 +890,7 @@ function apply(ev) {
     case "settings": if (view.live) api(stateUrl()).then(showModels).catch(() => {}); break;
     case "model": add(el("div", "item line", `Switched to ${esc(ev.label || ev.model)} for this conversation.`)); break;
     case "error": put(el("div", "item err", `<div class="box">${esc(ev.text)}</div>`)); break;
+    case "memory_full": put(el("div", "item err", `<div class="box"><strong>Out of memory.</strong> ${esc(ev.text)}</div>`)); break;
     case "notice": put(el("div", "item line", esc(ev.text))); break;
     case "status": if (view.live) setState(ev.state); break;
   }
@@ -1347,6 +1350,20 @@ async function reviewResolution() {
 }
 
 // --- Live connection --------------------------------------------------------
+// A memory box was full and the system stopped a process: a banner, and a desktop
+// notification when the panel isn't in front (if the browser allows it).
+function memoryAlert(ev) {
+  const c = convs.find((x) => x.id === ev.conv);
+  const where = ev.conv && ev.conv !== view.conv && c ? ` (in "${c.title || "another conversation"}")` : "";
+  $("memText").textContent = `Out of memory${where}. ${ev.text}`;
+  $("memBanner").hidden = false;
+  if (!("Notification" in window)) return;
+  const show = () => { if (document.hidden) new Notification("UVMC: out of memory", { body: ev.text }); };
+  if (Notification.permission === "granted") show();
+  else if (Notification.permission === "default") Notification.requestPermission().then((p) => { if (p === "granted") show(); }).catch(() => {});
+}
+$("memClose").addEventListener("click", () => { $("memBanner").hidden = true; });
+
 let source = null;
 function connect() {
   source?.close();
@@ -1365,6 +1382,7 @@ function connect() {
     if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); return; }
     if (ev.kind === "shared_folder") { refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "plan_usage") { planUsage = ev; showTokens(); }
+    if (ev.kind === "memory_full") memoryAlert(ev);
     if (ev.conv && ev.conv !== view.conv) {           // another conversation: only its tab changes
       if (ev.kind === "status") updateConv(ev.conv, { state: ev.state });
       else if (ev.kind === "approval" || ev.kind === "approval_done" || ev.kind === "task") refreshConvsSoon();

@@ -105,7 +105,8 @@ user = "uvmc-brain"
 proxy_port = 3129                 # its own proxy, which only lets it reach these sites:
 sites = ["anthropic.com", "claude.ai", "claude.com"]
 claude = "/usr/local/bin/claude"
-memory = "700M"                   # its memory cap (it needs about 200-400 MB)
+memory = "1000M"                  # cap for all its processes together (each needs about 200-400 MB;
+                                  # a "my plan" worker runs its own, next to its coordinator's)
 idle_minutes = 15                 # close it after this long unused, to free its memory; the next
                                   # message restarts it with the conversation so far (0: never close)
 

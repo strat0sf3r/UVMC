@@ -71,7 +71,7 @@ vals = {
     "BRAIN": b.get("user", "uvmc-brain"),
     "BRAIN_PROXY_PORT": b.get("proxy_port", 3129),
     "CLAUDE_BIN": b.get("claude", "/usr/local/bin/claude"),
-    "BRAIN_MEM": b.get("memory", "700M"),
+    "BRAIN_MEM": b.get("memory", "1000M"),
 }
 
 # Memory budget: the agent's box + Claude Code's box + ~600 MB for Linux and the supervisor

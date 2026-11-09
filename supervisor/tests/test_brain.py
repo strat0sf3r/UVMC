@@ -152,10 +152,30 @@ class BrainTest(ServiceBase):
             s.sendall(b'{"op": "list"}\n')
             self.assertIn(b"Not allowed", s.recv(1000))
 
-    def test_plan_models_are_not_workers(self):
-        ctl = self.controller()
-        self.assertNotIn("claude-plan", ctl.allowed_workers())
-        self.assertIn("claude", ctl.allowed_workers())
+    def test_plan_model_as_a_worker(self):
+        """An API coordinator hands a job to Claude Code on the plan; its tool calls reach the worker."""
+        from test_delegation import text, tool
+        from test_supervisor import FakeClient, reply
+        boss = FakeClient([reply(tool("d1", "delegate", instructions="run: echo from-the-worker")),
+                           reply(text("The worker did it."), stop="end_turn")])
+        ctl = Controller(self.cfg, lambda p: make(p, TOKEN) if p.provider == "claude-code" else boss)
+        q = ctl.subscribe()
+        import threading
+        threading.Thread(target=lambda: [self.events.append(q.get()) for _ in iter(int, 1)], daemon=True).start()
+        ctl.start_background(proxy=False, audit=False)
+        self.ctl = ctl
+        ctl.set_model("claude")
+        self.assertIn("claude-plan", ctl.allowed_workers())
+        ctl.set_worker("claude-plan")
+        self.run_task(ctl, "do it through the worker")
+        result = next(e for e in self.of("result") if e.get("parent") == "d1")
+        self.assertEqual(result["text"], "exit code 0\nfrom-the-worker")
+        self.assertEqual(result["agent"], "claude-plan")
+        report = boss.sent[1]["messages"][-1]["content"][0]
+        self.assertFalse(report["is_error"])
+        self.assertIn("Result (ok)", report["content"])
+        self.assertIsNone(ctl.conv().worker_session)             # its Claude Code is closed after the job
+        self.assertIsNone(ctl.session.brain)                     # the coordinator never started one
         self.assertTrue(config.load(ROOT / "config.toml").models["claude-plan"].key == "claude-subscription")
 
     def test_closed_when_idle_and_restarted_with_the_conversation(self):
