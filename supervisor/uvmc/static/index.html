@@ -433,6 +433,13 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .mtool table.sizes tr.hint td { border-top: none; padding-top: 0; color: var(--signal); white-space: normal; text-align: left; overflow-wrap: anywhere; }
 .mtool .muted { color: var(--muted); }
 .mtool .nw { white-space: nowrap; }
+.mtool table.sizes .linkish { margin-left: 8px; }
+/* The UVMC helper on your PC: its job (download, test...) with a progress bar, and its controls. */
+#pcJob progress.pcbar { width: 100%; height: 10px; accent-color: var(--ok); }
+#pcJob pre.pcout { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
+.pcctl { margin: 10px 0; }
+.pcctl .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.pcctl label { display: block; margin: 4px 0; }
 .mtool .on { color: var(--ok); font-weight: 600; }
 .mtool .need { color: var(--signal); font-weight: 600; }
 .fit { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
@@ -752,6 +759,30 @@ async function api(path, body) {
     err.status = r.status; err.data = data;   // privacy: data.confirm (ask, then send confirm: true) or data.privacy (refused)
     throw err;
   }
+  return data;
+}
+// The UVMC helper on your PC (windows\helper.cmd, unix/helper): it does what only the PC can do,
+// such as downloading a model. Its key comes in the part of the address after "#" (the helper puts
+// it there when it opens the panel); the browser never sends that part to the machine. It's kept
+// for this tab only, and the address is cleaned at once.
+const pc = { base: "http://127.0.0.1:8092", key: null, watching: null, last: null };
+(() => {
+  const m = location.hash.match(/(?:^#|&)pc=([0-9a-f]{64})(?:&|$)/);
+  if (m) {
+    pc.key = m[1];
+    try { sessionStorage.setItem("uvmc_pc", m[1]); } catch (e) {}
+    history.replaceState(null, "", location.pathname + location.search);
+  } else {
+    try { pc.key = sessionStorage.getItem("uvmc_pc"); } catch (e) {}
+  }
+})();
+async function pcApi(path, body) {
+  if (!pc.key) throw new Error("no key for the helper");
+  const opts = { headers: { Authorization: `Bearer ${pc.key}` } };
+  if (body !== undefined) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch(pc.base + path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { const err = new Error(data.error || `The helper answered ${r.status}`); err.status = r.status; throw err; }
   return data;
 }
 // A call that may need your confirmation first (privacy: switching to a less safe model,
@@ -3013,11 +3044,14 @@ function localSizeRow(s, m) {
   const dot = s.fit ? `<span class="fit ${s.fit}" title="${esc(FIT_TEXT[s.fit])}" aria-label="${esc(FIT_TEXT[s.fit])}"></span>` : "";
   const state = st === "loaded" ? `<span class="on">on the card</span>` : st === "loading" ? `<span class="need">loading</span>`
     : st ? "downloaded" : `<span class="muted">not downloaded</span>`;
+  const busy = m.pc && m.pc.job ? " disabled" : "";
   let act;
   if (s.id === m.in_use) act = `<span class="plan-ok">&#10003; in use</span>`;
+  else if (!st && m.pc) act = `${s.id === m.picked ? `<span class="need">picked</span> ` : ""}<button class="btn" type="button" data-pc-add="${esc(s.id)}"${busy} title="Downloads it on your PC and picks it">Download</button>`;
   else if (s.id === m.picked && !st) act = `<span class="need">picked</span>`;
   else act = `<button class="btn" type="button" data-use-local="${esc(s.id)}" data-have="${st ? 1 : ""}">Select</button>`;
-  const need = s.id === m.picked && !st
+  if (st && m.pc) act += `<button class="linkish" type="button" data-pc-delete="${esc(s.id)}"${busy}>Delete</button>`;
+  const need = s.id === m.picked && !st && !m.pc
     ? `<tr class="hint"><td colspan="4">Download it on your PC: <span class="cmdish">local-model -Add ${esc(s.id)}</span>. UVMC switches to it as soon as it's there.</td></tr>` : "";
   return `<tr><td>${dot}<strong>${esc(s.size)}</strong> <span class="muted">v${esc(s.version)}</span>${s.tested ? "" : ` <span class="muted" title="Not yet run in UVMC: local-model -Test ${esc(s.id)} on your PC checks it">(untested)</span>`}</td>
     <td class="nw">${esc(String(s.size_gb))} GB</td><td><span class="nw">card ${esc(String(s.card_gb))} GB</span><br><span class="nw">Mac ${esc(String(s.mac_gb))} GB</span></td>
@@ -3038,9 +3072,66 @@ function localFamily(f, sizes, m, where) {
 }
 const localOpen = new Set();   // cards (and the "more" list) the user opened, kept across redraws
 function localOwn(x, m) {
-  const act = x.id === m.in_use ? `<span class="plan-ok">&#10003; in use</span>`
+  let act = x.id === m.in_use ? `<span class="plan-ok">&#10003; in use</span>`
     : `<button class="btn" type="button" data-use-local="${esc(x.id)}" data-have="1">Select</button>`;
+  if (m.pc) act += `<button class="linkish" type="button" data-pc-delete="${esc(x.id)}"${m.pc.job ? " disabled" : ""} title="UVMC stops using it; your file stays where it is">Forget</button>`;
   return `<tr><td><strong>${esc(x.id)}</strong></td><td colspan="2" class="muted">Your own model: not on UVMC's list, not checked by UVMC.</td><td>${act}</td></tr>`;
+}
+// The helper's controls under the list: the server, a test, your own file, llama.cpp, two switches.
+function pcControls(m) {
+  const p = m.pc.model || {};
+  const dis = m.pc.job ? " disabled" : "";
+  return `<div class="pcctl"><p class="small">On your PC, through the UVMC helper:</p>
+    <div class="actions">
+      ${p.running ? `<button class="btn" type="button" data-pc="stop"${dis}>Stop the model server</button>` : `<button class="btn" type="button" data-pc="start"${dis}>Start the model server</button>`}
+      <button class="btn" type="button" data-pc="test"${dis} title="Checks each downloaded model with UVMC's tools: tool call right? how fast?">Test the models</button>
+      <button class="btn" type="button" data-pc="addfile"${dis} title="You choose the file in a window on your PC">Add your own GGUF file...</button>
+      <button class="btn" type="button" data-pc="update"${dis}>Get the newest llama.cpp${p.llama ? ` (now ${esc(p.llama)})` : ""}</button>
+    </div>
+    <label class="small"><input type="checkbox" data-pc-switch="autostart"${p.autostart ? " checked" : ""}${dis}> Start the model server when I log in to my PC</label>
+    <label class="small"><input type="checkbox" data-pc-switch="logs"${p.logs ? " checked" : ""}${dis}> The server's normal log (for testing; off, it keeps only warnings and errors, never what's written)</label>
+  </div>`;
+}
+// The helper's job (a download, a test...): progress while it runs, what it said when it ends.
+let pcTimer = null;
+function renderPcJob() {
+  const box = $("pcJob");
+  if (!box) return;
+  const j = pc.last;
+  if (!j) { box.innerHTML = ""; return; }
+  const pct = j.progress ? j.progress.percent : null;
+  const head = j.state === "running"
+    ? `${esc(j.what)}...${pct !== null ? ` ${pct}%${j.progress.text ? ` (${esc(j.progress.text)})` : ""}` : ""}`
+    : j.state === "done" ? `&#10003; ${esc(j.what)}: done.` : `${esc(j.what)}: failed.`;
+  const said = j.state !== "running" && j.lines.length
+    ? `<details${j.state === "failed" || j.action === "test" ? " open" : ""}><summary class="small">What it said</summary><pre class="pcout">${esc(j.lines.slice(-15).join("\n"))}</pre></details>` : "";
+  box.innerHTML = `<p class="small${j.state === "failed" ? " bad" : j.state === "done" ? " plan-ok" : ""}">${head}</p>
+    ${j.state === "running" ? (pct !== null ? `<progress class="pcbar" max="100" value="${pct}"></progress>` : `<progress class="pcbar"></progress>`) : ""}
+    ${said}${j.state !== "running" ? `<button class="linkish" type="button" id="pcJobHide">Hide</button>` : ""}`;
+  $("pcJobHide")?.addEventListener("click", () => { pc.last = null; renderPcJob(); });
+}
+async function pcWatch(id) {
+  clearTimeout(pcTimer);
+  pc.watching = id;
+  let j;
+  try { j = await pcApi(`/pc/jobs/${id}`); } catch (e) { pc.watching = null; return; }
+  if (pc.watching !== id) return;
+  pc.last = j;
+  renderPcJob();
+  if (j.state === "running") pcTimer = setTimeout(() => pcWatch(id), 2000);
+  else { pc.watching = null; loadLocalModel(); }
+}
+async function pcAction(body, btn, waitText) {
+  const was = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; if (waitText) btn.textContent = waitText; }
+  try {
+    const r = await pcApi("/pc/model", body);
+    if (r.cancelled) { if (btn) { btn.disabled = false; btn.textContent = was; } return; }
+    await pcWatch(r.job);
+    loadLocalModel();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = was; btn.insertAdjacentHTML("afterend", ` <span class="small bad">${esc(e.message)}</span>`); }
+  }
 }
 async function loadLocalModel() {
   const box = $("localModel");
@@ -3048,7 +3139,19 @@ async function loadLocalModel() {
   let m;
   try { m = await api("/api/local-model"); } catch (e) { box.innerHTML = ""; return; }
   if (!m.profile) { box.innerHTML = ""; return; }
+  // The helper, when this tab has its key. Not answering: it's stopped, or the browser keeps the
+  // panel from reaching this PC (some ask once to allow "devices on your local network").
+  m.pc = null;
+  let pcNote = "";
+  if (pc.key) {
+    try { m.pc = await pcApi("/pc/status"); }
+    catch (e) {
+      pcNote = e.status ? `<p class="small bad">The UVMC helper on your PC refused: ${esc(e.message)}. Open the panel again from its tray icon.</p>`
+        : `<p class="small bad">The UVMC helper on your PC isn't answering. Is its tray icon there? If not, start it (<span class="cmdish">helper</span> in the UVMC folder). If it is, your browser may be keeping this page from reaching your PC: allow this site to reach devices on your local network, then check again.</p>`;
+    }
+  }
   const run = `<span class="cmdish">local-model</span>`;
+  const viaHelper = pc.key ? "" : ` Or open the panel from the UVMC helper's tray icon to do these from here.`;
   let body;
   if (m.running && m.key_ok && m.router) {
     m.status = Object.fromEntries(m.models.map(x => [x.id, x.status]));
@@ -3071,19 +3174,36 @@ async function loadLocalModel() {
           ${more.length ? `<details class="more-local" data-local-card="more"${localOpen.has("more") ? " open" : ""}><summary>More models you can add (${more.length})</summary>
             <ul class="mtools">${more.map(f => localFamily(f, f.sizes, m, "add")).join("")}</ul></details>` : ""}`;
       })()}
-      <p class="small">On your PC: ${run} -Add <em>name</em> downloads a size (the name is in ${run} -List), ${run} -AddFile <em>file.gguf</em> adds your own, ${run} -Delete <em>name</em> deletes one, ${run} -Update gets the newest llama.cpp.</p>`;
+      ${m.pc ? pcControls(m) : `<p class="small">On your PC: ${run} -Add <em>name</em> downloads a size (the name is in ${run} -List), ${run} -AddFile <em>file.gguf</em> adds your own, ${run} -Delete <em>name</em> deletes one, ${run} -Update gets the newest llama.cpp.${viaHelper}</p>`}`;
   } else if (m.running && m.key_ok) {
     body = `<p class="plan-ok">&#10003; Running: <strong>${esc(m.model || m.file)}</strong>${m.file && m.model ? ` (${esc(m.file)})` : ""}, holds ${m.context.toLocaleString()} tokens of conversation${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}.</p>
       <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header. To choose among several models here (Qwen, Gemma, Mistral, uncensored ones), run ${run} on your PC again: this one is from an older version and runs one model only.</p>`;
   } else if (m.running) {
     body = `<p class="small bad">Running on your PC, but UVMC's key doesn't match it. Run ${run} on your PC again: it reconnects UVMC.</p>`;
+  } else if (m.has_key && m.pc && m.pc.model && m.pc.model.setup) {
+    body = `<p class="small bad">Not running on your PC.</p>${pcControls(m)}`;
   } else if (m.has_key) {
     body = `<p class="small bad">Not running. Start it on your PC: double-click <span class="cmdish">start-local-model</span> in the UVMC folder (or ${run} -AutoStart to have it start each time you log in).</p>`;
   } else {
     body = `<p class="small">Not set up. Models can run on your PC's graphics card (NVIDIA, AMD, Intel or a Mac), with no account and no key to buy: run ${run} from the UVMC folder on your PC once. It downloads llama.cpp and a model sized to your card, and connects UVMC. Others can be added after (${run} -List).</p>`;
   }
-  box.innerHTML = `<h3>Models on your PC</h3>${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
+  box.innerHTML = `<h3>Models on your PC</h3><div id="pcJob"></div>${pcNote}${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
   $("localCheck").addEventListener("click", loadLocalModel);
+  renderPcJob();
+  if (m.pc && m.pc.job && pc.watching !== m.pc.job) pcWatch(m.pc.job);   // a job started earlier (or from the tray)
+  box.querySelectorAll("[data-pc]").forEach(b => b.addEventListener("click", () =>
+    pcAction({ action: b.dataset.pc }, b, b.dataset.pc === "addfile" ? "Choose the file on your PC..." : "")));
+  box.querySelectorAll("[data-pc-switch]").forEach(c => c.addEventListener("change", () =>
+    pcAction({ action: c.dataset.pcSwitch, value: c.checked ? "on" : "off" }, c)));
+  box.querySelectorAll("[data-pc-delete]").forEach(b => b.addEventListener("click", () =>
+    pcAction({ action: "delete", name: b.dataset.pcDelete }, b, "Confirm on your PC...")));
+  box.querySelectorAll("[data-pc-add]").forEach(b => b.addEventListener("click", async () => {
+    // Picked first, so UVMC switches to it as soon as it's downloaded.
+    b.disabled = true;
+    try { await api("/api/local-model", { model: b.dataset.pcAdd }); }
+    catch (e) { b.disabled = false; b.insertAdjacentHTML("afterend", ` <span class="small bad">${esc(e.message)}</span>`); return; }
+    pcAction({ action: "add", name: b.dataset.pcAdd }, b, "Starting...");
+  }));
   box.querySelectorAll("[data-local-card]").forEach(d => d.addEventListener("toggle", () => {
     if (d.open) localOpen.add(d.dataset.localCard); else localOpen.delete(d.dataset.localCard);
   }));

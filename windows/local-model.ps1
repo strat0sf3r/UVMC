@@ -148,6 +148,38 @@ function Model-Path($s, $name) {
 function Running { Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$($state.dir)*" } }
 function Api-Key($s) { (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim() }
 
+# Downloads with curl. In a window, curl draws its own progress bar. Run by the UVMC helper
+# (UVMC_HELPER=1, no window), it prints "Progress: 37% (2.1 of 5.6 GB)" lines instead, which the
+# helper passes to the panel. $Total is the expected size in bytes (an estimate is fine).
+function Download-File([string]$Url, [string]$Path, [double]$Total, [switch]$Resume, [switch]$Quiet) {
+    $a = @('-fL')
+    if ($Resume) { $a += @('-C', '-') }
+    if (-not $env:UVMC_HELPER) {
+        if ($Quiet) { $a += '-sS' }
+        & curl.exe @a -o $Path $Url
+        return ($LASTEXITCODE -eq 0)
+    }
+    $a += @('-sS', '-o', $Path, $Url)
+    $psi = New-Object Diagnostics.ProcessStartInfo 'curl.exe', (($a | ForEach-Object { Format-NativeArg $_ }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    $last = -1
+    while (-not $p.WaitForExit(2000)) {
+        $have = if (Test-Path $Path) { (Get-Item $Path).Length } else { 0 }
+        if ($Total -gt 0) {
+            $pct = [Math]::Min(99, [int](100 * $have / $Total))
+            if ($pct -ne $last) {
+                $last = $pct
+                $unit = if ($Total -ge 1GB) { @(1GB, 'GB') } else { @(1MB, 'MB') }
+                Write-Host ('Progress: {0}% ({1:n1} of {2:n1} {3})' -f $pct, ($have / $unit[0]), ($Total / $unit[0]), $unit[1])
+            }
+        }
+    }
+    if ($p.ExitCode -eq 0) { Write-Host 'Progress: 100%' }
+    return ($p.ExitCode -eq 0)
+}
+
 function Get-LlamaCpp($s) {
     # The newest llama.cpp release that has a Windows Vulkan build. Vulkan works on NVIDIA,
     # AMD (old cards too, like the RX 5000 series) and Intel, through the normal graphics driver.
@@ -163,8 +195,7 @@ function Get-LlamaCpp($s) {
     }
     $zip = Join-Path $s.dir $a.name
     Say "Downloading llama.cpp $($r.tag_name) ($([int]($a.size / 1MB)) MB)..."
-    & curl.exe -sSfL -o $zip $a.browser_download_url
-    if ($LASTEXITCODE -ne 0) { Fail 'The download failed.' }
+    if (-not (Download-File $a.browser_download_url $zip $a.size -Quiet)) { Fail 'The download failed.' }
     $want = ($a.digest -replace '^sha256:', '').ToLower()
     $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if (-not $want -or $want -ne $got) { Remove-Item $zip; Fail 'The download does not match its published checksum; deleted it.' }
@@ -215,8 +246,8 @@ function Get-Model($s, $name) {
         New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
         if ($m.kind -eq 'uncensored') { Say "$($m.label) is $(Source-Line $m). UVMC pinned the file it checked; a changed file is refused." 'Yellow' }
         Say "Downloading $($m.label) ($($m.size_gb) GB) from huggingface.co/$($m.repo)... (it can be stopped and resumed)"
-        & curl.exe -fL -C - -o $path "https://huggingface.co/$($m.repo)/resolve/main/$($m.file)"
-        if ($LASTEXITCODE -ne 0) { Fail "The download stopped. Run local-model -Add $name again to resume it." }
+        $ok = Download-File "https://huggingface.co/$($m.repo)/resolve/main/$($m.file)" $path ([double]$m.size_gb * 1GB) -Resume
+        if (-not $ok) { Fail "The download stopped. Run local-model -Add $name again to resume it." }
         Say 'Checking the file...'
         if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLower() -ne $m.sha256) {
             Remove-Item $path

@@ -57,7 +57,11 @@ function Invoke-VmQuick([string]$Mp, [string]$Name, [int]$Limit, [string[]]$Comm
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $false   # share this script's console, if it has one (no new window)
+    # Its input closed at once: the quick commands read none, "multipass exec" hangs on a hidden
+    # console's input, and in the relay this script's input is the Claude app's messages.
+    $psi.RedirectStandardInput = $true
     $p = [Diagnostics.Process]::Start($psi)
+    $p.StandardInput.Close()
     $out = $p.StandardOutput.ReadToEndAsync()
     $null = $p.StandardError.ReadToEndAsync()
     $pcLimit = $Limit + 10

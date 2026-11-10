@@ -1,0 +1,626 @@
+#!/usr/bin/env python3
+"""UVMC helper (macOS and Linux; needs python3): a small local service that lets the panel do
+what only this computer can do (the model on your graphics chip for now). The same calls as
+windows/helper.ps1, without a tray icon: notifications come from the system.
+
+    python3 unix/helper                 run it here (launchd or systemd starts it this way)
+    python3 unix/helper --background    start it detached and return
+    python3 unix/helper --stop          stop the running one
+    python3 unix/helper --panel         open the panel through it (starts it first if needed)
+
+How it is walled off:
+  - It listens on 127.0.0.1 only, so the UVMC machine and your home network can't reach it.
+  - Every /pc/ call needs its key (kept in ~/.config/uvmc/helper.json, readable by you only) and,
+    from a browser, must come from the panel's own address (one of the machine's current
+    addresses, port 8080).
+  - The Host header must name 127.0.0.1 or localhost, so other websites can't reach it by DNS tricks.
+  - It does a fixed set of things, with names checked against UVMC's list of models. Deleting a
+    model and adding a file of your own are confirmed in a window on this computer (osascript on a
+    Mac, zenity or kdialog on Linux; without one of them, those two are refused).
+The key reaches the panel only in the part of the address after "#", which the browser never sends
+to the machine. It logs what was asked and the answer's code, never keys or what conversations say.
+
+    /panel     opens the panel, signed in, at the machine's current address
+    /pc/...    the panel's calls (status, model actions, job progress)
+"""
+
+import http.server
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import webbrowser
+
+PORT, VM, PANEL_PORT = 8092, "uvmc", 8080
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+CONF = os.path.expanduser("~/.config/uvmc")
+CONFIG_FILE = os.path.join(CONF, "helper.json")
+LOG_FILE = os.path.join(CONF, "helper.log")
+PID_FILE = os.path.join(CONF, "helper.pid")
+JOB_DIR = os.path.join(CONF, "helper-jobs")
+TIMEOUT_LOG = os.path.join(CONF, "timeouts.log")
+STATE_FILE = os.path.join(CONF, "local-model.env")
+CATALOG_FILE = os.path.join(ROOT, "supervisor", "uvmc", "local_models.json")
+# For the tests only: stand-ins for Multipass and local-model.sh.
+LOCAL_MODEL = os.environ.get("UVMC_TEST_LOCAL_MODEL") or os.path.join(HERE, "local-model.sh")
+MAC = sys.platform == "darwin"
+NAME_RX = re.compile(r"^[a-z0-9][a-z0-9._-]{0,59}$")
+ANSI_RX = re.compile(r"\x1b\[[0-9;]*m")
+PROGRESS_RX = re.compile(r"^Progress: (\d+)%\s*(?:\((.*)\))?")
+
+
+def version():
+    try:
+        with open(os.path.join(ROOT, "supervisor", "uvmc", "__init__.py"), encoding="utf-8") as f:
+            m = re.search(r'__version__\s*=\s*"([^"]+)"', f.read())
+            return m.group(1) if m else "unknown"
+    except OSError:
+        return "unknown"
+
+
+VERSION = version()
+
+
+def log(text):
+    try:
+        os.makedirs(CONF, exist_ok=True)
+        lines = []
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, encoding="utf-8") as f:
+                lines = f.read().splitlines()[-999:]
+        lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {text}")
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def log_timeout(what, how):
+    """Like timeouts.sh: one line per command the machine didn't answer in time; the newest 500 kept."""
+    try:
+        lines = []
+        if os.path.exists(TIMEOUT_LOG):
+            with open(TIMEOUT_LOG, encoding="utf-8") as f:
+                lines = f.read().splitlines()[-499:]
+        lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  helper  {what}  {how}")
+        with open(TIMEOUT_LOG, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def load_key():
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            key = json.load(f).get("key", "")
+            if len(key) >= 32:
+                return key
+    except (OSError, ValueError, AttributeError):
+        pass
+    key = secrets.token_hex(32)
+    os.makedirs(CONF, exist_ok=True)
+    fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"key": key, "port": PORT}, f)
+    os.chmod(CONFIG_FILE, 0o600)
+    return key
+
+
+def find_multipass():
+    test = os.environ.get("UVMC_TEST_MULTIPASS")
+    if test:
+        return test
+    found = shutil.which("multipass")
+    if found:
+        return found
+    for p in ("/usr/local/bin/multipass", "/snap/bin/multipass", "/opt/homebrew/bin/multipass"):
+        if os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def run(args, seconds):
+    """Runs a program with no input and a limit. Returns (output, code); code -1 when it was stopped."""
+    try:
+        r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=seconds)
+        return r.stdout, r.returncode
+    except subprocess.TimeoutExpired:
+        return "", -1
+    except OSError:
+        return "", -2
+
+
+# --- the machine ----------------------------------------------------------------------------
+_vm_cache = {"at": 0.0, "state": "unknown", "ips": []}
+
+
+def get_vm(fresh=False):
+    """State and addresses from "multipass list" (kept 30 s: the machine's address can change)."""
+    if not fresh and time.time() - _vm_cache["at"] < 30:
+        return _vm_cache
+    info = {"at": time.time(), "state": "unknown", "ips": []}
+    mp = find_multipass()
+    if not mp:
+        info["state"] = "no multipass"
+    else:
+        out, code = run([mp, "list", "--format", "json"], 20)
+        if code == 0:
+            try:
+                vm = next((v for v in json.loads(out).get("list", []) if v.get("name") == VM), None)
+                if vm:
+                    info["state"] = vm.get("state", "unknown")
+                    info["ips"] = [a for a in vm.get("ipv4", []) if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", a)]
+                else:
+                    info["state"] = "not installed"
+            except ValueError:
+                pass
+        elif code == -1:
+            log_timeout("multipass list", "no answer from Multipass, stopped after 20 s")
+    _vm_cache.update(info)
+    return _vm_cache
+
+
+def panel_origin_ok(origin):
+    m = re.fullmatch(rf"http://(\d{{1,3}}(?:\.\d{{1,3}}){{3}}):{PANEL_PORT}", origin)
+    if not m:
+        return False
+    return m.group(1) in get_vm()["ips"] or m.group(1) in get_vm(fresh=True)["ips"]
+
+
+# --- the model on this computer (what local-model.sh keeps) ---------------------------------
+def catalog():
+    with open(CATALOG_FILE, encoding="utf-8") as f:
+        c = json.load(f)
+    return {s["id"]: s for fam in c["families"] for s in fam["sizes"]}
+
+
+def model_state():
+    """local-model.env, read by bash itself (it's written with printf %q)."""
+    if not os.path.exists(STATE_FILE):
+        return None
+    out, code = run(["bash", "-c", '. "$1"; printf "%s\\0" "$DIR" "$HAVE" "$OWN" "$LLAMA" "$CARD" "$CARD_MIB" "$LOGS"',
+                     "_", STATE_FILE], 10)
+    if code != 0:
+        return None
+    parts = out.split("\0")
+    if len(parts) < 7:
+        return None
+    d, have, own, llama, card, mib, logs = parts[:7]
+    d = d or os.path.join(os.path.dirname(ROOT), "uvmc-local")
+    names = have.split() + [line.split("\t")[0] for line in own.splitlines() if line.strip()]
+    return {"dir": d, "installed": names, "llama": llama, "card": card,
+            "card_mib": int(mib) if mib.isdigit() else 0, "logs": logs == "on"}
+
+
+def server_running(s):
+    try:
+        with open(os.path.join(s["dir"], "server.pid"), encoding="utf-8") as f:
+            os.kill(int(f.read().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def is_set_up(s):
+    return bool(s) and os.access(os.path.join(s["dir"], "llama.cpp", "llama-server"), os.X_OK)
+
+
+def autostart_on():
+    if MAC:
+        return os.path.exists(os.path.expanduser("~/Library/LaunchAgents/com.uvmc.local-model.plist"))
+    if not os.path.exists(os.path.expanduser("~/.config/systemd/user/uvmc-local-model.service")):
+        return False
+    return run(["systemctl", "--user", "is-enabled", "uvmc-local-model.service"], 10)[1] == 0
+
+
+# --- windows on this computer ---------------------------------------------------------------
+def notify(text):
+    if MAC:
+        run(["osascript", "-e", "on run argv", "-e", 'display notification (item 1 of argv) with title "UVMC"',
+             "-e", "end run", text], 10)
+    elif shutil.which("notify-send"):
+        run(["notify-send", "UVMC", text], 10)
+
+
+def confirm(text):
+    """True for Yes; None when this computer has no way to ask."""
+    if MAC:
+        return run(["osascript", "-e", "on run argv", "-e",
+                    'display dialog (item 1 of argv) with title "UVMC" buttons {"Cancel", "Yes"} '
+                    'default button "Cancel" with icon caution', "-e", "end run", text], 600)[1] == 0
+    if shutil.which("zenity"):
+        return run(["zenity", "--question", "--title=UVMC", "--default-cancel", f"--text={text}"], 600)[1] == 0
+    if shutil.which("kdialog"):
+        return run(["kdialog", "--title", "UVMC", "--warningyesno", text], 600)[1] == 0
+    return None
+
+
+def pick_gguf():
+    """A path, "" when cancelled, None when this computer has no way to ask."""
+    if MAC:
+        out, code = run(["osascript", "-e",
+                         'POSIX path of (choose file with prompt "UVMC: choose a GGUF model file of your own")'], 600)
+    elif shutil.which("zenity"):
+        out, code = run(["zenity", "--file-selection", "--title=UVMC: choose a GGUF model file of your own",
+                         "--file-filter=GGUF models | *.gguf"], 600)
+    elif shutil.which("kdialog"):
+        out, code = run(["kdialog", "--title", "UVMC", "--getopenfilename", os.path.expanduser("~"), "*.gguf"], 600)
+    else:
+        return None
+    return out.strip() if code == 0 else ""
+
+
+# --- jobs: one long action at a time, its output kept for the panel ------------------------
+jobs = {}
+jobs_lock = threading.Lock()
+_count = [0]
+
+
+def busy_job():
+    with jobs_lock:
+        return next((j for j in jobs.values() if j["proc"].poll() is None), None)
+
+
+def start_job(action, what, args):
+    _count[0] += 1
+    jid = f"{time.strftime('%Y%m%d%H%M%S')}-{_count[0]}"
+    out = os.path.join(JOB_DIR, f"{jid}.txt")
+    env = dict(os.environ, UVMC_HELPER="1")   # local-model prints "Progress: …" lines for downloads
+    with open(out, "wb") as f:
+        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT,
+                                env=env, start_new_session=True)
+    with jobs_lock:
+        jobs[jid] = {"id": jid, "action": action, "what": what, "proc": proc, "out": out,
+                     "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "told": False}
+        while len(jobs) > 20:
+            old = next(iter(jobs))
+            if jobs[old]["proc"].poll() is None:
+                break
+            try:
+                os.remove(jobs[old]["out"])
+            except OSError:
+                pass
+            del jobs[old]
+    log(f"job {jid} started: {action}")
+    return jid
+
+
+def model_job(action, what, args):
+    return start_job(action, what, [LOCAL_MODEL] + args)
+
+
+def job_json(j):
+    code = j["proc"].poll()
+    try:
+        with open(j["out"], encoding="utf-8", errors="replace") as f:
+            lines = [ANSI_RX.sub("", l).rstrip() for l in f.read().splitlines()]
+    except OSError:
+        lines = []
+    lines = [l for l in lines if l.strip()][-400:]
+    progress = None
+    for l in reversed(lines):
+        m = PROGRESS_RX.match(l)
+        if m:
+            progress = {"percent": int(m.group(1)), "text": m.group(2) or ""}
+            break
+    return {"id": j["id"], "action": j["action"], "what": j["what"],
+            "state": "running" if code is None else ("done" if code == 0 else "failed"),
+            "exit": code, "started": j["started"], "progress": progress,
+            "lines": [l for l in lines if not PROGRESS_RX.match(l)][-60:]}
+
+
+def watch_jobs(stop):
+    """Tells you when a job ends, even with the panel closed."""
+    while not stop.wait(1):
+        with jobs_lock:
+            ended = [j for j in jobs.values() if not j["told"] and j["proc"].poll() is not None]
+            for j in ended:
+                j["told"] = True
+        for j in ended:
+            code = j["proc"].returncode
+            log(f"job {j['id']} {'done' if code == 0 else f'failed ({code})'}")
+            notify(f"{j['what']}: done." if code == 0 else f"{j['what']}: failed. The panel shows what happened.")
+
+
+# --- what the panel may ask -------------------------------------------------------------------
+NOT_SET_UP = "The model on this computer is not set up yet. Run unix/local-model.sh once first."
+
+
+def model_action(body):
+    b = busy_job()
+    if b:
+        return 409, {"error": f"Busy: {b['what']}. Try again when it's done.", "job": b["id"]}
+    action, name, value = (str(body.get(k) or "") for k in ("action", "name", "value"))
+    s = model_state()
+    have = s["installed"] if s else []
+    ready = is_set_up(s)
+    if action == "add":
+        cat = catalog()
+        if name not in cat:
+            return 400, {"error": f"Not on UVMC's list of models: {name}"}
+        if not ready:
+            return 409, {"error": NOT_SET_UP}
+        jid = model_job("add", f"Downloading {cat[name]['label']}", ["--add", name])
+    elif action == "delete":
+        if name not in have:
+            return 400, {"error": f"Not downloaded: {name}"}
+        cat = catalog()
+        label = cat[name]["label"] if name in cat else f"{name} (your own file, which stays where it is)"
+        ok = confirm(f"Delete the model {label} from this computer?")
+        if ok is None:
+            return 409, {"error": f"No window to ask in here (zenity or kdialog): delete it with unix/local-model.sh --delete {name}"}
+        if not ok:
+            return 200, {"cancelled": True}
+        jid = model_job("delete", f"Deleting {label}", ["--delete", name])
+    elif action == "addfile":
+        if not ready:
+            return 409, {"error": NOT_SET_UP}
+        if name and not NAME_RX.match(name):
+            return 400, {"error": "A name has letters, digits, dots and dashes (up to 60)."}
+        path = pick_gguf()
+        if path is None:
+            return 409, {"error": "No window to choose a file in here (zenity or kdialog): use unix/local-model.sh --add-file"}
+        if not path:
+            return 200, {"cancelled": True}
+        if not confirm(f"Use this file as a model?\n\n{path}\n\nUVMC can't check a file of your own: "
+                       "only use files from sources you trust."):
+            return 200, {"cancelled": True}
+        args = ["--add-file", path] + (["--name", name] if name else [])
+        jid = model_job("addfile", f"Adding {os.path.basename(path)}", args)
+    elif action == "start":
+        if not have:
+            return 409, {"error": "No model downloaded yet."}
+        jid = model_job("start", "Starting the model server", ["--start"])
+    elif action == "stop":
+        jid = model_job("stop", "Stopping the model server", ["--stop"])
+    elif action == "test":
+        if name and name not in have:
+            return 400, {"error": f"Not downloaded: {name}"}
+        jid = model_job("test", f"Testing {name or 'the models'}", ["--test"] + ([name] if name else []))
+    elif action == "update":
+        if not ready:
+            return 409, {"error": NOT_SET_UP}
+        jid = model_job("update", "Updating llama.cpp", ["--update"])
+    elif action == "logs":
+        if value not in ("on", "off"):
+            return 400, {"error": "logs is on or off"}
+        jid = model_job("logs", f"Turning the server's log {value}", ["--logs", value])
+    elif action == "autostart":
+        if value not in ("on", "off"):
+            return 400, {"error": "autostart is on or off"}
+        jid = model_job("autostart", f"Start at login: {value}", ["--autostart" if value == "on" else "--no-autostart"])
+    else:
+        return 400, {"error": f"Unknown action: {action}"}
+    return 200, {"job": jid}
+
+
+def status():
+    vm = get_vm()
+    s = model_state()
+    b = busy_job()
+    model = {"setup": False}
+    if s:
+        model = {"setup": is_set_up(s), "running": server_running(s), "installed": s["installed"],
+                 "llama": s["llama"], "card": s["card"], "card_mib": s["card_mib"], "logs": s["logs"],
+                 "autostart": autostart_on()}
+    return {"helper": VERSION, "vm": {"state": vm["state"], "ipv4": list(vm["ips"])},
+            "model": model, "job": b["id"] if b else None}
+
+
+# --- /panel ------------------------------------------------------------------------------------
+def page(title, text, refresh=0):
+    from html import escape
+    meta = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
+    return (f'<!doctype html><html><head><meta charset="utf-8">{meta}<title>{escape(title)}</title><style>'
+            "body{font:16px system-ui,sans-serif;max-width:36em;margin:4em auto;padding:0 1em;color:#222;background:#fafafa}"
+            "@media(prefers-color-scheme:dark){body{color:#ddd;background:#1b1b1b}}</style></head>"
+            f"<body><h2>{escape(title)}</h2><p>{escape(text)}</p></body></html>")
+
+
+def open_panel(headers, key):
+    site = headers.get("Sec-Fetch-Site")
+    if site and site != "none":
+        return 403, page("Not from here", "Open the UVMC panel from its shortcut or python3 unix/helper --panel."), {}
+    vm = get_vm(fresh=True)
+    if vm["state"] != "Running":
+        return 200, page("UVMC is not running", f"The UVMC machine is {vm['state'].lower()}. Start it with "
+                         "unix/panel.sh (it also shares your folders), then open the panel again."), {}
+    ip = vm["ips"][0] if vm["ips"] else None
+    up = False
+    if ip:
+        try:
+            socket.create_connection((ip, PANEL_PORT), 1.5).close()
+            up = True
+        except OSError:
+            pass
+    if not up:
+        return 200, page("UVMC is starting", "The panel is not answering yet. This page tries again by itself.", 3), {}
+    out, code = run([find_multipass(), "exec", VM, "--", "timeout", "-k", "5", "15", "sudo", "cat", "/etc/uvmc/panel_token"], 25)
+    token = out.strip()
+    if code != 0 or not token:
+        why = ""
+        if code == -1:
+            why = "Multipass did not answer within 25 seconds."
+        elif code in (124, 137):
+            why = "The machine did not answer within 15 seconds."
+        if why:
+            log_timeout("sudo cat /etc/uvmc/panel_token", why)
+        return 200, page("UVMC did not answer", f"The panel's key could not be read from the machine. {why} "
+                         "This page tries again by itself.", 5), {}
+    from urllib.parse import quote
+    loc = f"http://{ip}:{PANEL_PORT}/?token={quote(token, safe='')}#pc={key}"
+    return 302, "", {"Location": loc, "Referrer-Policy": "no-referrer"}
+
+
+# --- HTTP ----------------------------------------------------------------------------------------
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "UVMC-helper"
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
+    timeout = 5
+
+    def log_message(self, *a):   # our own log, without query strings
+        pass
+
+    def reply(self, code, body, ctype, origin=None, extra=None):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if ctype:
+            self.send_header("Content-Type", ctype)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if data:
+            self.wfile.write(data)
+        self.close_connection = True
+        log(f"{self.command} {self.path.split('?')[0]} {code}")
+
+    def json(self, code, obj, origin=None):
+        self.reply(code, json.dumps(obj), "application/json; charset=utf-8", origin)
+
+    def handle_any(self):
+        path = self.path.split("?")[0]
+        if self.headers.get("Host") not in (f"127.0.0.1:{PORT}", f"localhost:{PORT}"):
+            return self.json(403, {"error": "wrong host"})
+        if path == "/panel":
+            if self.command != "GET":
+                return self.json(405, {"error": "GET only"})
+            code, body, extra = open_panel(self.headers, self.server.key)
+            return self.reply(code, body, "text/html; charset=utf-8" if body else "text/plain", extra=extra)
+        if path == "/":
+            return self.reply(200, page("UVMC helper", f"Running (UVMC {VERSION}). Open the panel with python3 unix/helper --panel."),
+                              "text/html; charset=utf-8")
+        if not path.startswith("/pc/"):
+            return self.json(404, {"error": "not found"})
+        # From a browser: only the panel's own page. Without an Origin (a script here): the key alone.
+        origin = self.headers.get("Origin")
+        if origin and not panel_origin_ok(origin):
+            return self.json(403, {"error": "not from the panel"})
+        if self.command == "OPTIONS":
+            return self.reply(204, b"", None, origin, {
+                "Access-Control-Allow-Methods": "GET, POST", "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Allow-Private-Network": "true", "Access-Control-Max-Age": "600"})
+        if not secrets.compare_digest(self.headers.get("Authorization", ""), f"Bearer {self.server.key}"):
+            return self.json(401, {"error": "key missing or wrong"}, origin)
+        if path == "/pc/status" and self.command == "GET":
+            return self.json(200, status(), origin)
+        if path == "/pc/model" and self.command == "POST":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if not 0 <= n <= 65536:
+                return self.json(400, {"error": "too big"}, origin)
+            try:
+                body = json.loads(self.rfile.read(n) or b"null")
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return self.json(400, {"error": "send a JSON object"}, origin)
+            code, obj = model_action(body)
+            return self.json(code, obj, origin)
+        m = re.fullmatch(r"/pc/jobs/(\d{14}-\d+)", path)
+        if m and self.command == "GET":
+            with jobs_lock:
+                j = jobs.get(m.group(1))
+            return self.json(200, job_json(j), origin) if j else self.json(404, {"error": "no such job"}, origin)
+        return self.json(404, {"error": "not found"}, origin)
+
+    do_GET = do_POST = do_OPTIONS = handle_any
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except Exception as e:   # one bad request never stops the helper
+            log(f"error: {e}")
+
+
+def panel_url():
+    return f"http://127.0.0.1:{PORT}/panel"
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--stop"]:
+        try:
+            with open(PID_FILE, encoding="utf-8") as f:
+                os.kill(int(f.read().strip()), signal.SIGTERM)
+            print("Stopped.")
+        except (OSError, ValueError):
+            print("It was not running.")
+        return
+    if args[:1] in (["--background"], ["--panel"]):
+        try:
+            socket.create_connection(("127.0.0.1", PORT), 1).close()
+            running = True
+        except OSError:
+            running = False
+        if not running:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__)], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            for _ in range(20):
+                time.sleep(0.25)
+                try:
+                    socket.create_connection(("127.0.0.1", PORT), 1).close()
+                    break
+                except OSError:
+                    pass
+        if args[0] == "--panel":
+            webbrowser.open(panel_url())
+        else:
+            print("The UVMC helper is running." if running else "Started the UVMC helper.")
+        return
+    if args:
+        print(__doc__)
+        sys.exit(2)
+
+    os.makedirs(JOB_DIR, exist_ok=True)
+    for f in os.listdir(JOB_DIR):
+        try:
+            os.remove(os.path.join(JOB_DIR, f))
+        except OSError:
+            pass
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError as e:
+        log(f"could not listen on 127.0.0.1:{PORT}: {e}")
+        print(f"The UVMC helper could not start: port {PORT} is in use (is it running already?).", file=sys.stderr)
+        sys.exit(1)
+    server.key = load_key()
+    with open(PID_FILE, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    stop = threading.Event()
+    threading.Thread(target=watch_jobs, args=(stop,), daemon=True).start()
+    signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=server.shutdown).start())
+    log(f"started (UVMC {VERSION}), listening on 127.0.0.1:{PORT}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        server.server_close()
+        try:
+            os.remove(PID_FILE)
+        except OSError:
+            pass
+        log("stopped")
+
+
+if __name__ == "__main__":
+    main()

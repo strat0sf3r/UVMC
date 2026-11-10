@@ -156,7 +156,7 @@ find_vm_interface() {
   command -v multipass >/dev/null || return 1
   multipass start "$VM" >/dev/null 2>&1 || return 1
   local gw out code=0
-  out="$(multipass exec "$VM" -- timeout -k 5 20 ip -4 route show default 2>/dev/null)" || code=$?
+  out="$(multipass exec "$VM" -- timeout -k 5 20 ip -4 route show default </dev/null 2>/dev/null)" || code=$?
   check_timeout local-model "ip -4 route show default" 20 "$code" && return 1
   gw="$(printf '%s\n' "$out" | awk '/via/{print $3; exit}')"
   [ -n "$gw" ] || return 1
@@ -167,6 +167,37 @@ find_vm_interface() {
     return 0
   fi
   return 1
+}
+
+# Downloads with curl: download URL PATH TOTAL_BYTES [resume] [quiet]. In a terminal, curl draws its
+# own progress bar. Run by the UVMC helper (UVMC_HELPER=1, no terminal), it prints
+# "Progress: 37% (2.1 of 5.6 GB)" lines instead, which the helper passes to the panel.
+download() {
+  local url="$1" path="$2" total="${3:-0}" resume="${4:-}" quiet="${5:-}"
+  local a=(-fL)
+  [ -n "$resume" ] && a+=(-C -)
+  if [ -z "${UVMC_HELPER:-}" ]; then
+    [ -n "$quiet" ] && a+=(-sS)
+    curl "${a[@]}" -o "$path" "$url"
+    return
+  fi
+  curl "${a[@]}" -sS -o "$path" "$url" </dev/null &
+  local pid=$! last=-1 have pct code=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 2
+    if [ "$total" -gt 0 ] && [ -f "$path" ]; then
+      have="$(wc -c <"$path" | tr -d ' ')"
+      pct=$((have * 100 / total)); [ "$pct" -gt 99 ] && pct=99
+      if [ "$pct" != "$last" ]; then
+        last=$pct
+        awk -v p="$pct" -v h="$have" -v t="$total" 'BEGIN { u = (t >= 1073741824) ? 1073741824 : 1048576
+          printf "Progress: %d%% (%.1f of %.1f %s)\n", p, h / u, t / u, (u == 1073741824) ? "GB" : "MB" }'
+      fi
+    fi
+  done
+  wait "$pid" || code=$?
+  [ "$code" = 0 ] && say "Progress: 100%"
+  return "$code"
 }
 
 get_llama() {
@@ -192,7 +223,7 @@ for r in json.load(sys.stdin):
   if [ "$LLAMA" = "$tag" ] && [ -x "$SERVER" ]; then say "llama.cpp $tag is already the newest."; return; fi
   say "Downloading llama.cpp $tag ($((size / 1048576)) MB)..."
   local tmp; tmp="$(mktemp -d)"
-  curl -fsSL -o "$tmp/$name" "$url" || fail "The download failed."
+  download "$url" "$tmp/$name" "$size" "" quiet || fail "The download failed."
   local got; got="$( (command -v sha256sum >/dev/null && sha256sum "$tmp/$name" || shasum -a 256 "$tmp/$name") | awk '{print $1}')"
   [ -n "$digest" ] && [ "$got" = "$digest" ] || fail "The download does not match its published checksum."
   tar -xzf "$tmp/$name" -C "$tmp"
@@ -229,7 +260,9 @@ get_model() {
     else
       [ "$(field "$1" kind)" = uncensored ] && say "$(field "$1" label) is $(catalog source "$1"). UVMC pinned the file it checked; a changed file is refused."
       say "Downloading $(field "$1" label) ($(field "$1" size_gb) GB) from huggingface.co/$repo... (it can be stopped and resumed)"
-      curl -fL -C - -o "$path" "https://huggingface.co/$repo/resolve/main/$file" || fail "The download stopped. Run --add $1 again to resume it."
+      download "https://huggingface.co/$repo/resolve/main/$file" "$path" \
+        "$(awk -v g="$(field "$1" size_gb)" 'BEGIN { printf "%d", g * 1073741824 }')" resume \
+        || fail "The download stopped. Run --add $1 again to resume it."
       say "Checking the file..."
       [ "$(sha "$path")" = "$want" ] || { rm -f "$path"; fail "$file does not match the checksum UVMC pinned; deleted it. Try again; if it happens again, the file was changed on Hugging Face and UVMC has to check it again before using it."; }
     fi
@@ -369,7 +402,7 @@ send_key() {
   name="uvmc-key-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
   tmp="$(mktemp)"; printf '%s\n' "$1" > "$tmp"
   if multipass transfer "$tmp" "$VM:/home/ubuntu/$name" >/dev/null 2>&1; then
-    multipass exec "$VM" -- timeout -k 5 20 sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=\$?; rm -f /home/ubuntu/$name; exit \$s" >/dev/null 2>&1 || code=$?
+    multipass exec "$VM" -- timeout -k 5 20 sudo sh -c "uvmc-setkey local < /home/ubuntu/$name; s=\$?; rm -f /home/ubuntu/$name; exit \$s" </dev/null >/dev/null 2>&1 || code=$?
     if ! check_timeout local-model "uvmc-setkey local" 20 "$code" && [ "$code" = 0 ]; then ok=0; fi
   fi
   rm -f "$tmp"
@@ -386,7 +419,7 @@ send_hardware() {
   tmp="$(mktemp)"
   python3 -c 'import json, sys; print(json.dumps({"kind": sys.argv[1], "name": sys.argv[2], "mib": int(sys.argv[3])}))' "$kind" "$CARD" "$CARD_MIB" > "$tmp"
   if multipass transfer "$tmp" "$VM:/home/ubuntu/$name" >/dev/null 2>&1; then
-    multipass exec "$VM" -- timeout -k 5 20 sudo sh -c "install -m 644 /home/ubuntu/$name /etc/uvmc/pc-hardware.json; s=\$?; rm -f /home/ubuntu/$name; exit \$s" >/dev/null 2>&1 || code=$?
+    multipass exec "$VM" -- timeout -k 5 20 sudo sh -c "install -m 644 /home/ubuntu/$name /etc/uvmc/pc-hardware.json; s=\$?; rm -f /home/ubuntu/$name; exit \$s" </dev/null >/dev/null 2>&1 || code=$?
     check_timeout local-model "install pc-hardware.json" 20 "$code" || true
   fi
   rm -f "$tmp"
