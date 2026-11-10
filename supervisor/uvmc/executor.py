@@ -72,7 +72,9 @@ class SystemdExecutor(Executor):
 
     def command(self, script, args, timeout):
         user = self.user
-        return ["sudo", "-n", "systemd-run", "--scope", "--quiet", f"--slice={self.slice}", "--",
+        # --description: systemd would otherwise log the whole command line (the agent's script)
+        # in the journal when the scope starts.
+        return ["sudo", "-n", "systemd-run", "--scope", "--quiet", "--description=uvmc", f"--slice={self.slice}", "--",
                 "setpriv", f"--reuid={user}", f"--regid={self.cfg.user}", "--init-groups", "--reset-env", "--",
                 *self.inner(script, args, timeout)]
 
@@ -122,6 +124,41 @@ def slice_of_pid(pid: int | None) -> str | None:
         if part.startswith(prefix) and part.endswith(".slice"):
             return part
     return None
+
+
+def clean_user(cfg: Config, user: str) -> list[str]:
+    """When a conversation or a job ends: stops whatever its user still runs, empties its home
+    folder (keeping the ~/shared link setup makes) and removes its files in /tmp, /var/tmp and
+    /dev/shm, so the next conversation with this user starts clean. Returns what couldn't be
+    removed (empty when all went well)."""
+    problems = []
+    if not no_sudo():
+        root(["pkill", "-KILL", "-u", user], timeout=15)
+    home = os.path.join(cfg.homes_root, user)
+    if user and "/" not in user and os.path.isdir(home):
+        keep = ["-not", "-path", f"{home}/shared"]
+        root(["find", home, "-xdev", "-mindepth", "1", *keep, "-delete"], timeout=120)
+        if _left(["find", home, "-xdev", "-mindepth", "1", *keep]):
+            problems.append(f"{home} could not be emptied")
+    tmp = cfg.tmp_dirs()
+    if tmp:
+        try:
+            uid = os.getuid() if no_sudo() else __import__("pwd").getpwnam(user).pw_uid
+        except KeyError:
+            return problems
+        for d in tmp:
+            if not os.path.isabs(d) or not os.path.isdir(d):
+                continue
+            root(["find", d, "-xdev", "-mindepth", "1", "-uid", str(uid), "-delete"], timeout=120)
+            if _left(["find", d, "-xdev", "-mindepth", "1", "-uid", str(uid)]):
+                problems.append(f"some of {user}'s files are still in {d}")
+    return problems
+
+
+def _left(find: list[str]) -> bool:
+    """Whether a find (as root) still lists something."""
+    p = root(find + ["-print", "-quit"], timeout=60)
+    return bool(p.stdout.strip())
 
 
 def agent_users(cfg: Config) -> list[str]:

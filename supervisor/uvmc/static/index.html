@@ -160,6 +160,7 @@ main {
 .conv[aria-selected="true"] .pick { color: var(--ink); font-weight: 700; }
 .conv .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
 .conv .from { font-size: 12px; color: var(--muted); font-weight: 400; white-space: nowrap; }
+.conv .private { font-size: 12px; color: var(--ok); border: 1px solid currentColor; border-radius: 8px; padding: 0 5px; font-weight: 400; white-space: nowrap; }
 .conv .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--thread); flex: 0 0 auto; }
 .conv[data-state="running"] .dot, .conv[data-state="stopping"] .dot { background: var(--ok); }
 .conv[data-state="waiting"] .dot { background: var(--signal-strong); box-shadow: 0 0 0 3px var(--signal-bg); }
@@ -918,6 +919,8 @@ function apply(ev) {
            ${ev.tool === "install_system_package" && ev.args?.reason ? `<p class="why">Its reason: ${esc(ev.args.reason)}</p>` : `<p class="why">Your rules ask first: ${esc(ev.reason)}</p>`}
            <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`;
       if (made && ev.sample) n.querySelector(".sample")?.appendChild(renderReport(ev.sample, ""));
+      if (ev.private && (made || file))
+        n.querySelector(".actions").insertAdjacentHTML("beforebegin", `<p class="why warn">This is a private conversation: ${made ? "an approved tool" : "a file written on your computer"} stays after the conversation is erased.</p>`);
       const buttons = [...n.querySelectorAll(".actions button")];
       for (const b of buttons) b.addEventListener("click", async () => {
         buttons.forEach((x) => x.disabled = true);
@@ -1843,9 +1846,9 @@ function renderConvs() {
     const privacyText = where ? `, on ${where}, ${c.level}` : "";   // its projects and privacy level
     tab.innerHTML = `<button type="button" class="pick" role="tab" data-conv="${esc(c.id)}" aria-selected="${selected}"
         title="${esc(title)} (${esc(c.model_label)}${esc(privacyText)})${words[state] || ""}"><span class="dot" aria-hidden="true"></span>
-        <span class="title">${esc(title)}</span>${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
+        <span class="title">${esc(title)}</span>${c.private ? '<span class="private" title="Private: the model on your PC, no internet, erased when you close it">private</span>' : ""}${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
         <span class="visually-hidden">${words[state] || ""}</span></button>
-      <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="Close this conversation (it stays under Runs)" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
+      <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="${c.private ? "Close and erase this private conversation" : "Close this conversation (it stays under Runs)"}" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
     tab.querySelector(".pick").addEventListener("click", () => {
       if (reports.active) { setReportsView(false); if (c.id === view.conv && view.live) return; }
       if (c.id !== view.conv || !view.live) selectConv(c.id);
@@ -1897,8 +1900,8 @@ async function selectConv(id, { focus = true } = {}) {
   if (filesVisible()) refreshFilesSoon();
   if (activityVisible()) renderActivity();
 }
-async function closeConv(id, discard = false) {
-  const r0 = await fetch("/api/conversations/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conv: id, discard }) });
+async function closeConv(id, discard = false, erase = false) {
+  const r0 = await fetch("/api/conversations/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conv: id, discard, erase }) });
   const r = await r0.json().catch(() => ({}));
   if (r0.ok) {
     convs = r.conversations;
@@ -1910,12 +1913,36 @@ async function closeConv(id, discard = false) {
     const n = el("div", "item ask", `<div class="box"><h3>Close this conversation?</h3><p class="why">${esc(r.error)}</p>
       <div class="actions"><button type="button" class="btn primary" data-in>Bring them in first</button><button type="button" class="btn stop" data-drop>Close and drop them</button><button type="button" class="btn" data-keep>Keep it open</button></div></div>`);
     n.querySelector("[data-keep]").addEventListener("click", () => n.remove());
-    n.querySelector("[data-drop]").addEventListener("click", () => { n.remove(); closeConv(id, true); });
+    n.querySelector("[data-drop]").addEventListener("click", () => { n.remove(); closeConv(id, true, erase); });
     n.querySelector("[data-in]").addEventListener("click", async () => { n.remove(); reviewSync(await api(`/api/conversations/${encodeURIComponent(id)}/changes`)); });
     add(n);
     return;
   }
-  add(el("div", "item err", `<div class="box">${esc(r.error || "Closing failed.")}</div>`));
+  if (r.confirm) {   // a private conversation: erased for good, so you confirm
+    if (id !== view.conv) await selectConv(id);
+    const n = el("div", "item ask", `<div class="box"><h3>Erase this private conversation?</h3><p class="why">${esc(r.detail)}</p>
+      <div class="actions"><button type="button" class="btn stop" data-erase>Erase it</button><button type="button" class="btn" data-keep>Keep it open</button></div></div>`);
+    n.querySelector("[data-keep]").addEventListener("click", () => n.remove());
+    n.querySelector("[data-erase]").addEventListener("click", () => { n.remove(); closeConv(id, discard, true); });
+    add(n);
+    n.querySelector("[data-keep]").focus();
+    return;
+  }
+  add(el("div", "item err", `<div class="box">${esc(r.error || r.detail || "Closing failed.")}</div>`));
+}
+
+// What closing a private conversation couldn't remove (also after a restart), told once.
+let privateLeftShown = 0;
+async function privateNotice() {
+  let s;
+  try { s = await api(stateUrl()); } catch (e) { return; }
+  const left = s.private?.left || [];
+  if (left.length > privateLeftShown) {
+    const fresh = left.slice(privateLeftShown);
+    privateLeftShown = left.length;
+    add(el("div", "item err", `<div class="box"><strong>Not everything of a private conversation could be erased.</strong>
+      <ul>${fresh.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="small">UVMC tries again at its next start (restart it, or run update on your PC).</p></div>`));
+  }
 }
 
 // --- This conversation's copy of the work folder --------------------------------
@@ -2092,6 +2119,7 @@ function connect() {
     selectConv(mine, { focus: mine !== s.conv });
     refreshReportCounts();
     refreshUpdatesDot();
+    if (s.private?.left?.length) privateNotice();
   });
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
@@ -2100,6 +2128,7 @@ function connect() {
     if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); refreshReportsSoon(); return; }
     if (ev.kind === "tool_run") { toolRunEnded(ev); return; }
     if (ev.kind === "updates") { updatesNotice(ev); return; }
+    if (ev.kind === "private") { privateNotice(); return; }
     if (ev.kind === "shared_folder") { refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "plan_usage") { planUsage = ev; showTokens(); }
     if (ev.kind === "memory_full") memoryAlert(ev);
@@ -2165,6 +2194,8 @@ async function newConvCard() {
   const n = el("div", "item sync");
   n.id = "newConv";
   n.innerHTML = `<div class="box"><h3>New conversation</h3>
+    <label class="check"><input type="checkbox" data-private> Private: the model on your PC only, no internet, erased when you close it</label>
+    <p class="small" data-private-why></p>
     <div class="form-grid">
       <label>Model <select data-model></select></label>
       <label>Privacy level <select data-level></select></label>
@@ -2175,15 +2206,30 @@ async function newConvCard() {
     <p class="small form-msg"></p>
     <div class="actions"><button type="button" class="btn primary" data-create>Start</button><button type="button" class="btn" data-cancel>Cancel</button></div></div>`;
   const msel = n.querySelector("[data-model]");
-  for (const m of s.models) {
-    const o = el("option", "", esc(`${m.label} · ${m.level}`)); o.value = m.name; o.selected = m.name === s.model; msel.appendChild(o);
-  }
+  const psel = n.querySelector("[data-private]"), pwhy = n.querySelector("[data-private-why]");
+  const pv = s.private || { state: "ok", problems: [], models: [] };
+  const fillModels = () => {   // a private conversation: only the models on your PC
+    const keep = msel.value || s.model;
+    msel.innerHTML = "";
+    for (const m of s.models) {
+      if (psel.checked && !pv.models.includes(m.name)) continue;
+      const o = el("option", "", esc(`${m.label} · ${m.level}`)); o.value = m.name; o.selected = m.name === keep; msel.appendChild(o);
+    }
+  };
+  const privateOff = pv.state === "checking" ? "UVMC is still checking that private conversations leave nothing behind; try again in a minute."
+    : pv.state !== "ok" ? `Private conversations are off: ${pv.problems.join(" ")}`
+    : !pv.models.length ? "Needs a model on your PC (local-model, level local) in Settings › Models." : "";
+  psel.disabled = Boolean(privateOff);
+  pwhy.textContent = privateOff || "Its messages, steps and copy of the files are erased when you close it (you confirm) or when UVMC restarts. Files you bring into the main folder and tools you approve stay.";
+  psel.addEventListener("change", () => { fillModels(); draw(); });
+  fillModels();
   const ticked = new Set(here ? here.projects.map((x) => x.name) : []);
   let level = null;
   const draw = () => {
     const m = s.models.find((x) => x.name === msel.value) || {};
-    const lsel = levelSelect(level && rankOf(level) <= rankOf(m.level) ? level : m.level, { max: m.level || "open" });
+    const lsel = levelSelect(psel.checked ? "local" : (level && rankOf(level) <= rankOf(m.level) ? level : m.level), { max: m.level || "open" });
     lsel.dataset.level = "";
+    lsel.disabled = psel.checked;   // a private conversation is local
     n.querySelector("[data-level]").replaceWith(lsel);
     lsel.addEventListener("change", () => { level = lsel.value; draw(); });
     const lv = lsel.value;
@@ -2199,10 +2245,11 @@ async function newConvCard() {
     }
     const tr = n.querySelector("[data-transcript]");
     if (tr && here) {
-      const ok = rankOf(lv) >= rankOf(here.seen);
+      const ok = rankOf(lv) >= rankOf(here.seen) && !here.private;
       tr.disabled = !ok;
       if (!ok) tr.checked = false;
-      tr.parentElement.title = ok ? "" : `That conversation has seen ${here.seen} files: only a ${here.seen} conversation may read its transcript.`;
+      tr.parentElement.title = here.private ? "A private conversation's transcript isn't handed to another conversation."
+        : ok ? "" : `That conversation has seen ${here.seen} files: only a ${here.seen} conversation may read its transcript.`;
     }
   };
   msel.addEventListener("change", draw);
@@ -2211,7 +2258,7 @@ async function newConvCard() {
   n.querySelector("[data-create]").addEventListener("click", async (e) => {
     const msg = n.querySelector(".form-msg");
     const projects = [...n.querySelectorAll("[data-projects] input:checked")].map((i) => i.value);
-    const body = { model: msel.value, level: n.querySelector("[data-level]").value, projects: projects.length ? projects : null };
+    const body = { model: msel.value, level: n.querySelector("[data-level]").value, projects: projects.length ? projects : null, private: psel.checked };
     const tr = n.querySelector("[data-transcript]");
     if (tr && tr.checked) { body.like = view.conv; body.transcript = true; }
     e.target.disabled = true;

@@ -93,9 +93,10 @@ def _conv(ctl, args: dict):
     """The conversation a call is about: the one named, else the last one the apps used."""
     cid = str(args.get("conversation") or ctl.mcp_conv or "")
     try:
-        return ctl.conv(cid or None)
+        c = ctl.conv(cid or None)
     except KeyError:
         return None
+    return None if c.private else c   # a private conversation is never shown to the Claude apps
 
 
 def call(ctl, name: str, args: dict) -> dict:

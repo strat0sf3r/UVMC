@@ -13,6 +13,8 @@
 #   unix/local-model.sh --status | --start | --stop | --remove
 #   unix/local-model.sh --autostart        start it each time you log in (off unless you ask)
 #   unix/local-model.sh --no-autostart     stop starting it at login
+#   unix/local-model.sh --logs on|off      the server's normal log (off: warnings and errors only,
+#                                          which never hold what you and UVMC write; on: testing)
 #   --dir <folder>                         where to keep it (default: uvmc-local next to UVMC)
 #
 # The server listens only on this computer and on the network to the UVMC machine, and answers
@@ -70,15 +72,15 @@ PY
 }
 field() { catalog field "$1" "$2"; }
 
-DIR="" MODEL="" HAVE="" VERIFIED="" LLAMA="" MODEL_SHA="" CARD="" CARD_MIB=0 VM_IF=""
+DIR="" MODEL="" HAVE="" VERIFIED="" LLAMA="" MODEL_SHA="" CARD="" CARD_MIB=0 VM_IF="" LOGS=off
 [ -f "$STATE" ] && . "$STATE"
 save_state() {
   mkdir -p "$(dirname "$STATE")"
-  { for v in DIR HAVE VERIFIED LLAMA CARD CARD_MIB VM_IF; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$STATE"
+  { for v in DIR HAVE VERIFIED LLAMA CARD CARD_MIB VM_IF LOGS; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$STATE"
 }
 has() { case " $HAVE " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-ACTION=setup WANT_MODEL="" UPDATE=0 YES=0 TEST_ONLY=""
+ACTION=setup WANT_MODEL="" UPDATE=0 YES=0 TEST_ONLY="" WANT_LOGS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --model|--add) WANT_MODEL="$2"; shift ;;   # --model was "switch to"; now models are kept side by side
@@ -89,6 +91,7 @@ while [ $# -gt 0 ]; do
     --update) UPDATE=1 ;;
     --status) ACTION=status ;; --start) ACTION=start ;; --stop) ACTION=stop ;; --remove) ACTION=remove ;;
     --autostart) ACTION=autostart ;; --no-autostart) ACTION=no-autostart ;;
+    --logs) ACTION=logs; WANT_LOGS="${2:-}"; shift ;;
     --yes) YES=1 ;;
     *) fail "Unknown option $1 (see the top of this script)." ;;
   esac
@@ -236,8 +239,12 @@ start_server() {
   fi
   if [ -n "$ip" ]; then hosts="$hosts,$ip"; else say "The network to the UVMC machine was not found; the model starts for this computer only."; fi
   # Router mode: no model on the command line. --models-max 1: one model on the chip at a time.
+  # Logs off (the default): warnings and errors only and no /slots endpoint, so nothing of the
+  # conversations is written or shown (llama.cpp writes prompts only with --log-prompts-dir or -v).
+  local logargs=(--log-verbosity 2 --no-slots)
+  [ "$LOGS" = on ] && logargs=(--log-verbosity 3)
   nohup "$SERVER" --models-preset "$PRESET" --models-max 1 --host "$hosts" --port "$PORT" \
-    --api-key-file "$DIR/api_key" --log-file "$DIR/server.log" >/dev/null 2>&1 &
+    --api-key-file "$DIR/api_key" --log-file "$DIR/server.log" "${logargs[@]}" >/dev/null 2>&1 &
   echo $! > "$PIDFILE"
   local key; key="$(cat "$DIR/api_key")"
   for i in $(seq 60); do
@@ -384,6 +391,13 @@ case "$ACTION" in
   autostart) [ -n "$HAVE" ] || fail "Not set up yet. Run unix/local-model.sh first."; autostart; exit 0 ;;
   no-autostart) no_autostart; exit 0 ;;
   stop) stop_server; exit 0 ;;
+  logs)
+    case "$WANT_LOGS" in on|off) ;; *) fail "Use --logs on or --logs off." ;; esac
+    LOGS="$WANT_LOGS"; save_state
+    if [ "$LOGS" = on ]; then say "The server's normal log is on (requests and timings, not what's written), in $DIR/server.log. Turn it off with --logs off."
+    else say "The server logs only warnings and errors."; fi
+    if running; then stop_server; start_server; fi
+    exit 0 ;;
   start) [ -n "$HAVE" ] || fail "Not set up yet. Run unix/local-model.sh first."; start_server; exit 0 ;;
   remove)
     if [ "$YES" = 0 ]; then read -rp "Delete $DIR (llama.cpp and the models)? [y/N] " a; [[ "$a" =~ ^[yY] ]] || exit 0; fi

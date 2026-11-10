@@ -94,9 +94,10 @@ Reporter = Callable[[dict], None]
 
 class Proxy:
     def __init__(self, port: int, allowed_ports: list[int], sites: SiteList,
-                 decide: Decider, report: Reporter, host: str = "127.0.0.1"):
+                 decide: Decider, report: Reporter, host: str = "127.0.0.1", offline: bool = False):
         from . import pc
         self.sites, self.decide, self.report = sites, decide, report
+        self.offline = offline   # a private conversation's: every site refused, allowed ones too
         self.allowed_ports = set(allowed_ports)
         self.is_pc = pc.is_pc
         proxy = self
@@ -161,6 +162,9 @@ class Proxy:
             self._event(info, "deny", "the PC itself", started)
             return self._refuse(client, 403, "UVMC: the PC itself can't be reached from here")
 
+        if self.offline:
+            self._event(info, "deny", "private conversation: no internet", started)
+            return self._refuse(client, 403, "UVMC: this is a private conversation, so it has no internet.")
         if self.sites.allows(host):
             reason = "allowed site"
         elif self.decide(host, port):

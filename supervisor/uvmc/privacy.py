@@ -77,9 +77,21 @@ def lower(a: str, b: str) -> str:
     return a if rank(a) <= rank(b) else b
 
 
+def on_pc(base_url: str) -> bool:
+    """A model served from the user's own PC (local-model) or this machine: nothing leaves it."""
+    return "{pc}" in base_url or base_url.startswith(("http://localhost", "http://127.0.0.1"))
+
+
+def private_ok(profile) -> bool:
+    """Whether a model profile may run a private conversation: only a model on the PC, through
+    the OpenAI-compatible connection local-model sets up (never a provider online, never Claude
+    Code), at level local."""
+    return profile.provider == "openai" and on_pc(profile.base_url or "") and profile.level == "local"
+
+
 def suggest(provider: str, base_url: str) -> str:
     """The level UVMC suggests for a model profile with none set."""
-    if "{pc}" in base_url or base_url.startswith(("http://localhost", "http://127.0.0.1")):
+    if on_pc(base_url):
         return "local"
     if provider in ("anthropic", "claude-code"):
         return "paid"

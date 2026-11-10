@@ -91,6 +91,22 @@ class Config:
     bridge_socket: str = "/run/uvmc/bridge.sock"     # its tools reach the supervisor here
     mcp_python: str = "/opt/uvmc/venv/bin/python"
     mcp_script: str = "/opt/uvmc/uvmc/mcp_server.py"
+    # Private conversations (docs/guide.md "Private conversations"): their log lives here, in
+    # memory (/run is emptied when the supervisor stops), never in log_dir.
+    private_log_dir: Path = Path("/run/uvmc/private")
+    # Cleaned of a conversation's (or job's) files when it ends; None: these three in the VM,
+    # none outside it (tests give their own, so nobody's real /tmp is touched).
+    clean_tmp: list[str] | None = None
+
+    @property
+    def homes_root(self) -> str:
+        """Where the conversations' and workers' users have their home folders."""
+        return os.path.join(os.path.dirname(self.workdir.rstrip("/")) or "/home/agent", "homes")
+
+    def tmp_dirs(self) -> list[str]:
+        if self.clean_tmp is not None:
+            return list(self.clean_tmp)
+        return [] if os.environ.get("UVMC_NO_SUDO") == "1" else ["/tmp", "/var/tmp", "/dev/shm"]
 
     def profile(self, name: str | None) -> Profile:
         """A model profile by name; None gives the default one."""

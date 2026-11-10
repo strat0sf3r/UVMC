@@ -168,3 +168,42 @@ class ExecFilter:
         if name == "bash" and args[1:2] == ["-lc"]:
             return False
         return True
+
+
+# --- private conversations: which program ran, never its arguments ------------------------
+# While a private conversation (or one of its jobs) has a user, the audit system drops the
+# records that carry what was typed: the arguments (EXECVE), the whole command line
+# (PROCTITLE), the folder (CWD) and the files named (PATH). The SYSCALL record stays, so the
+# Activity view still shows which program ran. Taken off again when it ends. These rules are
+# not in /etc/audit/rules.d: they go when auditd restarts, as private conversations do.
+
+QUIET_TYPES = ("EXECVE", "PROCTITLE", "CWD", "PATH")
+
+
+def quiet_rules(uid: int, on: bool) -> list[list[str]]:
+    flag = "-a" if on else "-d"
+    return [["auditctl", flag, "exclude,always", "-F", f"msgtype={t}", "-F", f"uid={uid}"] for t in QUIET_TYPES]
+
+
+def set_quiet(user: str, on: bool) -> str:
+    """Adds (on) or removes the rules for one user. Returns what went wrong, "" if nothing did
+    (removing rules that aren't there counts as done)."""
+    from .executor import no_sudo, root
+    if no_sudo():
+        return ""
+    try:
+        import pwd
+        uid = pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return f"no user {user}"
+    errors = []
+    for cmd in quiet_rules(uid, on):
+        try:
+            p = root(cmd, timeout=15)
+        except Exception as e:   # noqa: BLE001 (a timeout, auditctl missing)
+            errors.append(str(e))
+            continue
+        err = p.stderr.decode(errors="replace").strip()
+        if p.returncode != 0 and on and "exists" not in err.lower():
+            errors.append(err or f"auditctl failed ({p.returncode})")
+    return "; ".join(errors)

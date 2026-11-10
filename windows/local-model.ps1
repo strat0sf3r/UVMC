@@ -11,6 +11,8 @@
 #   local-model -Status | -Start | -Stop | -Remove
 #   local-model -AutoStart           start it each time you log in (off unless you ask)
 #   local-model -NoAutoStart         stop starting it at login
+#   local-model -Logs on|off         the server's normal log (off: warnings and errors only,
+#                                    which never hold what you and UVMC write; on: for testing)
 #   -Dir <folder>                    where to keep it (default: uvmc-local next to the UVMC folder)
 #
 # The server listens only on this PC and on the network to the UVMC machine, never on your
@@ -34,6 +36,7 @@ param(
     [switch]$AutoStart,
     [switch]$NoAutoStart,
     [switch]$Yes,
+    [ValidateSet('on', 'off')] [string]$Logs,
     [Parameter(ValueFromRemainingArguments = $true)] [string[]]$Rest
 )
 
@@ -250,6 +253,14 @@ function Open-Firewall($s, $net) {
     if ($p.ExitCode -ne 0) { Fail 'The firewall rule was not added (administrator rights refused?).' }
 }
 
+# What the server logs. Off (the default): warnings and errors only, and no /slots endpoint, so
+# nothing of the conversations is written or shown (UVMC's private conversations count on it).
+# llama.cpp writes prompts only with --log-prompts-dir or -v, which UVMC never passes.
+function Log-Args($s) {
+    if ($s.PSObject.Properties['logs'] -and $s.logs) { return @('--log-verbosity', '3') }
+    return @('--log-verbosity', '2', '--no-slots')
+}
+
 function Start-Server($s) {
     if (Running) { Say 'The model server is already running.' 'Green'; return }
     if (-not (Installed $s)) { Fail 'No model downloaded yet. Run local-model, or local-model -Add <model> (local-model -List shows them).' }
@@ -266,7 +277,7 @@ function Start-Server($s) {
     # asking for another unloads the first.
     $args_ = @('--models-preset', (Preset-File $s), '--models-max', '1',
                '--host', $hosts, '--port', "$Port", '--api-key-file', (Join-Path $s.dir 'api_key'),
-               '--log-file', (Join-Path $s.dir 'server.log'))
+               '--log-file', (Join-Path $s.dir 'server.log')) + (Log-Args $s)
     Start-Process (Server-Exe $s) -ArgumentList $args_ -WindowStyle Hidden | Out-Null
     $key = Api-Key $s
     for ($i = 0; $i -lt 60; $i++) {
@@ -442,6 +453,12 @@ if ($AutoStart -or $NoAutoStart) {
     Set-AutoStart $AutoStart; exit 0
 }
 if ($Stop) { Stop-Server; exit 0 }
+if ($Logs) {
+    Set-Field $state 'logs' ($Logs -eq 'on'); Save-State $state
+    Say $(if ($Logs -eq 'on') { "The server's normal log is on (requests and timings, not what's written), in $(Join-Path $state.dir 'server.log'). Turn it off with -Logs off." } else { 'The server logs only warnings and errors.' }) 'Green'
+    if (Running) { Stop-Server; Start-Server $state }
+    exit 0
+}
 if ($Start) {
     if (-not (Installed $state)) { Fail 'Not set up yet. Run local-model first.' }
     Start-Server $state; exit 0

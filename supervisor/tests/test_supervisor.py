@@ -36,6 +36,10 @@ def make_cfg(workdir: str, logdir: str):
     # The older tests work at the top level of the work folder: General is open to every model
     # there. test_privacy.py checks the levels themselves.
     cfg.privacy_general = "open"
+    # Private conversations' logs, and the temporary folders a closed conversation is cleaned
+    # of: the test's own, never the real /run or /tmp.
+    cfg.private_log_dir = Path(logdir).parent / "private-logs"
+    cfg.clean_tmp = [str(Path(logdir).parent / "tmp")]
     cfg.made_tools_port = 20000 + (os.getpid() * 7 + int(time.time() * 1000)) % 30000
     # The shipped config leaves pattern rules empty; tests check that they still work.
     cfg.deny_patterns = [r"\bsudo\b"]

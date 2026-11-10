@@ -227,6 +227,21 @@ Which model may see which files ([privacy.py](../supervisor/uvmc/privacy.py), st
 - **Tools the agent builds** get a level when you approve them: the card suggests the most private level its conversation has seen (its code may carry those files), and you can change it there or later in the Tools tab (lowering asks first). Only a conversation at that level or higher may work on its code (**Work on this tool**, `get_tool_code`), and getting the code counts as having seen that level.
 - **The PC's Claude apps** count as paid: they read only what a paid model may, a conversation they start is at most paid, and they get no reply from a conversation that has seen local files.
 
+## Private conversations
+
+A conversation that leaves nothing behind in UVMC once you close it ([private.py](../supervisor/uvmc/private.py), step 7n in design.md). Tick **Private** on the **New conversation** card.
+
+- **The model on your PC only** (a profile with `{pc}` in its address, level `local`), its workers too, and you can't switch it to another. Its level is `local`, so it can open your local projects.
+- **No internet:** its proxy refuses every site, the allowed ones too. Nothing can be looked up, downloaded or installed from online, and the headless browser can't load pages.
+- **While it's open** it works like any other: its steps, approvals and the Activity view. Approval cards for a tool it built or a file written on your PC say that this part stays after it's erased. Sites never get **Always allow**.
+- **Closing it erases it,** after you confirm (the tab's × asks): its messages and steps (kept in memory under `/run/uvmc/private`, never under Runs), its copy of the work folder, its user's home folder and `/tmp` files, its workers' copies and homes, and its lines in the recent sites and programs. A restart of UVMC (an update, a crash, the VM restarting) erases it too: it never comes back. It is never closed by UVMC to make room for another.
+- **Other conversations learn nothing about it:** no transcript (not as a starting transcript, not for a conflict), and files it brought in say "brought in by a private conversation", without its tasks.
+- **The audit log** keeps which program it ran, never the arguments, folder or files named (rules added for its user while it runs, `audit.set_quiet`). **The system log** keeps no agent commands at all, for every conversation: setup tells sudo not to log the supervisor's commands (`/etc/sudoers.d/uvmc-quiet`), and commands start without their text in systemd's log.
+- **Checked at every start:** the supervisor runs a harmless command with a marker text the way a private conversation's run, then looks for the marker in the system log and the audit log. If it is found, private conversations are off and the card says why (usually: run `update`). If closing one couldn't remove something, the panel says what and where, and UVMC tries again at its next start.
+- **The model's server on your PC** logs only warnings and errors (never what's written), with its `/slots` view off. `local-model -Logs on` (Unix: `--logs on`) turns its normal log back on for testing (requests and timings, still not the text); `-Logs off` again. A llama.cpp too old for these options won't start: run `local-model -Update`.
+- **What stays anyway:** files you bring into the main folder (and the main folder's undo points, the last 20), tools you approve, files it writes into a folder shared from your PC once you allow it, and deleted data on the disk until it is overwritten (UVMC deletes files; it doesn't shred them). Files it brings into a less private place than local are held for your review, as for any conversation that has seen local files.
+- The API: `POST /api/conversations` with `"private": true`; `POST /api/conversations/close` answers 409 with `"confirm"` until you send `"erase": true`. A private conversation takes tasks from the panel only: not from `/api/run`, never from the Claude apps.
+
 ## Keeping UVMC up to date
 
 UVMC is built from parts made by others. None of them updates by itself into something untested: each version is pinned, and you choose when to move. **Settings > Updates** in the panel shows what is behind (since 0.16.2).

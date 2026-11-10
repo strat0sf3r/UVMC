@@ -90,7 +90,7 @@ class BrainRunner:
         if os.path.isdir("/run/systemd/system"):
             # In its own resource box (uvmc-brain.slice: a memory cap), as its own user.
             return (["sudo", "-n", f"--preserve-env={keep}", "systemd-run", "--scope", "--quiet",
-                     "--slice=uvmc-brain.slice", "--",
+                     "--description=uvmc-brain", "--slice=uvmc-brain.slice", "--",
                      "setpriv", f"--reuid={user}", f"--regid={user}", "--init-groups", "--",
                      "env", f"HOME={home}", f"USER={user}", f"LOGNAME={user}"] + claude)
         return ["sudo", "-n", f"--preserve-env={keep}", "-u", user, "-H", "--"] + claude

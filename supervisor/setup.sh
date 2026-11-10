@@ -530,6 +530,21 @@ chgrp adm /var/log/audit /var/log/audit/audit.log 2>/dev/null || true
 chmod 750 /var/log/audit 2>/dev/null || true
 chmod 640 /var/log/audit/audit.log 2>/dev/null || true
 
+# --- the system log keeps no agent commands -----------------------------------------
+# Every tool call goes through the supervisor's sudo, whose log line would hold the whole
+# command (the agent's script) in journald. UVMC's own run logs already have them, and a
+# private conversation's must not stay anywhere (supervisor/uvmc/private.py checks this at
+# every start). Refused sudo calls are still logged.
+QUIET=/etc/sudoers.d/uvmc-quiet
+printf '# Written by UVMC setup: the supervisor'"'"'s sudo calls carry the agent'"'"'s commands.\nDefaults:%s !log_allowed\n' "$OWNER" > "$QUIET.new"
+chmod 440 "$QUIET.new"
+if visudo -cf "$QUIET.new" >/dev/null; then
+  mv -f "$QUIET.new" "$QUIET"
+else
+  rm -f "$QUIET.new"
+  say "Warning: sudo didn't accept $QUIET, so the system log keeps the agent's commands (private conversations stay off)."
+fi
+
 if [ -d /run/systemd/system ]; then
   systemctl daemon-reload
   systemctl enable --now auditd >/dev/null 2>&1 || true

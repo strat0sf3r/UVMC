@@ -3,6 +3,11 @@
 One file per session (conversation). Each event carries a sequence number so the
 panel can join a running session, replay the file and continue live without gaps
 or duplicates.
+
+A private conversation's log goes to a folder in memory (config private_log_dir), closed to
+everyone but the supervisor, and is erased when the conversation closes (erase()).
+PRIVATE CONVERSATIONS: anything new that stores what a conversation says or does must leave
+nothing behind for a private one (see CLAUDE.md, "Private conversations").
 """
 
 from __future__ import annotations
@@ -18,14 +23,16 @@ Listener = Callable[[dict], None]
 
 
 class RunLog:
-    def __init__(self, log_dir: Path, listener: Listener | None = None):
+    def __init__(self, log_dir: Path, listener: Listener | None = None, private: bool = False):
         self.listener = listener
         self.seq = 0
         self._lock = threading.Lock()
-        self.name = f"{datetime.now():%Y%m%d-%H%M%S}"
+        self.name = ("private-" if private else "") + f"{datetime.now():%Y%m%d-%H%M%S}"
         self.path: Path | None = None
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
+            if private:
+                log_dir.chmod(0o700)
             path = log_dir / f"{self.name}.jsonl"
             n = 1
             while path.exists():  # two sessions in the same second
@@ -49,6 +56,13 @@ class RunLog:
 
     def read(self) -> list[dict]:
         return read_log(self.path) if self.path else []
+
+    def erase(self) -> None:
+        """Removes the file (a private conversation's, when it closes). Later events are only sent live."""
+        with self._lock:
+            path, self.path = self.path, None
+        if path is not None:
+            path.unlink(missing_ok=True)
 
 
 def read_log(path: Path) -> list[dict]:

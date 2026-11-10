@@ -66,7 +66,9 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
                          + ", ".join(f"/mnt/shared/{n}" for n in shares) + ".")
         else:
             lines.append("- No folders are shared from the user's computer with this conversation.")
-    if on("sites"):
+    if on("sites") and getattr(ctl, "offline", False):
+        lines.append("- This conversation has no internet: every site is refused.")
+    elif on("sites"):
         snap = ctl.sites.snapshot()
         sites = snap["configured"] + snap["learned"]
         ask = ("other sites need the user's approval" if ctl.cfg.net_ask_unknown
@@ -105,7 +107,7 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
             lines.append(f"- In your work folder: {', '.join(names[:30])}{more}.")
         else:
             lines.append("- Your work folder is empty.")
-    if on("browser"):
+    if on("browser") and not getattr(ctl, "offline", False):
         line = browser.briefing_line(getattr(ctl, "browser_ready", None))
         if line:
             lines.append(line)
