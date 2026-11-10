@@ -1,136 +1,494 @@
 {
-  "_about": "Models local-model can download for the PC's graphics card, read by windows/local-model.ps1, unix/local-model.sh and the panel. Each file's SHA-256 is pinned: a file that changes on Hugging Face is refused until it's checked again here. kind: official = from the maker's own page; quantized = the maker's model, converted to GGUF by a well-known uploader; uncensored = changed by someone outside the maker's team (abliterated: refusals removed). default_from_mib: local-model picks the last one whose number the card reaches. tested: run on the RX 5700 XT (8 GB) with UVMC's tools (docs/design.md 7i).",
-  "default_from_mib": {"0": "qwen3.5-4b", "6000": "qwen3.5-9b", "20000": "qwen3.6-27b", "24000": "qwen3.6-35b-a3b"},
-  "models": {
-    "qwen3.5-4b": {
-      "label": "Qwen3.5 4B", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "quantized", "by": "Unsloth",
-      "repo": "unsloth/Qwen3.5-4B-GGUF", "file": "Qwen3.5-4B-Q4_K_M.gguf",
-      "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
-      "size_gb": 2.7, "min_mib": 0, "tested": false,
-      "about": "Alibaba's small 2026 model. Fits any card.",
-      "good": "Fast; tool calls fine for its size; many languages.",
-      "weak": "Loses the thread on longer tasks. Follows China's rules on political topics."
+ "_about": "Models local-model can download for the PC's graphics card (or a Mac's), read by windows/local-model.ps1, unix/local-model.sh and the panel. Grouped by model; each size is in its newest version. Each file's SHA-256 is pinned: a file that changes on Hugging Face is refused until it's checked again here. kind: official = from the maker's own page; quantized = the maker's model, converted to GGUF by a well-known uploader; uncensored = changed by someone outside the maker's team (refusals removed). card_gb / mac_gb: the memory a size needs on a graphics card / a Mac, with an 8,000-token conversation. default: the model local-model picks when none is named (its largest size that fits the card). tested: run on the RX 5700 XT (8 GB) with UVMC's tools (docs/design.md 7i). Made by hand-picked lists and the sizes and hashes read off Hugging Face on 2026-11-10.",
+ "default": "qwen",
+ "families": [
+  {
+   "id": "qwen",
+   "label": "Qwen",
+   "maker": "Alibaba (China)",
+   "kind": "quantized",
+   "by": "Unsloth",
+   "recommended": true,
+   "about": "Alibaba's open models, each size in its newest version: 3.5 for the small ones, 3.8 for 27B, 3.6 for 35B-A3B (a mixture of experts: 35B in total, 3B at work for each word). Qwen publishes no GGUF files of these, so they come from Unsloth, unchanged.",
+   "good": "The best coders and planners at each size; reliable tool use; many languages.",
+   "weak": "Follows China's rules on political topics (Tiananmen, Taiwan, Xinjiang). Thinking is off to fit the context, so it is less careful on hard problems. 2B and 4B lose the thread on longer tasks.",
+   "sizes": [
+    {
+     "id": "qwen3.5-2b",
+     "label": "Qwen3.5 2B",
+     "size": "2B",
+     "version": "3.5",
+     "repo": "unsloth/Qwen3.5-2B-GGUF",
+     "file": "Qwen3.5-2B-Q4_K_M.gguf",
+     "sha256": "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+     "size_gb": 1.3,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
     },
-    "qwen3.5-9b": {
-      "label": "Qwen3.5 9B (recommended)", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "quantized", "by": "Unsloth",
-      "repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q4_K_M.gguf",
-      "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
-      "size_gb": 5.7, "min_mib": 6000, "tested": false,
-      "about": "The newest Qwen that fits an 8 GB card.",
-      "good": "Best coder and planner of the 8 GB picks; reliable tool use; many languages.",
-      "weak": "Follows China's rules on political topics (Tiananmen, Taiwan, Xinjiang). Thinking is off to fit the context, so it is less careful on hard problems."
+    {
+     "id": "qwen3.5-4b",
+     "label": "Qwen3.5 4B",
+     "size": "4B",
+     "version": "3.5",
+     "repo": "unsloth/Qwen3.5-4B-GGUF",
+     "file": "Qwen3.5-4B-Q4_K_M.gguf",
+     "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+     "size_gb": 2.7,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
     },
-    "qwen3.6-27b": {
-      "label": "Qwen3.6 27B", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "quantized", "by": "Unsloth",
-      "repo": "unsloth/Qwen3.6-27B-GGUF", "file": "Qwen3.6-27B-Q4_K_M.gguf",
-      "sha256": "5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0",
-      "size_gb": 16.8, "min_mib": 20000, "tested": false,
-      "about": "Qwen's mid-size 2026 model, for cards with 20 GB or more.",
-      "good": "Much stronger at code and multi-step agent work than the small models.",
-      "weak": "Needs a big card; slow when it spills into the PC's memory. Same political rules as all Qwen models."
+    {
+     "id": "qwen3.5-9b",
+     "label": "Qwen3.5 9B",
+     "size": "9B",
+     "version": "3.5",
+     "repo": "unsloth/Qwen3.5-9B-GGUF",
+     "file": "Qwen3.5-9B-Q4_K_M.gguf",
+     "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+     "size_gb": 5.7,
+     "card_gb": 8,
+     "mac_gb": 16,
+     "tested": false
     },
-    "qwen3.6-35b-a3b": {
-      "label": "Qwen3.6 35B-A3B", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "quantized", "by": "Unsloth",
-      "repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-      "sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
-      "size_gb": 22.1, "min_mib": 24000, "tested": false,
-      "about": "Mixture of experts: 35B in total, 3B at work for each word.",
-      "good": "Fast for its size and about as capable as the 27B.",
-      "weak": "The file still has to fit: 24 GB card. Same political rules as all Qwen models."
+    {
+     "id": "qwen3.8-27b",
+     "label": "Qwen3.8 27B",
+     "size": "27B",
+     "version": "3.8",
+     "repo": "unsloth/Qwen3.8-27B-GGUF",
+     "file": "Qwen3.8-27B-UD-Q4_K_M.gguf",
+     "sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+     "size_gb": 16.5,
+     "card_gb": 20,
+     "mac_gb": 32,
+     "tested": false
     },
-    "qwen3-8b": {
-      "label": "Qwen3 8B (older)", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "official", "by": "Qwen team",
-      "repo": "Qwen/Qwen3-8B-GGUF", "file": "Qwen3-8B-Q4_K_M.gguf",
-      "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
-      "size_gb": 5.0, "min_mib": 6000, "tested": true,
-      "about": "UVMC's first model (2025), kept as the measured baseline.",
-      "good": "Tested in UVMC on an 8 GB card: tool calls correct, 30-55 words a second.",
-      "weak": "Overtaken by Qwen3.5 9B. Follows China's rules on political topics."
-    },
-    "gemma4-e4b": {
-      "label": "Gemma 4 E4B", "family": "Gemma", "maker": "Google (USA)",
-      "kind": "official", "by": "Google",
-      "repo": "google/gemma-4-E4B-it-qat-q4_0-gguf", "file": "gemma-4-E4B_q4_0-it.gguf",
-      "sha256": "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
-      "size_gb": 5.2, "min_mib": 6000, "tested": false,
-      "about": "Google's small 2026 model, in Google's own 4-bit build (trained for it, so little is lost).",
-      "good": "Clear, natural writing; good in European languages; no China rules.",
-      "weak": "Weaker than Qwen3.5 9B at code and long chains of tool calls. Google's safety training refuses more than the others."
-    },
-    "gemma4-12b": {
-      "label": "Gemma 4 12B", "family": "Gemma", "maker": "Google (USA)",
-      "kind": "official", "by": "Google",
-      "repo": "google/gemma-4-12B-it-qat-q4_0-gguf", "file": "gemma-4-12b-it-qat-q4_0.gguf",
-      "sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
-      "size_gb": 7.0, "min_mib": 11000, "tested": false,
-      "about": "Google's mid-size 2026 model, in Google's own 4-bit build.",
-      "good": "Noticeably smarter than E4B; the best writer of the list.",
-      "weak": "On an 8 GB card almost nothing is left for the conversation, so it spills and gets slow: meant for 12 GB and up. Refuses more than the others."
-    },
-    "ministral3-8b": {
-      "label": "Ministral 3 8B", "family": "Mistral", "maker": "Mistral AI (France)",
-      "kind": "official", "by": "Mistral AI",
-      "repo": "mistralai/Ministral-3-8B-Instruct-2512-GGUF", "file": "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-      "sha256": "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761",
-      "size_gb": 5.2, "min_mib": 6000, "tested": false,
-      "about": "Mistral's small model (December 2025), from a European maker.",
-      "good": "Made for tool calls; does what it's asked without lecturing; fewer refusals than Gemma; no China rules.",
-      "weak": "Weaker at code than Qwen3.5 9B; fewer people use it, so less is known about its quirks."
-    },
-    "ministral3-14b": {
-      "label": "Ministral 3 14B", "family": "Mistral", "maker": "Mistral AI (France)",
-      "kind": "official", "by": "Mistral AI",
-      "repo": "mistralai/Ministral-3-14B-Instruct-2512-GGUF", "file": "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
-      "sha256": "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613",
-      "size_gb": 8.2, "min_mib": 11000, "tested": false,
-      "about": "The bigger Ministral, for cards with 12 GB or more.",
-      "good": "Clearly better than the 8B at reasoning and code, same plain manner.",
-      "weak": "Doesn't fit an 8 GB card."
-    },
-    "qwen3.5-9b-uncensored": {
-      "label": "Qwen3.5 9B uncensored", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "uncensored", "by": "huihui-ai (abliterated), mradermacher (GGUF)",
-      "repo": "mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF", "file": "Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf",
-      "sha256": "ea1858ef4dc4b648b8dbb44612962a0333e945060dd0545ac0f28d7c4416e4b3",
-      "size_gb": 5.6, "min_mib": 6000, "tested": true,
-      "about": "Qwen3.5 9B with its refusals removed (abliteration), by people outside Alibaba. On an 8 GB RX 5700 XT: tool call right, about 50 words a second.",
-      "good": "Qwen's coding and planning without refusals; answers political questions instead of declining.",
-      "weak": "Unofficial. Removing refusals can make tool calls sloppier. What it learned about those political topics is still slanted. No brakes of its own: UVMC's approvals are the brakes."
-    },
-    "qwen3.5-9b-uncensored-hauhaucs": {
-      "label": "Qwen3.5 9B uncensored by HauhauCS (recommended)", "family": "Qwen", "maker": "Alibaba (China)",
-      "kind": "uncensored", "by": "HauhauCS",
-      "repo": "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive", "file": "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
-      "sha256": "2ca636d9e81d3d23ca9b60c234fe185d30ec082eeba69ce770fdb0c76559a4f5",
-      "size_gb": 5.6, "min_mib": 6000, "tested": true,
-      "about": "Qwen3.5 9B uncensored by HauhauCS (the 'Aggressive' build), one of the most downloaded uncensored models in 2026. On an 8 GB RX 5700 XT: 4 of 4 tool calls right, as fast as the huihui-ai build.",
-      "good": "Very widely used; refused none of our test questions; tool calls as good as the other uncensored Qwen.",
-      "weak": "Unofficial, from one anonymous uploader who doesn't say how it is made. Doesn't refuse, but still gives Beijing's line: in our test it called Taiwan a region of China and skipped the 1989 crackdown. No brakes of its own: UVMC's approvals are the brakes."
-    },
-    "gemma4-e4b-uncensored": {
-      "label": "Gemma 4 E4B uncensored", "family": "Gemma", "maker": "Google (USA)",
-      "kind": "uncensored", "by": "huihui-ai",
-      "repo": "huihui-ai/Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-GGUF", "file": "Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
-      "sha256": "64434f2da081f912729e5c4732def7303eb5244d3fee493b9675bc4e9af52d4c",
-      "size_gb": 5.3, "min_mib": 6000, "tested": true,
-      "about": "Gemma 4 E4B with its refusals removed (abliteration), by huihui-ai. On an 8 GB RX 5700 XT: tool call right, about 60 words a second.",
-      "good": "Gemma's writing without Google's frequent refusals; no China rules to begin with; the fastest of the 8 GB picks.",
-      "weak": "Unofficial. Writes its reasoning into its answers even with thinking off. Removing refusals can make tool calls sloppier, and Gemma E4B is not the strongest at them to start with. No brakes of its own: UVMC's approvals are the brakes."
-    },
-    "gemma4-12b-uncensored": {
-      "label": "Gemma 4 12B uncensored", "family": "Gemma", "maker": "Google (USA)",
-      "kind": "uncensored", "by": "huihui-ai",
-      "repo": "huihui-ai/Huihui-gemma-4-12B-it-qat-q4_0-unquantized-abliterated-GGUF", "file": "Huihui-gemma-4-12B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
-      "sha256": "8cfe39c96b966b2bc99d908315404914e9128fb35e134ca36f1a199507d6da6b",
-      "size_gb": 7.4, "min_mib": 11000, "tested": false,
-      "about": "Gemma 4 12B with its refusals removed (abliteration), by huihui-ai.",
-      "good": "The smartest uncensored pick that fits a 12 GB card.",
-      "weak": "Unofficial; meant for 12 GB and up. Removing refusals can make tool calls sloppier. No brakes of its own: UVMC's approvals are the brakes."
+    {
+     "id": "qwen3.6-35b-a3b",
+     "label": "Qwen3.6 35B-A3B",
+     "size": "35B-A3B",
+     "version": "3.6",
+     "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+     "file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+     "sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
+     "size_gb": 22.1,
+     "card_gb": 24,
+     "mac_gb": 36,
+     "tested": false
     }
+   ]
+  },
+  {
+   "id": "qwen-hauhaucs",
+   "label": "Qwen uncensored (HauhauCS)",
+   "maker": "Alibaba (China)",
+   "kind": "uncensored",
+   "by": "HauhauCS",
+   "recommended": true,
+   "about": "Qwen with its refusals removed by HauhauCS (the 'Aggressive' builds), among the most downloaded uncensored models in 2026. Same versions per size as Qwen. On an 8 GB RX 5700 XT the 9B called UVMC's tools right 4 times out of 4, as fast as the official model.",
+   "good": "Refused none of our test questions; tool calls as good as the official Qwen.",
+   "weak": "Unofficial, from one anonymous uploader who doesn't say how it is made. Doesn't refuse, but still gives Beijing's line on politics (in our test it called Taiwan a region of China). The 27B is in HauhauCS's own file format (still a normal GGUF). No brakes of its own: UVMC's approvals are the brakes.",
+   "sizes": [
+    {
+     "id": "qwen3.5-2b-uncensored-hauhaucs",
+     "label": "Qwen3.5 2B uncensored (HauhauCS)",
+     "size": "2B",
+     "version": "3.5",
+     "repo": "HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive",
+     "file": "Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
+     "sha256": "be3ccca13a9d1bc8b67165ea80bd103cd6151a37ad131183cc7ca388f78d9517",
+     "size_gb": 1.3,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "qwen3.5-4b-uncensored-hauhaucs",
+     "label": "Qwen3.5 4B uncensored (HauhauCS)",
+     "size": "4B",
+     "version": "3.5",
+     "repo": "HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive",
+     "file": "Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
+     "sha256": "79e28ecacf84e75b6056cf4059636d435aa9eb67795780f7b7dbc7d32a962741",
+     "size_gb": 2.7,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "qwen3.5-9b-uncensored-hauhaucs",
+     "label": "Qwen3.5 9B uncensored (HauhauCS)",
+     "size": "9B",
+     "version": "3.5",
+     "repo": "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+     "file": "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
+     "sha256": "2ca636d9e81d3d23ca9b60c234fe185d30ec082eeba69ce770fdb0c76559a4f5",
+     "size_gb": 5.6,
+     "card_gb": 8,
+     "mac_gb": 16,
+     "tested": true
+    },
+    {
+     "id": "qwen3.8-27b-uncensored-hauhaucs",
+     "label": "Qwen3.8 27B uncensored (HauhauCS)",
+     "size": "27B",
+     "version": "3.8",
+     "repo": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
+     "file": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf",
+     "sha256": "ba36dc3c2b2ff5e0aa5d71092a8894546996a6a119ae391803dda07cdc08516d",
+     "size_gb": 17.9,
+     "card_gb": 20,
+     "mac_gb": 32,
+     "tested": false
+    },
+    {
+     "id": "qwen3.6-35b-a3b-uncensored-hauhaucs",
+     "label": "Qwen3.6 35B-A3B uncensored (HauhauCS)",
+     "size": "35B-A3B",
+     "version": "3.6",
+     "repo": "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
+     "file": "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
+     "sha256": "bbef58c37ce88820be9d98b6437f1cf4bac890c947bd55fc7b68e22098574231",
+     "size_gb": 21.2,
+     "card_gb": 24,
+     "mac_gb": 36,
+     "tested": false
+    }
+   ]
+  },
+  {
+   "id": "qwen-huihui",
+   "label": "Qwen uncensored (huihui-ai)",
+   "maker": "Alibaba (China)",
+   "kind": "uncensored",
+   "by": "huihui-ai (abliterated), mradermacher (GGUF of the small ones)",
+   "about": "Qwen with its refusals removed by huihui-ai through abliteration, a published method. Same versions per size as Qwen. On an 8 GB RX 5700 XT the 9B called UVMC's tools right 4 times out of 4.",
+   "good": "Qwen's coding and planning without refusals; followed requests a little more closely than HauhauCS's build in our test, and was more balanced on Taiwan.",
+   "weak": "Unofficial. Removing refusals can make tool calls sloppier. What it learned about political topics is still slanted. No brakes of its own: UVMC's approvals are the brakes.",
+   "sizes": [
+    {
+     "id": "qwen3.5-2b-uncensored",
+     "label": "Qwen3.5 2B uncensored (huihui-ai)",
+     "size": "2B",
+     "version": "3.5",
+     "repo": "mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF",
+     "file": "Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf",
+     "sha256": "aa25eea787afe56a097268f7ed3460cb623e1901d2e89cd2b654cabb42f80636",
+     "size_gb": 1.3,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "qwen3.5-4b-uncensored",
+     "label": "Qwen3.5 4B uncensored (huihui-ai)",
+     "size": "4B",
+     "version": "3.5",
+     "repo": "mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF",
+     "file": "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf",
+     "sha256": "423f10b6ec2d99c3378143d7cd3b80eb4887b3ed92103103ac59173b404f4f7c",
+     "size_gb": 2.7,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "qwen3.5-9b-uncensored",
+     "label": "Qwen3.5 9B uncensored (huihui-ai)",
+     "size": "9B",
+     "version": "3.5",
+     "repo": "mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF",
+     "file": "Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf",
+     "sha256": "ea1858ef4dc4b648b8dbb44612962a0333e945060dd0545ac0f28d7c4416e4b3",
+     "size_gb": 5.6,
+     "card_gb": 8,
+     "mac_gb": 16,
+     "tested": true
+    },
+    {
+     "id": "qwen3.8-27b-uncensored",
+     "label": "Qwen3.8 27B uncensored (huihui-ai)",
+     "size": "27B",
+     "version": "3.8",
+     "repo": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+     "file": "Huihui-Qwen3.8-27B-abliterated-UD-DW-Q4_K_M.gguf",
+     "sha256": "0c7cfe3060493485bb9a6a51195897b0c1d347a49929206adb9a52170183ea03",
+     "size_gb": 16.6,
+     "card_gb": 20,
+     "mac_gb": 32,
+     "tested": false
+    },
+    {
+     "id": "qwen3.6-35b-a3b-uncensored",
+     "label": "Qwen3.6 35B-A3B uncensored (huihui-ai)",
+     "size": "35B-A3B",
+     "version": "3.6",
+     "repo": "mradermacher/Huihui-Qwen3.6-35B-A3B-abliterated-GGUF",
+     "file": "Huihui-Qwen3.6-35B-A3B-abliterated.Q4_K_M.gguf",
+     "sha256": "fbaa4eb3e2365abffd495c5efa7df88c2b2a5088ba32cd2895973d130991e92b",
+     "size_gb": 21.2,
+     "card_gb": 24,
+     "mac_gb": 36,
+     "tested": false
+    }
+   ]
+  },
+  {
+   "id": "gemma4",
+   "label": "Gemma 4",
+   "maker": "Google (USA)",
+   "kind": "official",
+   "by": "Google",
+   "about": "Google's 2026 models, in Google's own 4-bit builds (trained for it, so little is lost). E2B and E4B are made for small devices; 26B-A4B is a mixture of experts.",
+   "good": "Clear, natural writing; good in European languages; no China rules.",
+   "weak": "Weaker than Qwen at code and long chains of tool calls. Google's safety training refuses more than the others.",
+   "sizes": [
+    {
+     "id": "gemma4-e2b",
+     "label": "Gemma 4 E2B",
+     "size": "E2B",
+     "version": "4",
+     "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf",
+     "file": "gemma-4-E2B_q4_0-it.gguf",
+     "sha256": "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
+     "size_gb": 3.3,
+     "card_gb": 6,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "gemma4-e4b",
+     "label": "Gemma 4 E4B",
+     "size": "E4B",
+     "version": "4",
+     "repo": "google/gemma-4-E4B-it-qat-q4_0-gguf",
+     "file": "gemma-4-E4B_q4_0-it.gguf",
+     "sha256": "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
+     "size_gb": 5.2,
+     "card_gb": 8,
+     "mac_gb": 16,
+     "tested": false
+    },
+    {
+     "id": "gemma4-12b",
+     "label": "Gemma 4 12B",
+     "size": "12B",
+     "version": "4",
+     "repo": "google/gemma-4-12B-it-qat-q4_0-gguf",
+     "file": "gemma-4-12b-it-qat-q4_0.gguf",
+     "sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
+     "size_gb": 7.0,
+     "card_gb": 10,
+     "mac_gb": 16,
+     "tested": false
+    },
+    {
+     "id": "gemma4-26b-a4b",
+     "label": "Gemma 4 26B-A4B",
+     "size": "26B-A4B",
+     "version": "4",
+     "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+     "file": "gemma-4-26B_q4_0-it.gguf",
+     "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d",
+     "size_gb": 14.4,
+     "card_gb": 20,
+     "mac_gb": 24,
+     "tested": false
+    },
+    {
+     "id": "gemma4-31b",
+     "label": "Gemma 4 31B",
+     "size": "31B",
+     "version": "4",
+     "repo": "google/gemma-4-31B-it-qat-q4_0-gguf",
+     "file": "gemma-4-31B_q4_0-it.gguf",
+     "sha256": "179cfb99212709597eae5929112cfca677e1bbf566178b479ae1da0c4772874b",
+     "size_gb": 17.7,
+     "card_gb": 20,
+     "mac_gb": 32,
+     "tested": false
+    }
+   ]
+  },
+  {
+   "id": "gemma4-huihui",
+   "label": "Gemma 4 uncensored (huihui-ai)",
+   "maker": "Google (USA)",
+   "kind": "uncensored",
+   "by": "huihui-ai",
+   "about": "Gemma 4 with its refusals removed by huihui-ai (abliteration). On an 8 GB RX 5700 XT the E4B called UVMC's tool right and was the fastest of the 8 GB picks.",
+   "good": "Gemma's writing without Google's frequent refusals; no China rules to begin with.",
+   "weak": "Unofficial. The E4B writes its reasoning into its answers even with thinking off. Removing refusals can make tool calls sloppier, and Gemma is not the strongest at them to start with. No brakes of its own: UVMC's approvals are the brakes.",
+   "sizes": [
+    {
+     "id": "gemma4-e2b-uncensored",
+     "label": "Gemma 4 E2B uncensored (huihui-ai)",
+     "size": "E2B",
+     "version": "4",
+     "repo": "huihui-ai/Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-GGUF",
+     "file": "Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+     "sha256": "6bc1f421ba870b01a2efbb6904a28bda0ae3ccde57b18eb5e9203c3db05effe9",
+     "size_gb": 3.4,
+     "card_gb": 6,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "gemma4-e4b-uncensored",
+     "label": "Gemma 4 E4B uncensored (huihui-ai)",
+     "size": "E4B",
+     "version": "4",
+     "repo": "huihui-ai/Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-GGUF",
+     "file": "Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+     "sha256": "64434f2da081f912729e5c4732def7303eb5244d3fee493b9675bc4e9af52d4c",
+     "size_gb": 5.3,
+     "card_gb": 8,
+     "mac_gb": 16,
+     "tested": true
+    },
+    {
+     "id": "gemma4-12b-uncensored",
+     "label": "Gemma 4 12B uncensored (huihui-ai)",
+     "size": "12B",
+     "version": "4",
+     "repo": "huihui-ai/Huihui-gemma-4-12B-it-qat-q4_0-unquantized-abliterated-GGUF",
+     "file": "Huihui-gemma-4-12B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+     "sha256": "8cfe39c96b966b2bc99d908315404914e9128fb35e134ca36f1a199507d6da6b",
+     "size_gb": 7.4,
+     "card_gb": 10,
+     "mac_gb": 16,
+     "tested": false
+    },
+    {
+     "id": "gemma4-26b-a4b-uncensored",
+     "label": "Gemma 4 26B-A4B uncensored (huihui-ai)",
+     "size": "26B-A4B",
+     "version": "4",
+     "repo": "huihui-ai/Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-GGUF",
+     "file": "Huihui-gemma-4-26B-A4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+     "sha256": "4b4f9d4b448fca16230f08d50c18a95c81ecfaefede95d3bdfcf1880b4b620f5",
+     "size_gb": 16.8,
+     "card_gb": 20,
+     "mac_gb": 32,
+     "tested": false
+    },
+    {
+     "id": "gemma4-31b-uncensored",
+     "label": "Gemma 4 31B uncensored (huihui-ai)",
+     "size": "31B",
+     "version": "4",
+     "repo": "huihui-ai/Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-GGUF",
+     "file": "Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
+     "sha256": "01fa18ad51c7d31ce738ec8206add7326a96d8a2db044a88f8df05c678c0f8c0",
+     "size_gb": 18.7,
+     "card_gb": 24,
+     "mac_gb": 32,
+     "tested": false
+    }
+   ]
+  },
+  {
+   "id": "ministral3",
+   "label": "Ministral 3",
+   "maker": "Mistral AI (France)",
+   "kind": "official",
+   "by": "Mistral AI",
+   "about": "Mistral's small models (December 2025, still their newest small ones), from a European maker.",
+   "good": "Made for tool calls; does what it's asked without lecturing; fewer refusals than Gemma; no China rules.",
+   "weak": "Weaker at code than Qwen at the same size; fewer people use it, so less is known about its quirks.",
+   "sizes": [
+    {
+     "id": "ministral3-3b",
+     "label": "Ministral 3 3B",
+     "size": "3B",
+     "version": "3",
+     "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+     "file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+     "sha256": "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
+     "size_gb": 2.1,
+     "card_gb": 4,
+     "mac_gb": 8,
+     "tested": false
+    },
+    {
+     "id": "ministral3-8b",
+     "label": "Ministral 3 8B",
+     "size": "8B",
+     "version": "3",
+     "repo": "mistralai/Ministral-3-8B-Instruct-2512-GGUF",
+     "file": "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+     "sha256": "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761",
+     "size_gb": 5.2,
+     "card_gb": 8,
+     "mac_gb": 16,
+     "tested": false
+    },
+    {
+     "id": "ministral3-14b",
+     "label": "Ministral 3 14B",
+     "size": "14B",
+     "version": "3",
+     "repo": "mistralai/Ministral-3-14B-Instruct-2512-GGUF",
+     "file": "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+     "sha256": "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613",
+     "size_gb": 8.2,
+     "card_gb": 10,
+     "mac_gb": 16,
+     "tested": false
+    }
+   ]
+  },
+  {
+   "id": "devstral2",
+   "label": "Devstral Small 2",
+   "maker": "Mistral AI (France)",
+   "kind": "quantized",
+   "by": "Unsloth",
+   "about": "Mistral's model made for coding agents (December 2025), the kind of work UVMC's agent does.",
+   "good": "Built to work through code with tools, step by step; long context; no China rules.",
+   "weak": "Needs a 16 GB card, and fills it; less good at writing and general questions than at code.",
+   "sizes": [
+    {
+     "id": "devstral2-24b",
+     "label": "Devstral Small 2 24B",
+     "size": "24B",
+     "version": "2",
+     "repo": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
+     "file": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+     "sha256": "d14ba9edee1bb4c4996a726deb81e49ae81800a3216f0774634238c380aee496",
+     "size_gb": 14.3,
+     "card_gb": 16,
+     "mac_gb": 24,
+     "tested": false
+    }
+   ]
+  },
+  {
+   "id": "gpt-oss",
+   "label": "gpt-oss",
+   "maker": "OpenAI (USA)",
+   "kind": "quantized",
+   "by": "ggml-org (llama.cpp's team)",
+   "about": "OpenAI's open model (August 2025), the only one of theirs that fits a gaming card. A mixture of experts in OpenAI's own 4-bit format.",
+   "good": "Fast for its size; good at reasoning and tool calls; no China rules.",
+   "weak": "Refuses more than most; English first; its reasoning style is verbose.",
+   "sizes": [
+    {
+     "id": "gpt-oss-20b",
+     "label": "gpt-oss 20B",
+     "size": "20B",
+     "version": "1",
+     "repo": "ggml-org/gpt-oss-20b-GGUF",
+     "file": "gpt-oss-20b-MXFP4.gguf",
+     "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
+     "size_gb": 12.1,
+     "card_gb": 16,
+     "mac_gb": 24,
+     "tested": false
+    }
+   ]
   }
+ ]
 }

@@ -1273,7 +1273,12 @@ class Controller:
                "has_key": bool(p and config.has_key(p)), "running": False, "key_ok": None,
                "model": "", "file": "", "context": 0, "build": "", "error": "",
                "router": False, "models": [], "picked": picked, "in_use": "",
-               "offered": [local_models.info(k) for k in local_models.catalog()]}
+               "hardware": local_models.hardware(), "families": []}
+        hw = out["hardware"]
+        out["families"] = [{**{k: f.get(k) for k in ("id", *local_models.FAMILY)},
+                            "sizes": [{**{k: s.get(k) for k in ("id", *local_models.SIZE)},
+                                       "fit": local_models.fit(s, hw)} for s in f["sizes"]]}
+                           for f in local_models.families()]
         if not p or not out["pc"]:
             return out
         import httpx
@@ -1322,12 +1327,15 @@ class Controller:
 
     def set_local_model(self, mid: str) -> dict:
         """Picks the model on the PC UVMC asks for, from the next task on, and asks the PC to load it
-        now so the first answer doesn't wait for it."""
+        now so the first answer doesn't wait for it. A size on the list that isn't downloaded yet can
+        be picked too: UVMC uses it as soon as local-model -Add has fetched it (the panel shows how)."""
+        from . import local_models
         status = self.local_model()
-        if mid and status["router"] and mid not in [m["id"] for m in status["models"]]:
-            raise SettingsError(f"'{mid}' isn't downloaded on your PC: run local-model -Add {mid} there.")
+        have = mid in [m["id"] for m in status["models"]]
+        if mid and status["router"] and not have and mid not in local_models.catalog():
+            raise SettingsError(f"'{mid}' is neither downloaded on your PC nor on UVMC's list.")
         self.settings.set_local_model(mid)
-        if mid and status["router"]:
+        if mid and status["router"] and have:
             from . import pc
             import httpx
             p = self.cfg.profile(status["profile"])
@@ -1337,8 +1345,13 @@ class Controller:
                            json={"model": mid}, headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=2)
             except httpx.HTTPError:
                 pass
-        self.log.event("notice", text=f"The model on your PC is now {mid}." if mid
-                       else "The model on your PC: whichever local-model has loaded.")
+        if mid and status["router"] and not have:
+            text = f"The model on your PC will be {mid} once it's downloaded (local-model -Add {mid} on the PC)."
+        elif mid:
+            text = f"The model on your PC is now {mid}."
+        else:
+            text = "The model on your PC: whichever local-model has loaded."
+        self.log.event("notice", text=text)
         return self.local_model()
 
     def set_model(self, name: str, cid: str | None = None, confirm: bool = False) -> None:

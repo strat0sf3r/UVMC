@@ -419,6 +419,21 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .mtool .setup { background: var(--signal-bg); border-radius: 6px; padding: 8px 10px; font-size: 14px; white-space: pre-wrap; margin: 8px 0; }
 .mtool .pform { margin: 8px 0; }
 .mtool.unofficial { border-color: var(--signal); }
+.mtool > details > summary.top { cursor: pointer; list-style-position: inside; }
+.mtool table.sizes { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+.mtool table.sizes th { text-align: left; font-weight: 600; color: var(--muted); padding: 2px 6px 2px 0; }
+.mtool table.sizes td { padding: 5px 6px 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.mtool table.sizes td:last-child { text-align: right; white-space: nowrap; }
+.mtool table.sizes .btn { padding: 2px 10px; font-size: 13px; margin-top: 2px; }
+.mtool table.sizes tr.hint td { border-top: none; padding-top: 0; color: var(--signal); white-space: normal; text-align: left; overflow-wrap: anywhere; }
+.mtool .muted { color: var(--muted); }
+.mtool .nw { white-space: nowrap; }
+.mtool .on { color: var(--ok); font-weight: 600; }
+.mtool .need { color: var(--signal); font-weight: 600; }
+.fit { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+.fit.fits { background: var(--ok); }
+.fit.tight { background: var(--signal); }
+.fit.too_big { background: var(--muted); opacity: .5; }
 .mtool pre.log { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
 .mtool .runlist button, .mtool .filelist button { all: unset; cursor: pointer; display: block; font-size: 13px; padding: 2px 0; }
 .mtool .runlist button:hover, .mtool .filelist button:hover { text-decoration: underline; }
@@ -2984,19 +2999,40 @@ const KIND_TEXT = {
   quantized: m => `${m.maker}'s model, converted by ${m.by}`,
   uncensored: m => `unofficial: refusals removed by ${m.by}`,
 };
-function localCard(m, use) {
-  const kind = KIND_TEXT[m.kind] ? KIND_TEXT[m.kind](m) : "";
-  const chip = m.status === "loaded" ? `<span class="chip on">on the card</span>`
-    : m.status === "loading" ? `<span class="chip need">loading</span>`
-    : m.status ? `<span class="chip">not loaded</span>` : `<span class="chip">${esc(String(m.size_gb))} GB</span>`;
-  return `<li class="mtool${m.kind === "uncensored" ? " unofficial" : ""}">
-    <div class="top"><strong>${esc(m.label)}</strong>${m.status && m.size_gb ? `<span class="ver">${esc(String(m.size_gb))} GB</span>` : ""}${chip}</div>
-    ${m.known === false ? `<p class="desc">Not on UVMC's list (from an older local-model).</p>` : `
-    <p class="desc">${esc(m.about)} <span class="when">${esc(kind)}${m.min_mib >= 11000 ? `; meant for cards with ${Math.round(m.min_mib / 1000)} GB or more` : ""}.</span></p>
-    <p class="desc"><strong>Good:</strong> ${esc(m.good)}</p>
-    <p class="desc"><strong>Weak:</strong> ${esc(m.weak)}</p>
-    ${m.tested ? "" : `<p class="when">Not yet tested in UVMC: <span class="cmdish">local-model -Test ${esc(m.id)}</span> on your PC checks it.</p>`}`}
-    ${use}</li>`;
+const FIT_TEXT = { fits: "fits your PC", tight: "tight on your PC: may spill and slow down", too_big: "too big for your PC" };
+// One size of a model: its dot (how it suits the PC, when local-model told UVMC what the PC has),
+// what it needs, whether it's downloaded, and Select. A size not downloaded yet can be picked too:
+// UVMC switches to it once local-model -Add has fetched it on the PC.
+function localSizeRow(s, m) {
+  const st = m.status[s.id];
+  const dot = s.fit ? `<span class="fit ${s.fit}" title="${esc(FIT_TEXT[s.fit])}" aria-label="${esc(FIT_TEXT[s.fit])}"></span>` : "";
+  const state = st === "loaded" ? `<span class="on">on the card</span>` : st === "loading" ? `<span class="need">loading</span>`
+    : st ? "downloaded" : `<span class="muted">not downloaded</span>`;
+  let act;
+  if (s.id === m.in_use) act = `<span class="plan-ok">&#10003; in use</span>`;
+  else if (s.id === m.picked && !st) act = `<span class="need">picked</span>`;
+  else act = `<button class="btn" type="button" data-use-local="${esc(s.id)}" data-have="${st ? 1 : ""}">Select</button>`;
+  const need = s.id === m.picked && !st
+    ? `<tr class="hint"><td colspan="4">Download it on your PC: <span class="cmdish">local-model -Add ${esc(s.id)}</span>. UVMC switches to it as soon as it's there.</td></tr>` : "";
+  return `<tr><td>${dot}<strong>${esc(s.size)}</strong> <span class="muted">v${esc(s.version)}</span>${s.tested ? "" : ` <span class="muted" title="Not yet run in UVMC: local-model -Test ${esc(s.id)} on your PC checks it">(untested)</span>`}</td>
+    <td class="nw">${esc(String(s.size_gb))} GB</td><td><span class="nw">card ${esc(String(s.card_gb))} GB</span><br><span class="nw">Mac ${esc(String(s.mac_gb))} GB</span></td>
+    <td>${state}<br>${act}</td></tr>${need}`;
+}
+function localFamily(f, m) {
+  const kind = KIND_TEXT[f.kind] ? KIND_TEXT[f.kind](f) : "";
+  const mine = f.sizes.some(s => m.status[s.id] || s.id === m.picked);
+  return `<li class="mtool${f.kind === "uncensored" ? " unofficial" : ""}"><details${f.recommended || mine ? " open" : ""}>
+    <summary class="top"><strong>${esc(f.label)}</strong>${f.recommended ? `<span class="chip on">recommended</span>` : ""}<span class="ver">${esc(f.maker)}</span></summary>
+    <p class="desc">${esc(f.about)} <span class="when">${esc(kind)}.</span></p>
+    <p class="desc"><strong>Good:</strong> ${esc(f.good)}</p>
+    <p class="desc"><strong>Weak:</strong> ${esc(f.weak)}</p>
+    <table class="sizes"><thead><tr><th>Size</th><th>Download</th><th>Needs</th><th></th></tr></thead>
+      <tbody>${f.sizes.map(s => localSizeRow(s, m)).join("")}</tbody></table></details></li>`;
+}
+function localOwn(x, m) {
+  const act = x.id === m.in_use ? `<span class="plan-ok">&#10003; in use</span>`
+    : `<button class="btn" type="button" data-use-local="${esc(x.id)}" data-have="1">Select</button>`;
+  return `<tr><td><strong>${esc(x.id)}</strong></td><td colspan="2" class="muted">Your own model: not on UVMC's list, not checked by UVMC.</td><td>${act}</td></tr>`;
 }
 async function loadLocalModel() {
   const box = $("localModel");
@@ -3007,18 +3043,18 @@ async function loadLocalModel() {
   const run = `<span class="cmdish">local-model</span>`;
   let body;
   if (m.running && m.key_ok && m.router) {
-    const have = new Set(m.models.map(x => x.id));
-    const cards = m.models.map(x => localCard(x, x.id === m.in_use
-      ? `<div class="row"><span class="plan-ok">&#10003; UVMC uses this one${m.picked === x.id ? "" : " (none picked yet: the one on the card, or the first)"}</span></div>`
-      : `<div class="row"><button class="btn" type="button" data-use-local="${esc(x.id)}">Use this one</button></div>`)).join("");
-    const more = (m.offered || []).filter(x => !have.has(x.id));
-    body = `<p class="plan-ok">&#10003; Running on your PC${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}${m.context ? `; holds ${m.context.toLocaleString()} tokens of conversation` : ""}.</p>
+    m.status = Object.fromEntries(m.models.map(x => [x.id, x.status]));
+    const own = m.models.filter(x => x.known === false);
+    const hw = m.hardware;
+    const hwText = hw ? `Your PC, as ${run} found it: <strong>${esc(hw.name || (hw.kind === "mac" ? "a Mac" : "a graphics card"))}</strong>, ${Math.round(hw.mib / 1024)} GB${hw.kind === "mac" ? " of its memory usable by the graphics" : ""}. <span class="fit fits"></span>fits <span class="fit tight"></span>tight <span class="fit too_big"></span>too big.`
+      : `Run ${run} on your PC again and each size gets a dot saying whether it fits your card.`;
+    const using = m.in_use ? `UVMC uses <strong>${esc((m.models.find(x => x.id === m.in_use) || {}).label || m.in_use)}</strong>${m.picked === m.in_use ? "" : " (none picked yet: the one on the card, or the first)"}.` : "";
+    body = `<p class="plan-ok">&#10003; Running on your PC${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}${m.context ? `; holds ${m.context.toLocaleString()} tokens of conversation` : ""}. ${using}</p>
       <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header; the model it runs is chosen here, for every conversation, from the next message on. Switching loads the new one on the card (a few seconds). Local models are slower and less capable than Claude: give them small tasks, and start a new conversation when one says it's too long.</p>
-      <ul class="mtools">${cards}</ul>
-      ${more.length ? `<details><summary>More models you can add (${more.length})</summary>
-        <p class="small">On your PC: ${run} -Add <em>name</em>, then pick it here. ${run} -List shows the same list.</p>
-        <ul class="mtools">${more.map(x => localCard(x, `<div class="row"><span class="cmdish">local-model -Add ${esc(x.id)}</span></div>`)).join("")}</ul></details>` : ""}
-      <p class="small">${run} -Update gets the newest llama.cpp; ${run} -Delete <em>name</em> deletes a model.</p>`;
+      <p class="small">${hwText}</p>
+      <ul class="mtools">${(m.families || []).map(f => localFamily(f, m)).join("")}
+      ${own.length ? `<li class="mtool"><div class="top"><strong>Your own models</strong></div><table class="sizes"><tbody>${own.map(x => localOwn(x, m)).join("")}</tbody></table></li>` : ""}</ul>
+      <p class="small">On your PC: ${run} -Add <em>name</em> downloads a size (the name is in ${run} -List), ${run} -AddFile <em>file.gguf</em> adds your own, ${run} -Delete <em>name</em> deletes one, ${run} -Update gets the newest llama.cpp.</p>`;
   } else if (m.running && m.key_ok) {
     body = `<p class="plan-ok">&#10003; Running: <strong>${esc(m.model || m.file)}</strong>${m.file && m.model ? ` (${esc(m.file)})` : ""}, holds ${m.context.toLocaleString()} tokens of conversation${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}.</p>
       <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header. To choose among several models here (Qwen, Gemma, Mistral, uncensored ones), run ${run} on your PC again: this one is from an older version and runs one model only.</p>`;
@@ -3032,11 +3068,11 @@ async function loadLocalModel() {
   box.innerHTML = `<h3>Models on your PC</h3>${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
   $("localCheck").addEventListener("click", loadLocalModel);
   box.querySelectorAll("[data-use-local]").forEach(b => b.addEventListener("click", async () => {
-    b.disabled = true; b.textContent = "Switching...";
+    b.disabled = true; b.textContent = b.dataset.have ? "Switching..." : "Saving...";
     try { await api("/api/local-model", { model: b.dataset.useLocal }); }
-    catch (e) { b.textContent = "Use this one"; b.disabled = false; b.insertAdjacentHTML("afterend", `<span class="small bad">${esc(e.message)}</span>`); return; }
+    catch (e) { b.textContent = "Select"; b.disabled = false; b.insertAdjacentHTML("afterend", `<span class="small bad">${esc(e.message)}</span>`); return; }
     loadLocalModel();
-    setTimeout(loadLocalModel, 8000);   // loading on the card takes a few seconds
+    if (b.dataset.have) setTimeout(loadLocalModel, 8000);   // loading on the card takes a few seconds
   }));
 }
 

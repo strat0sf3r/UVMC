@@ -2,10 +2,11 @@
 # no subscription). Start it with local-model.cmd.
 #   local-model                      set up: download llama.cpp and a model sized to your card,
 #                                    open the way for the UVMC machine only, start, connect UVMC
-#   local-model -List                the models you can add, what each is good and bad at
+#   local-model -List                the models you can add, by model and size, and which fit
 #   local-model -Add gemma4-e4b      download another model (several can be kept; the panel
 #                                    picks which one UVMC uses)
-#   local-model -Delete gemma4-e4b   delete a model's file
+#   local-model -AddFile my.gguf [-Name mine]   use a GGUF file of your own (not checked by UVMC)
+#   local-model -Delete gemma4-e4b   delete a model's file (your own files are only forgotten)
 #   local-model -Test [model]        check a model with UVMC's tools: tool call right? how fast?
 #   local-model -Update              get the newest llama.cpp
 #   local-model -Status | -Start | -Stop | -Remove
@@ -24,6 +25,8 @@
 param(
     [string]$Model,
     [string]$Add,
+    [string]$AddFile,
+    [string]$Name,
     [string]$Delete,
     [string]$Dir,
     [switch]$List,
@@ -50,16 +53,40 @@ $OutRuleName = 'UVMC local model (no outgoing)'
 $StateFile = Join-Path $env:LOCALAPPDATA 'UVMC\local-model.json'
 $Startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'UVMC local model.lnk'
 
-# The models on offer, with what each is good and bad at: one list for this script, unix/local-model.sh
-# and the panel. Every file's SHA-256 is pinned there.
+# The models on offer, by model and size, with what each is good and bad at: one list for this script,
+# unix/local-model.sh and the panel. Every file's SHA-256 is pinned there. $Models has every size by
+# its name, with its model's description.
 $CatalogFile = Join-Path (Split-Path $PSScriptRoot) 'supervisor\uvmc\local_models.json'
 if (-not (Test-Path $CatalogFile)) { Write-Host "The list of models ($CatalogFile) is missing." -ForegroundColor Red; exit 1 }
 $Catalog = [IO.File]::ReadAllText($CatalogFile) | ConvertFrom-Json
 $Models = [ordered]@{}
-foreach ($p in $Catalog.models.PSObject.Properties) { $Models[$p.Name] = $p.Value }
+foreach ($f in $Catalog.families) {
+    foreach ($sz in $f.sizes) {
+        $o = $sz.PSObject.Copy()
+        foreach ($k in 'maker', 'kind', 'by', 'recommended', 'about', 'good', 'weak') { $o | Add-Member -NotePropertyName $k -NotePropertyValue $f.$k -Force }
+        $o | Add-Member -NotePropertyName 'family' -NotePropertyValue $f.label -Force
+        $o | Add-Member -NotePropertyName 'family_id' -NotePropertyValue $f.id -Force
+        $Models[$sz.id] = $o
+    }
+}
 
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
 function Fail($text) { Write-Host $text -ForegroundColor Red; exit 1 }
+
+function Own($s) {
+    # Your own GGUF files (-AddFile): name -> path. Not on the list, not checked by UVMC.
+    $own = [ordered]@{}
+    if ($s.PSObject.Properties['own']) { foreach ($p in $s.own.PSObject.Properties) { $own[$p.Name] = $p.Value } }
+    return $own
+}
+function Label($name) { if ($Models.Contains($name)) { $Models[$name].label } else { "$name (your own)" } }
+function Fit($m, $mib) {
+    # How a size suits the card: fits, tight (the file fits, little room for the conversation), too big.
+    if (-not $mib) { return '' }
+    if ($mib -ge 1000 * $m.card_gb) { return 'fits' }
+    if ($mib -ge 1000 * $m.size_gb + 500) { return 'tight' }
+    return 'too big'
+}
 
 function Load-State {
     if (Test-Path $StateFile) { return Get-Content $StateFile -Raw | ConvertFrom-Json }
@@ -70,7 +97,11 @@ function Save-State($s) {
     [IO.File]::WriteAllText($StateFile, ($s | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 }
 function Set-Field($s, $name, $value) { $s | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
-function Installed($s) { if ($s.PSObject.Properties['models']) { return @($s.models | Where-Object { $Models.Contains($_) }) } else { return @() } }
+function Installed($s) {
+    $own = Own $s
+    $list = if ($s.PSObject.Properties['models']) { @($s.models | Where-Object { $Models.Contains($_) }) } else { @() }
+    return @($list) + @($own.Keys)
+}
 
 function Source-Line($m) {
     switch ($m.kind) {
@@ -108,7 +139,11 @@ function Find-VmNetwork {
 
 function Server-Exe($s) { Join-Path $s.dir 'llama.cpp\llama-server.exe' }
 function Preset-File($s) { Join-Path $s.dir 'models.ini' }
-function Model-Path($s, $name) { Join-Path $s.dir "models\$($Models[$name].file)" }
+function Model-Path($s, $name) {
+    $own = Own $s
+    if ($own.Contains($name)) { return $own[$name] }
+    Join-Path $s.dir "models\$($Models[$name].file)"
+}
 # The router and the model it has loaded are both llama-server processes from this folder.
 function Running { Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$($state.dir)*" } }
 function Api-Key($s) { (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim() }
@@ -157,8 +192,10 @@ function Get-Card($s) {
 }
 
 function Pick-Model($mib) {
-    $pick = $null
-    foreach ($p in $Catalog.default_from_mib.PSObject.Properties) { if ($mib -ge [int]$p.Name) { $pick = $p.Value } }
+    # The default model's largest size that fits the card (its smallest if none does).
+    $sizes = @($Catalog.families | Where-Object { $_.id -eq $Catalog.default } | ForEach-Object { $_.sizes })
+    $pick = $sizes[0].id
+    foreach ($sz in $sizes) { if ($mib -ge 1000 * $sz.card_gb) { $pick = $sz.id } }
     return $pick
 }
 
@@ -189,7 +226,7 @@ function Get-Model($s, $name) {
     }
     $verified[$m.file] = $m.sha256
     Set-Field $s 'verified' ([pscustomobject]$verified)
-    $list = @(Installed $s)
+    $list = if ($s.PSObject.Properties['models']) { @($s.models | Where-Object { $Models.Contains($_) }) } else { @() }
     if ($list -notcontains $name) { $list += $name }
     Set-Field $s 'models' $list
 }
@@ -201,7 +238,7 @@ function Forget-OldModel($s) {
     $s.PSObject.Properties.Remove('model')
     if ($s.PSObject.Properties['model_sha']) { $s.PSObject.Properties.Remove('model_sha') }
     if ($Models.Contains($old) -and (Test-Path (Model-Path $s $old))) {
-        $list = @(Installed $s); if ($list -notcontains $old) { $list += $old }
+        $list = @($s.models | Where-Object { $Models.Contains($_) }); if ($list -notcontains $old) { $list += $old }
         Set-Field $s 'models' $list
     }
 }
@@ -339,11 +376,34 @@ function Send-Key($mp, $value) {
     }
 }
 
+function Send-Hardware($mp, $s) {
+    # Tells UVMC the card this script found (name and memory), so the panel can say which sizes fit.
+    # Same way as the key: a file over "multipass transfer", put in place, deleted.
+    if (-not $s.PSObject.Properties['card_mib']) { return }
+    $name = 'uvmc-hw-' + [guid]::NewGuid().ToString('N')
+    $tmp = Join-Path $env:TEMP $name
+    $json = @{ kind = 'card'; name = [string]$s.card; mib = [int]$s.card_mib } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding $false))
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    Push-Location $env:TEMP
+    try {
+        & $mp transfer $name "${VmName}:/home/ubuntu/$name" *> $null
+        if ($LASTEXITCODE -ne 0) { return }
+        & $mp exec $VmName -- timeout -k 5 20 sudo sh -c "install -m 644 /home/ubuntu/$name /etc/uvmc/pc-hardware.json; s=`$?; rm -f /home/ubuntu/$name; exit `$s" *> $null
+        Confirm-VmTimeout 'local-model' 'install pc-hardware.json' 20 $LASTEXITCODE | Out-Null
+    } finally {
+        Pop-Location
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $old
+    }
+}
+
 function Connect-Uvmc($s) {
     # Gives UVMC the key, through uvmc-setkey: stored where the agent can't read it.
     $mp = Find-Multipass
     if (-not $mp) { Say 'Multipass is not installed, so UVMC was not connected. Run install.cmd, then local-model again.' 'Yellow'; return }
     $ok = Send-Key $mp (Api-Key $s)
+    if ($ok) { Send-Hardware $mp $s }
     if ($ok) { Say 'UVMC connected: pick "Local model on my PC" in the panel, and which model it uses under Settings > Models.' 'Green' }
     else { Say 'Could not give UVMC the key. Is the UVMC machine installed and running?' 'Yellow' }
 }
@@ -367,21 +427,32 @@ function Set-AutoStart([bool]$on) {
 function Show-List($s) {
     $have = @(Installed $s)
     $mib = if ($s.PSObject.Properties['card_mib']) { [int]$s.card_mib } else { 0 }
-    if ($mib) { Say "Your card: $($s.card), $mib MiB. [x] = downloaded." } else { Say '[x] = downloaded. (Run local-model once so it knows your card.)' }
-    foreach ($name in $Models.Keys) {
-        $m = $Models[$name]
-        $mark = if ($have -contains $name) { '[x]' } else { '[ ]' }
-        $fit = if (-not $mib) { '' } elseif ($mib -ge $m.min_mib) { '' } else { "  (meant for $([math]::Round($m.min_mib / 1000)) GB cards: slow on yours)" }
-        $color = if ($m.kind -eq 'uncensored') { 'Yellow' } else { 'White' }
+    if ($mib) { Say "Your card: $($s.card), $mib MiB. [x] = downloaded; each size says whether it fits." }
+    else { Say '[x] = downloaded. (Run local-model once so it knows your card and says which sizes fit.)' }
+    $colors = @{ 'fits' = 'Green'; 'tight' = 'Yellow'; 'too big' = 'DarkGray'; '' = 'Gray' }
+    foreach ($f in $Catalog.families) {
         Say ''
-        Say "$mark $name  -  $($m.label), $($m.size_gb) GB$fit" $color
-        Say "    $($m.about) $(Source-Line $m)."
-        Say "    Good: $($m.good)"
-        Say "    Weak: $($m.weak)"
-        if (-not $m.tested) { Say '    Not yet tested in UVMC: local-model -Test after adding it.' 'DarkGray' }
+        $color = if ($f.kind -eq 'uncensored') { 'Yellow' } else { 'White' }
+        Say "$($f.label)$(if ($f.recommended) { ' (recommended)' })  -  $($f.maker)" $color
+        Say "    $($f.about) $(Source-Line $f)."
+        Say "    Good: $($f.good)"
+        Say "    Weak: $($f.weak)"
+        foreach ($sz in $f.sizes) {
+            $mark = if ($have -contains $sz.id) { '[x]' } else { '[ ]' }
+            $fit = Fit $sz $mib
+            $line = "    $mark {0,-38} {1,-8} v{2,-4} {3,5} GB   card {4,2} GB   Mac {5,2} GB" -f $sz.id, $sz.size, $sz.version, $sz.size_gb, $sz.card_gb, $sz.mac_gb
+            Say "$line$(if ($fit) { "   $fit" })$(if (-not $sz.tested) { '   (untested)' })" $colors[$fit]
+        }
+    }
+    $own = Own $s
+    if ($own.Count) {
+        Say ''
+        Say 'Your own models (not on the list, not checked by UVMC):' 'White'
+        foreach ($k in $own.Keys) { Say "    [x] $k  -  $($own[$k])" }
     }
     Say ''
-    Say 'Add one with local-model -Add <name>. The panel (Settings > Models) picks which one UVMC uses.'
+    Say 'Add one with local-model -Add <name> (the name in the first column), or your own file with -AddFile.'
+    Say 'The panel (Settings > Models on your PC) picks which one UVMC uses. (untested): local-model -Test checks it after adding.'
 }
 
 function Post-Json($path, $body, $key, $timeout) {
@@ -394,9 +465,8 @@ function Test-Model($s, $name) {
     # The same request UVMC makes: a system prompt, a task, its run_command tool. Passes when the
     # model asks for the tool with a sensible command. Then a plain reply, to measure speed.
     $key = Api-Key $s
-    $m = $Models[$name]
     Say ''
-    Say "Testing $($m.label)... (loading it on the card first can take a minute)"
+    Say "Testing $(Label $name)... (loading it on the card first can take a minute)"
     $tool = @{ type = 'function'; function = @{ name = 'run_command'
         description = 'Run a bash command as the agent user and return its exit code and combined output.'
         parameters = @{ type = 'object'; properties = @{ command = @{ type = 'string'; description = 'The bash command to run.' } }; required = @('command') } } }
@@ -427,7 +497,7 @@ function Show-Status($s) {
     Say "Folder:    $($s.dir)"
     Say "llama.cpp: $($s.llama)"
     Say "Card:      $($s.card) ($($s.card_mib) MiB)"
-    Say "Models:    $(((Installed $s) | ForEach-Object { $Models[$_].label }) -join ', ')"
+    Say "Models:    $(((Installed $s) | ForEach-Object { Label $_ }) -join ', ')"
     Say "Starts at login: $(if (Test-Path $Startup) { 'yes (local-model -NoAutoStart to stop that)' } else { 'no (local-model -AutoStart if you want it)' })"
     if (-not (Running)) { Say 'Not running (local-model -Start).' 'Yellow'; return }
     try {
@@ -479,12 +549,17 @@ if ($Delete) {
     $rest = @(Installed $state | Where-Object { $_ -ne $Delete })
     if (-not $rest) { Fail 'It is the only model left. local-model -Remove removes everything.' }
     $path = Model-Path $state $Delete
-    Set-Field $state 'models' $rest
+    $label = Label $Delete
+    $own = Own $state
+    $isOwn = $own.Contains($Delete)
+    if ($isOwn) { $own.Remove($Delete); Set-Field $state 'own' ([pscustomobject]$own) }
+    else { Set-Field $state 'models' @($state.models | Where-Object { $_ -ne $Delete }) }
     Save-State $state
     Write-Preset $state
     Restart-IfRunning $state
+    if ($isOwn) { Say "Forgot $label. Your file stays where it is: $path" 'Green'; exit 0 }
     if (Test-Path $path) { Remove-Item $path }
-    Say "Deleted $($Models[$Delete].label). If the panel had picked it, UVMC now uses another one until you pick again." 'Green'
+    Say "Deleted $label. If the panel had picked it, UVMC now uses another one until you pick again." 'Green'
     exit 0
 }
 if ($Remove) {
@@ -509,6 +584,28 @@ if ($Remove) {
     Say 'Removed.' 'Green'; exit 0
 }
 if ($Add -and -not $Models.Contains($Add)) { Fail "Unknown model '$Add'. local-model -List shows them: $($Models.Keys -join ', ')." }
+if ($AddFile) {
+    # A GGUF file of your own: used where it is, with your card's settings. Its contents are not checked
+    # (no pinned checksum), and it's marked as your own in the panel.
+    if (-not (Test-Path (Server-Exe $state))) { Fail 'Not set up yet. Run local-model first, then add your own file.' }
+    $file = [IO.Path]::GetFullPath($AddFile)
+    if (-not (Test-Path $file -PathType Leaf) -or $file -notmatch '\.gguf$') { Fail "$AddFile is not a .gguf file." }
+    $id = if ($Name) { $Name } else { [IO.Path]::GetFileNameWithoutExtension($file) }
+    $id = ($id.ToLower() -replace '[^a-z0-9._-]+', '-').Trim('-', '.')
+    if ($id.Length -gt 60) { $id = $id.Substring(0, 60).TrimEnd('-', '.') }
+    if (-not $id -or $id -eq 'local') { Fail 'Give it a name with -Name (letters, digits, dots and dashes).' }
+    if ($Models.Contains($id)) { Fail "'$id' is a model on UVMC's list: local-model -Add $id gets the checked file. Use -Name for yours." }
+    $own = Own $state
+    $own[$id] = $file
+    Set-Field $state 'own' ([pscustomobject]$own)
+    Save-State $state
+    Write-Preset $state
+    Restart-IfRunning $state
+    if (-not (Running)) { Start-Server $state }
+    Say "Added your own model as '$id' ($file). UVMC hasn't checked this file: only use files from sources you trust." 'Yellow'
+    Say "Pick it in the panel (Settings > Models on your PC), and try it with local-model -Test $id." 'Green'
+    exit 0
+}
 
 # Set up, add a model, or update.
 New-Item -ItemType Directory -Force $state.dir | Out-Null
@@ -523,7 +620,9 @@ Say "Graphics card: $($card.Name), $($card.MiB) MiB."
 $name = if ($Add) { $Add } elseif (-not (Installed $state)) { Pick-Model $card.MiB } else { $null }
 if ($name) {
     $m = $Models[$name]
-    if ($m.min_mib -gt $card.MiB) { Say "$($m.label) is meant for bigger cards; it will be slow on this one." 'Yellow' }
+    $fit = Fit $m $card.MiB
+    if ($fit -eq 'tight') { Say "$($m.label) needs a $($m.card_gb) GB card: it fits on yours, but tightly, and may be slow." 'Yellow' }
+    elseif ($fit -eq 'too big') { Say "$($m.label) needs a $($m.card_gb) GB card: it will spill into the PC's memory and be very slow on yours." 'Yellow' }
     Say "Model: $($m.label). $($m.about)"
     Get-Model $state $name
 }
@@ -537,8 +636,8 @@ if (-not (Test-Path $keyFile)) {
 Save-State $state
 Write-Preset $state
 
-# Files from before 0.16 that are no longer on the list stay until you delete them.
-$known = @($Models.Values | ForEach-Object { $_.file })
+# Files that are no longer on the list (older lists, other versions) stay until you delete them.
+$known = @($Models.Values | ForEach-Object { $_.file }) + @((Own $state).Values | ForEach-Object { Split-Path $_ -Leaf })
 $mdir = Join-Path $state.dir 'models'
 if (Test-Path $mdir) {
     Get-ChildItem $mdir -Filter *.gguf | Where-Object { $known -notcontains $_.Name } | ForEach-Object {

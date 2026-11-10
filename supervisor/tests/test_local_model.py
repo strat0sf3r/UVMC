@@ -23,7 +23,7 @@ from test_providers import FakeOpenAI, chat  # noqa: E402
 from test_service import ServiceBase  # noqa: E402
 from test_supervisor import FakeClient  # noqa: E402
 from test_walls import UPSTREAM_HOST, start_upstream, through_proxy  # noqa: E402
-from uvmc import config, local_models, pc  # noqa: E402
+from uvmc import config, local_models, pc, settings  # noqa: E402
 from uvmc.netproxy import Proxy, SiteList  # noqa: E402
 from uvmc.providers import Profile, ProviderError, make  # noqa: E402
 from uvmc.service import Controller  # noqa: E402
@@ -204,27 +204,60 @@ class CatalogTest(unittest.TestCase):
 
     def test_entries_complete(self):
         data = json.loads(local_models.CATALOG.read_text(encoding="utf-8"))
-        models = data["models"]
-        self.assertGreaterEqual(len(models), 8)
-        for mid, m in models.items():
-            with self.subTest(mid):
-                self.assertRegex(mid, r"^[a-z0-9][a-z0-9.-]*$")
-                for k in ("label", "maker", "kind", "by", "repo", "file", "about", "good", "weak"):
-                    self.assertTrue(str(m.get(k, "")).strip(), k)
-                self.assertRegex(m["sha256"], r"^[0-9a-f]{64}$")
-                self.assertIn(m["kind"], ("official", "quantized", "uncensored"))
-                self.assertTrue(m["file"].endswith(".gguf"))
-                self.assertIsInstance(m["min_mib"], int)
-                self.assertIsInstance(m["tested"], bool)
-                if m["kind"] == "official":
-                    self.assertIn(m["repo"].split("/")[0], ("Qwen", "google", "mistralai"))
-        for mib, mid in data["default_from_mib"].items():
-            self.assertIn(mid, models)
-            self.assertLessEqual(models[mid]["min_mib"], int(mib))
-        self.assertEqual(len({m["file"] for m in models.values()}), len(models))   # one file, one name
+        fams = data["families"]
+        self.assertGreaterEqual(len(fams), 6)
+        self.assertIn(data["default"], [f["id"] for f in fams])
+        ids, files = [], []
+        for f in fams:
+            with self.subTest(f["id"]):
+                for k in ("id", "label", "maker", "kind", "by", "about", "good", "weak"):
+                    self.assertTrue(str(f.get(k, "")).strip(), k)
+                self.assertIn(f["kind"], ("official", "quantized", "uncensored"))
+                self.assertTrue(f["sizes"])
+            for s in f["sizes"]:
+                with self.subTest(s["id"]):
+                    self.assertRegex(s["id"], r"^[a-z0-9][a-z0-9.-]*$")
+                    self.assertRegex(s["id"], settings.NAME_LOCAL)      # the panel can pick it
+                    for k in ("label", "size", "version", "repo", "file"):
+                        self.assertTrue(str(s.get(k, "")).strip(), k)
+                    self.assertRegex(s["sha256"], r"^[0-9a-f]{64}$")
+                    self.assertTrue(s["file"].endswith(".gguf"))
+                    self.assertIsInstance(s["tested"], bool)
+                    # memory: more than the file on a card, more again on a Mac; gaming cards and Macs only
+                    self.assertLess(s["size_gb"], s["card_gb"])
+                    self.assertLessEqual(s["card_gb"], 32)
+                    self.assertLess(s["card_gb"], s["mac_gb"] + 0.01)
+                    self.assertLessEqual(s["mac_gb"], 64)
+                    if f["kind"] == "official":
+                        self.assertIn(s["repo"].split("/")[0], ("Qwen", "google", "mistralai", "openai"))
+                    ids.append(s["id"]); files.append(s["repo"] + "/" + s["file"])
+        self.assertEqual(len(set(ids)), len(ids))                       # one name, one size
+        self.assertEqual(len(set(files)), len(files))                   # one file, one name
+        self.assertEqual(set(ids), set(local_models.catalog()))
+        # the sizes on the user's PC keep their names
+        for mid in ("qwen3.5-9b-uncensored-hauhaucs", "qwen3.5-9b-uncensored", "gemma4-e4b-uncensored"):
+            self.assertIn(mid, ids)
+
+    def test_fit_and_hardware(self):
+        s = local_models.catalog()["qwen3.5-9b"]             # 5.7 GB, needs an 8 GB card
+        card = lambda mib: {"kind": "card", "name": "x", "mib": mib}
+        self.assertEqual(local_models.fit(s, card(8176)), "fits")
+        self.assertEqual(local_models.fit(s, card(6400)), "tight")       # the file fits, little room left
+        self.assertEqual(local_models.fit(s, card(4096)), "too_big")
+        self.assertEqual(local_models.fit(s, None), "")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "hw.json"
+            self.assertIsNone(local_models.hardware(p))      # not told yet
+            p.write_text('{"kind": "card", "name": "AMD Radeon RX 5700 XT", "mib": 8176}')
+            self.assertEqual(local_models.hardware(p), {"kind": "card", "name": "AMD Radeon RX 5700 XT", "mib": 8176})
+            p.write_text('{"kind": "phone", "mib": 8176}')
+            self.assertIsNone(local_models.hardware(p))
+            p.write_text("not json")
+            self.assertIsNone(local_models.hardware(p))
 
     def test_info_and_choice(self):
-        self.assertEqual(local_models.info("gemma4-e4b")["maker"], "Google (USA)")
+        i = local_models.info("gemma4-e4b")
+        self.assertEqual((i["maker"], i["family"], i["size"], i["known"]), ("Google (USA)", "Gemma 4", "E4B", True))
         self.assertEqual(local_models.info("my-own"), {"id": "my-own", "label": "my-own", "known": False})
         rows = [{"id": "a", "status": "unloaded"}, {"id": "b", "status": "loaded"}]
         self.assertEqual(local_models.choose("a", rows), "a")          # picked and downloaded
@@ -299,7 +332,8 @@ class StatusTest(ServiceBase):
         try:
             ctl = self.router_ctl(srv)
             with mock.patch.object(pc, "address", return_value="127.0.0.1"), \
-                    mock.patch.dict(os.environ, {"UVMC_KEY_LOCAL": "k"}):
+                    mock.patch.dict(os.environ, {"UVMC_KEY_LOCAL": "k"}), \
+                    mock.patch.object(local_models, "HARDWARE", Path("/nonexistent/pc-hardware.json")):
                 s = ctl.local_model()
                 self.assertTrue(s["router"])
                 self.assertEqual([(m["id"], m["status"]) for m in s["models"]],
@@ -307,7 +341,10 @@ class StatusTest(ServiceBase):
                 self.assertEqual(s["models"][0]["maker"], "Alibaba (China)")
                 self.assertEqual((s["in_use"], s["picked"], s["context"]), ("gemma4-e4b", "", 8192))
                 self.assertEqual(s["file"], "gemma-4-E4B_q4_0-it.gguf")
-                self.assertIn("qwen3.5-9b-uncensored", [m["id"] for m in s["offered"]])
+                fams = {f["id"]: f for f in s["families"]}
+                self.assertIn("qwen3.5-9b-uncensored", [x["id"] for x in fams["qwen-huihui"]["sizes"]])
+                self.assertTrue(fams["qwen"]["recommended"])
+                self.assertEqual({x["fit"] for f in s["families"] for x in f["sizes"]}, {""})   # PC not told yet
 
                 s = ctl.set_local_model("qwen3.5-9b")
                 self.assertEqual((s["in_use"], s["picked"]), ("qwen3.5-9b", "qwen3.5-9b"))
@@ -317,9 +354,23 @@ class StatusTest(ServiceBase):
                                  "qwen3.5-9b")                                     # kept across restarts
 
                 with self.assertRaises(Exception) as e:
-                    ctl.set_local_model("gemma4-12b")                              # not downloaded
-                self.assertIn("local-model -Add gemma4-12b", str(e.exception))
+                    ctl.set_local_model("not-a-model")                             # neither downloaded nor listed
+                self.assertIn("neither downloaded", str(e.exception))
                 self.assertEqual(ctl.settings.local_model(), "qwen3.5-9b")         # unchanged
+
+                s = ctl.set_local_model("gemma4-12b")                              # listed, not downloaded yet
+                self.assertEqual(s["picked"], "gemma4-12b")                        # kept: used once it's there
+                self.assertEqual(srv.loads, ["qwen3.5-9b"])                        # nothing asked of the PC
+                self.assertNotEqual(s["in_use"], "gemma4-12b")
+
+                with tempfile.TemporaryDirectory() as d:
+                    hw = Path(d) / "hw.json"
+                    hw.write_text('{"kind": "card", "name": "AMD Radeon RX 5700 XT", "mib": 8176}')
+                    with mock.patch.object(local_models, "HARDWARE", hw):
+                        s = ctl.local_model()
+                    self.assertEqual(s["hardware"]["mib"], 8176)
+                    fit = {x["id"]: x["fit"] for f in s["families"] for x in f["sizes"]}
+                    self.assertEqual((fit["qwen3.5-9b"], fit["gemma4-12b"], fit["qwen3.8-27b"]), ("fits", "tight", "too_big"))
 
                 ctl.set_local_model("")
                 self.assertEqual(ctl.cfg.models["local"].model, "local")

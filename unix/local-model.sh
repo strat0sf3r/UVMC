@@ -4,10 +4,11 @@
 # Vulkan loader, e.g. "sudo apt install libvulkan1 mesa-vulkan-drivers").
 #   unix/local-model.sh                    set up: download llama.cpp and a model sized to your
 #                                          chip, start it, connect UVMC
-#   unix/local-model.sh --list             the models you can add, what each is good and bad at
+#   unix/local-model.sh --list             the models you can add, by model and size, and which fit
 #   unix/local-model.sh --add gemma4-e4b   download another model (several can be kept; the panel
 #                                          picks which one UVMC uses)
-#   unix/local-model.sh --delete <model>   delete a model's file
+#   unix/local-model.sh --add-file my.gguf [--name mine]   a GGUF file of your own (not checked)
+#   unix/local-model.sh --delete <model>   delete a model's file (your own files are only forgotten)
 #   unix/local-model.sh --test [model]     check a model with UVMC's tools: tool call right? speed?
 #   unix/local-model.sh --update           get the newest llama.cpp
 #   unix/local-model.sh --status | --start | --stop | --remove
@@ -33,57 +34,78 @@ ARCH="$(uname -m)"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
-# The models on offer, with what each is good and bad at: one list for this script,
-# windows/local-model.ps1 and the panel. Every file's SHA-256 is pinned there.
+# The models on offer, by model and size, with what each is good and bad at: one list for this
+# script, windows/local-model.ps1 and the panel. Every file's SHA-256 is pinned there.
 CATALOG="$(dirname "$HERE")/supervisor/uvmc/local_models.json"
 [ -f "$CATALOG" ] || fail "The list of models ($CATALOG) is missing."
-# catalog field NAME KEY | names | pick MIB | source NAME | files | list "HAVE" MIB
+# catalog field NAME KEY | names | pick MIB | source NAME | files | fit NAME MIB | list "HAVE" MIB
 catalog() {
   python3 - "$CATALOG" "$@" <<'PY'
 import json, sys
-c = json.load(open(sys.argv[1], encoding="utf-8")); m = c["models"]; cmd = sys.argv[2]; a = sys.argv[3:]
+c = json.load(open(sys.argv[1], encoding="utf-8")); cmd = sys.argv[2]; a = sys.argv[3:]
+m = {}
+for f in c["families"]:
+    for s in f["sizes"]:
+        m[s["id"]] = {**{k: f.get(k) for k in ("maker", "kind", "by", "recommended", "about", "good", "weak")}, **s}
 def source(x):
     return {"official": f"from {x['by']}'s own page",
             "quantized": f"{x['maker']}'s model, converted to GGUF by {x['by']}",
             "uncensored": f"UNOFFICIAL: changed by {x['by']}, outside {x['maker']}"}[x["kind"]]
+def fit(x, mib):
+    # mib: what llama.cpp can use on the chip (on a Mac, the part of memory the graphics may use)
+    if not mib: return ""
+    if mib >= 1000 * x["card_gb"]: return "fits"
+    return "tight" if mib >= 1000 * x["size_gb"] + 500 else "too big"
 if cmd == "field":
     print(m.get(a[0], {}).get(a[1], ""))
 elif cmd == "names":
     print(" ".join(m))
-elif cmd == "pick":
-    pick = ""
-    for k, v in c["default_from_mib"].items():
-        if int(a[0]) >= int(k): pick = v
+elif cmd == "pick":   # the default model's largest size that fits (its smallest if none does)
+    sizes = next(f["sizes"] for f in c["families"] if f["id"] == c["default"])
+    pick = sizes[0]["id"]
+    for s in sizes:
+        if int(a[0]) >= 1000 * s["card_gb"]: pick = s["id"]
     print(pick)
 elif cmd == "source":
     print(source(m[a[0]]))
 elif cmd == "files":
     print("\n".join(x["file"] for x in m.values()))
+elif cmd == "fit":
+    print(fit(m[a[0]], int(a[1] or 0)))
 elif cmd == "list":
     have, mib = a[0].split(), int(a[1] or 0)
-    for k, x in m.items():
-        fit = "" if not mib or mib >= x["min_mib"] else f"  (meant for {round(x['min_mib'] / 1000)} GB chips: slow on yours)"
-        print(f"\n{'[x]' if k in have else '[ ]'} {k}  -  {x['label']}, {x['size_gb']} GB{fit}")
-        print(f"    {x['about']} {source(x)}.")
-        print(f"    Good: {x['good']}")
-        print(f"    Weak: {x['weak']}")
-        if not x["tested"]: print("    Not yet tested in UVMC: --test after adding it.")
+    for f in c["families"]:
+        print(f"\n{f['label']}{' (recommended)' if f.get('recommended') else ''}  -  {f['maker']}")
+        print(f"    {f['about']} {source(f)}.")
+        print(f"    Good: {f['good']}")
+        print(f"    Weak: {f['weak']}")
+        for s in f["sizes"]:
+            ft = fit(s, mib)
+            print(f"    {'[x]' if s['id'] in have else '[ ]'} {s['id']:<38} {s['size']:<8} v{s['version']:<4} {s['size_gb']:>5} GB"
+                  f"   card {s['card_gb']:>2} GB   Mac {s['mac_gb']:>2} GB{'   ' + ft if ft else ''}{'' if s['tested'] else '   (untested)'}")
 PY
 }
 field() { catalog field "$1" "$2"; }
 
-DIR="" MODEL="" HAVE="" VERIFIED="" LLAMA="" MODEL_SHA="" CARD="" CARD_MIB=0 VM_IF="" LOGS=off
+DIR="" MODEL="" HAVE="" OWN="" VERIFIED="" LLAMA="" MODEL_SHA="" CARD="" CARD_MIB=0 VM_IF="" LOGS=off
 [ -f "$STATE" ] && . "$STATE"
 save_state() {
   mkdir -p "$(dirname "$STATE")"
-  { for v in DIR HAVE VERIFIED LLAMA CARD CARD_MIB VM_IF LOGS; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$STATE"
+  { for v in DIR HAVE OWN VERIFIED LLAMA CARD CARD_MIB VM_IF LOGS; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$STATE"
 }
-has() { case " $HAVE " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# Your own GGUF files (--add-file): one "name<TAB>path" a line. Not on the list, not checked by UVMC.
+own_names() { [ -n "$OWN" ] && printf '%s\n' "$OWN" | cut -f1 | tr '\n' ' ' | sed 's/ $//'; true; }
+own_path() { [ -n "$OWN" ] && printf '%s\n' "$OWN" | awk -F'\t' -v n="$1" '$1 == n { print $2 }'; true; }
+installed() { printf '%s' "$HAVE${OWN:+ }$(own_names)"; }
+has() { case " $(installed) " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+label() { local l; l="$(field "$1" label)"; printf '%s' "${l:-$1 (your own)}"; }
 
-ACTION=setup WANT_MODEL="" UPDATE=0 YES=0 TEST_ONLY="" WANT_LOGS=""
+ACTION=setup WANT_MODEL="" UPDATE=0 YES=0 TEST_ONLY="" WANT_LOGS="" ADD_FILE="" OWN_NAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --model|--add) WANT_MODEL="$2"; shift ;;   # --model was "switch to"; now models are kept side by side
+    --add-file) ACTION=add-file; ADD_FILE="$2"; shift ;;
+    --name) OWN_NAME="$2"; shift ;;
     --delete) ACTION=delete; WANT_MODEL="$2"; shift ;;
     --list) ACTION=list ;;
     --test) ACTION=test; if [ $# -gt 1 ] && [ "${2#--}" = "$2" ]; then TEST_ONLY="$2"; shift; fi ;;
@@ -101,7 +123,10 @@ done
 SERVER="$DIR/llama.cpp/llama-server"
 PIDFILE="$DIR/server.pid"
 PRESET="$DIR/models.ini"
-model_path() { printf '%s/models/%s' "$DIR" "$(field "$1" file)"; }
+model_path() {
+  local p; p="$(own_path "$1")"
+  if [ -n "$p" ]; then printf '%s' "$p"; else printf '%s/models/%s' "$DIR" "$(field "$1" file)"; fi
+}
 # Before 0.16 one model was kept (MODEL). Carry it over if it's still offered.
 if [ -n "$MODEL" ]; then
   if [ -n "$(field "$MODEL" file)" ] && [ -f "$(model_path "$MODEL")" ] && ! has "$MODEL"; then HAVE="${HAVE:+$HAVE }$MODEL"; fi
@@ -224,13 +249,13 @@ write_preset() {
     printf '; Written by local-model. Changes are lost the next time it runs.\nversion = 1\n\n[*]\n'
     printf 'n-gpu-layers = 99\nparallel = 1\njinja = true\nreasoning-budget = 0\nflash-attn = %s\n' "$fa"
     if [ "$CARD_MIB" -ge 11000 ]; then printf 'ctx-size = 16384\n'; else printf 'ctx-size = 8192\nubatch-size = 256\n'; fi
-    for n in $HAVE; do printf '\n[%s]\nmodel = %s\n' "$n" "$(model_path "$n")"; done
+    for n in $(installed); do printf '\n[%s]\nmodel = %s\n' "$n" "$(model_path "$n")"; done
   } > "$PRESET"
 }
 
 start_server() {
   running && { say "The model server is already running."; return; }
-  [ -n "$HAVE" ] || fail "No model downloaded yet. Run unix/local-model.sh, or --add <model> (--list shows them)."
+  [ -n "$(installed)" ] || fail "No model downloaded yet. Run unix/local-model.sh, or --add <model> (--list shows them)."
   [ -f "$PRESET" ] || write_preset
   local hosts=127.0.0.1 ip="" i
   # On a Mac the network to the UVMC machine only exists while it runs: wait for it a while.
@@ -250,7 +275,7 @@ start_server() {
   for i in $(seq 60); do
     sleep 1
     curl -fs -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/models" | grep -q '"data"' && {
-      say "Running on $CARD, with: $HAVE."
+      say "Running on $CARD, with: $(installed)."
       say "A model is loaded on the chip the first time UVMC asks for it (a few seconds)."; return; }
     running || break
   done
@@ -261,7 +286,7 @@ restart_if_running() { if running; then stop_server; start_server; fi; }   # it 
 # The same request UVMC makes: a system prompt, a task, its run_command tool. Passes when the model
 # asks for the tool with a sensible command. Then a plain reply, to measure speed.
 test_model() {
-  say ""; say "Testing $(field "$1" label)... (loading it on the chip first can take a minute)"
+  say ""; say "Testing $(label "$1")... (loading it on the chip first can take a minute)"
   python3 - "$PORT" "$(cat "$DIR/api_key")" "$1" <<'PY'
 import json, sys, time, urllib.request
 port, key, name = sys.argv[1:]
@@ -351,44 +376,88 @@ send_key() {
   return $ok
 }
 
+# Tells UVMC the chip found above (name, memory llama.cpp can use), so the panel can say which
+# sizes fit. Same way as the key: a file over "multipass transfer", put in place, deleted.
+send_hardware() {
+  [ "$CARD_MIB" -gt 0 ] || return 0
+  local name tmp kind=card code=0
+  [ "$OS" = Darwin ] && kind=mac
+  name="uvmc-hw-$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
+  tmp="$(mktemp)"
+  python3 -c 'import json, sys; print(json.dumps({"kind": sys.argv[1], "name": sys.argv[2], "mib": int(sys.argv[3])}))' "$kind" "$CARD" "$CARD_MIB" > "$tmp"
+  if multipass transfer "$tmp" "$VM:/home/ubuntu/$name" >/dev/null 2>&1; then
+    multipass exec "$VM" -- timeout -k 5 20 sudo sh -c "install -m 644 /home/ubuntu/$name /etc/uvmc/pc-hardware.json; s=\$?; rm -f /home/ubuntu/$name; exit \$s" >/dev/null 2>&1 || code=$?
+    check_timeout local-model "install pc-hardware.json" 20 "$code" || true
+  fi
+  rm -f "$tmp"
+}
+
 connect_uvmc() {
   if ! command -v multipass >/dev/null; then say "Multipass is not installed, so UVMC was not connected."; return; fi
   if send_key "$(cat "$DIR/api_key")"; then
+    send_hardware
     say 'UVMC connected: pick "Local model on my PC" in the panel, and which model it uses under Settings > Models.'
   else say "Could not give UVMC the key. Is the UVMC machine installed and running?"; fi
 }
 
 case "$ACTION" in
+  add-file)
+    # A GGUF file of your own: used where it is, with your chip's settings. Its contents are not
+    # checked (no pinned checksum), and it's marked as your own in the panel.
+    [ -x "$SERVER" ] || fail "Not set up yet. Run unix/local-model.sh first, then add your own file."
+    case "$ADD_FILE" in *.gguf) ;; *) fail "$ADD_FILE is not a .gguf file." ;; esac
+    [ -f "$ADD_FILE" ] || fail "$ADD_FILE is not a .gguf file."
+    file="$(cd "$(dirname "$ADD_FILE")" && pwd)/$(basename "$ADD_FILE")"
+    id="${OWN_NAME:-$(basename "$file" .gguf)}"
+    id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^[-.]+//; s/[-.]+$//' | cut -c1-60)"
+    { [ -n "$id" ] && [ "$id" != local ]; } || fail "Give it a name with --name (letters, digits, dots and dashes)."
+    [ -z "$(field "$id" file)" ] || fail "'$id' is a model on UVMC's list: --add $id gets the checked file. Use --name for yours."
+    OWN="$( { [ -z "$OWN" ] || printf '%s\n' "$OWN" | awk -F'\t' -v n="$id" '$1 != n'; printf '%s\t%s\n' "$id" "$file"; } | sed '/^$/d')"
+    save_state; write_preset; restart_if_running; running || start_server
+    say "Added your own model as '$id' ($file). UVMC hasn't checked this file: only use files from sources you trust."
+    say "Pick it in the panel (Settings > Models on your PC), and try it with --test $id."
+    exit 0 ;;
   status)
-    [ -n "$HAVE" ] || { say "Not set up yet. Run unix/local-model.sh."; exit 0; }
+    [ -n "$(installed)" ] || { say "Not set up yet. Run unix/local-model.sh."; exit 0; }
     say "Folder:    $DIR"; say "llama.cpp: $LLAMA"; say "Chip:      $CARD ($CARD_MIB MiB)"
-    say "Models:    $HAVE"
+    say "Models:    $(installed)"
     if running; then say "Running, port $PORT."; else say "Not running (unix/local-model.sh --start)."; fi
     if autostart_on; then say "Starts at login: yes (--no-autostart to stop that)"; else say "Starts at login: no (--autostart if you want it)"; fi
     exit 0 ;;
   list)
-    if [ "$CARD_MIB" -gt 0 ]; then say "Your chip: $CARD, $CARD_MIB MiB. [x] = downloaded."; else say "[x] = downloaded. (Run this once so it knows your chip.)"; fi
+    if [ "$CARD_MIB" -gt 0 ]; then say "Your chip: $CARD, $CARD_MIB MiB usable for models. [x] = downloaded; each size says whether it fits."; else say "[x] = downloaded. (Run this once so it knows your chip and says which sizes fit.)"; fi
     catalog list "$HAVE" "$CARD_MIB"
-    say ""; say "Add one with --add <name>. The panel (Settings > Models) picks which one UVMC uses."
+    if [ -n "$OWN" ]; then
+      say ""; say "Your own models (not on the list, not checked by UVMC):"
+      printf '%s\n' "$OWN" | while IFS=$'\t' read -r n f; do say "    [x] $n  -  $f"; done
+    fi
+    say ""; say "Add one with --add <name> (the name in the first column), or your own file with --add-file."
+    say "The panel (Settings > Models on your PC) picks which one UVMC uses. (untested): --test checks it after adding."
     exit 0 ;;
   test)
     running || fail "The model server is not running (--start)."
-    which="${TEST_ONLY:-$HAVE}"; failed=0; count=0
-    for n in $which; do has "$n" || fail "Not downloaded: $n. Downloaded: $HAVE."; done
+    which="${TEST_ONLY:-$(installed)}"; failed=0; count=0
+    for n in $which; do has "$n" || fail "Not downloaded: $n. Downloaded: $(installed)."; done
     for n in $which; do count=$((count + 1)); test_model "$n" || failed=$((failed + 1)); done
     say ""
     [ "$failed" = 0 ] || { say "$failed of $count did not call the tool right: UVMC's agent would struggle with them."; exit 1; }
     say "All passed."; exit 0 ;;
   delete)
-    has "$WANT_MODEL" || fail "'$WANT_MODEL' is not downloaded. Downloaded: $HAVE."
-    rest="$(for n in $HAVE; do [ "$n" = "$WANT_MODEL" ] || printf '%s ' "$n"; done)"; rest="${rest% }"
+    has "$WANT_MODEL" || fail "'$WANT_MODEL' is not downloaded. Downloaded: $(installed)."
+    rest="$(for n in $(installed); do [ "$n" = "$WANT_MODEL" ] || printf '%s ' "$n"; done)"; rest="${rest% }"
     [ -n "$rest" ] || fail "It is the only model left. --remove removes everything."
-    path="$(model_path "$WANT_MODEL")"
-    HAVE="$rest"; save_state; write_preset; restart_if_running
+    path="$(model_path "$WANT_MODEL")"; lbl="$(label "$WANT_MODEL")"
+    if [ -n "$(own_path "$WANT_MODEL")" ]; then
+      OWN="$(printf '%s\n' "$OWN" | awk -F'\t' -v n="$WANT_MODEL" '$1 != n')"
+      save_state; write_preset; restart_if_running
+      say "Forgot $lbl. Your file stays where it is: $path"; exit 0
+    fi
+    HAVE="$(for n in $HAVE; do [ "$n" = "$WANT_MODEL" ] || printf '%s ' "$n"; done)"; HAVE="${HAVE% }"
+    save_state; write_preset; restart_if_running
     rm -f "$path"
-    say "Deleted $(field "$WANT_MODEL" label). If the panel had picked it, UVMC now uses another one until you pick again."
+    say "Deleted $lbl. If the panel had picked it, UVMC now uses another one until you pick again."
     exit 0 ;;
-  autostart) [ -n "$HAVE" ] || fail "Not set up yet. Run unix/local-model.sh first."; autostart; exit 0 ;;
+  autostart) [ -n "$(installed)" ] || fail "Not set up yet. Run unix/local-model.sh first."; autostart; exit 0 ;;
   no-autostart) no_autostart; exit 0 ;;
   stop) stop_server; exit 0 ;;
   logs)
@@ -398,7 +467,7 @@ case "$ACTION" in
     else say "The server logs only warnings and errors."; fi
     if running; then stop_server; start_server; fi
     exit 0 ;;
-  start) [ -n "$HAVE" ] || fail "Not set up yet. Run unix/local-model.sh first."; start_server; exit 0 ;;
+  start) [ -n "$(installed)" ] || fail "Not set up yet. Run unix/local-model.sh first."; start_server; exit 0 ;;
   remove)
     if [ "$YES" = 0 ]; then read -rp "Delete $DIR (llama.cpp and the models)? [y/N] " a; [[ "$a" =~ ^[yY] ]] || exit 0; fi
     stop_server
@@ -419,15 +488,18 @@ get_card || fail "llama.cpp found no graphics chip it can use. (Linux: is the Vu
 say "Graphics: $CARD, $CARD_MIB MiB."
 name="$WANT_MODEL"; [ -n "$name" ] || [ -n "$HAVE" ] || name="$(catalog pick "$CARD_MIB")"
 if [ -n "$name" ]; then
-  [ "$(field "$name" min_mib)" -gt "$CARD_MIB" ] && say "$(field "$name" label) is meant for bigger chips; it will be slow on this one."
+  case "$(catalog fit "$name" "$CARD_MIB")" in
+    tight) say "$(field "$name" label) needs $(field "$name" card_gb) GB for the graphics: it fits on yours, but tightly, and may be slow." ;;
+    "too big") say "$(field "$name" label) needs $(field "$name" card_gb) GB for the graphics: it will spill and be very slow on yours." ;;
+  esac
   say "Model: $(field "$name" label). $(field "$name" about)"
   get_model "$name"
 fi
 [ -f "$DIR/api_key" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DIR/api_key")
 save_state
 write_preset
-# Files from before 0.16 that are no longer on the list stay until you delete them.
-known="$(catalog files)"
+# Files that are no longer on the list (older lists, other versions) stay until you delete them.
+known="$(catalog files; [ -z "$OWN" ] || printf '%s\n' "$OWN" | cut -f2 | while read -r f; do basename "$f"; done)"
 for f in "$DIR"/models/*.gguf; do
   [ -f "$f" ] || continue
   printf '%s\n' "$known" | grep -qxF "$(basename "$f")" || say "$(basename "$f") is no longer on the list, so UVMC doesn't use it. Delete it by hand to free space: $f"
