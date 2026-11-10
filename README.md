@@ -41,13 +41,37 @@ Approved tools live in the **Tools** tab, where you fill in their settings, swit
 
 ```mermaid
 flowchart LR
-    You["You<br/>panel · uvmc · Claude apps"] --> S
-    M["The model<br/>Claude · DeepSeek · local …"] <-->|proposes steps| S
-    subgraph VM["Ubuntu VM"]
-        S["Supervisor<br/>rules · approvals · logs"] -->|runs each step as| A["agent1, agent2, …<br/>one user per conversation"]
-        A -->|only way online| P["Proxy<br/>allowed sites · asks you"]
+    subgraph PC["Your PC"]
+        You["You<br/>panel in your browser · uvmc · Claude apps"]
+        GPU["Model on your graphics card<br/>llama.cpp, optional"]
+        Folders["Folders you share"]
     end
+    subgraph VM["Ubuntu VM (Multipass)"]
+        S["Supervisor<br/>rules · approvals · logs · undo"]
+        subgraph Users["One Linux user each · no root · own memory box"]
+            A["Conversations<br/>agent1 … agent8"]
+            W["Worker jobs<br/>agent9 …"]
+            T["Tools the agent built"]
+        end
+        P["A proxy per user<br/>allowed sites · asks you"]
+        Main[("Main folder<br/>+ a filtered copy per conversation")]
+    end
+    subgraph Net["Internet"]
+        M["Model APIs<br/>Claude · DeepSeek · Gemini …"]
+        Sites["Websites"]
+    end
+    You -->|tasks · approvals| S
+    S <-->|proposed steps · results| M
+    S <-->|proposed steps · results| GPU
+    S -->|runs each step as| Users
+    Users -->|only way online| P
+    P -->|allowed or approved| Sites
+    Folders -.->|read-only| Users
+    S -->|approved changes, backed up| Folders
+    S -->|bring-in, merge| Main
 ```
+
+For an interactive map of the whole system, its code, a task's path, the walls and the roadmap, open [docs/map.html](docs/map.html) in a browser.
 
 The model never touches the machine. It proposes a step, the supervisor checks the step against your rules (allow, ask you, or refuse), runs it as the conversation's own user, and logs it. The walls are enforced by Linux, not by guessing what a command does: no root, a firewall that leaves only the proxy, memory and process limits, and a fixed-size disk. Machine controls (stop, snapshot, factory reset) stay on your PC, out of the agent's reach.
 

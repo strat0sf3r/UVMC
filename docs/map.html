@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>UVMC Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a header with view tabs, then a wide diagram beside a sticky detail panel (stacks on phones). */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --ink: #18212c; --muted: #5a6574; --line: #d3d9e2; --line-strong: #9aa5b4;
+  --accent: #b86a00; --accent-soft: #fdf1df;
+  --z-pc: #f1effb; --z-pc-edge: #c9c1ef; --z-vm: #eaf3f6; --z-vm-edge: #a9cdd8; --z-sv: #ffffff; --z-out: #f4f2ee; --z-out-edge: #d6cfc2;
+  --ok: #2f7d4f; --ok-soft: #e3f3e9; --warn: #9a6500; --warn-soft: #fbefd9; --info: #2b6584; --info-soft: #e2eff6; --off: #6c7480; --off-soft: #eceef1;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1318; --surface: #161d25; --ink: #e5e9ef; --muted: #96a2b2; --line: #2a3441; --line-strong: #4f5d6f;
+  --accent: #f0a540; --accent-soft: #3a2a12;
+  --z-pc: #1b1a2b; --z-pc-edge: #3d3767; --z-vm: #132128; --z-vm-edge: #285161; --z-sv: #161d25; --z-out: #1d1b18; --z-out-edge: #403a30;
+  --ok: #6cc892; --ok-soft: #15291e; --warn: #f0b555; --warn-soft: #33270f; --info: #7cc0e2; --info-soft: #132a36; --off: #97a0ab; --off-soft: #222a33;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0e1318; --surface: #161d25; --ink: #e5e9ef; --muted: #96a2b2; --line: #2a3441; --line-strong: #4f5d6f;
+  --accent: #f0a540; --accent-soft: #3a2a12;
+  --z-pc: #1b1a2b; --z-pc-edge: #3d3767; --z-vm: #132128; --z-vm-edge: #285161; --z-sv: #161d25; --z-out: #1d1b18; --z-out-edge: #403a30;
+  --ok: #6cc892; --ok-soft: #15291e; --warn: #f0b555; --warn-soft: #33270f; --info: #7cc0e2; --info-soft: #132a36; --off: #97a0ab; --off-soft: #222a33;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1480px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 48px; }
+header.top { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 32px; margin-bottom: 18px; }
+h1 { font-family: var(--f-display); font-weight: 700; font-size: 2rem; letter-spacing: -0.01em; margin: 0; line-height: 1.1; text-wrap: balance; }
+h1 .ver { font-family: var(--f-mono); font-size: 0.8rem; font-weight: 500; color: var(--muted); margin-left: 10px; vertical-align: middle; letter-spacing: 0; }
+.lede { margin: 6px 0 0; color: var(--muted); max-width: 62ch; }
+nav.views { display: flex; flex-wrap: wrap; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+nav.views a { font-family: var(--f-display); font-weight: 600; font-size: 0.95rem; text-decoration: none; color: var(--muted); padding: 6px 14px; border-radius: 7px; }
+nav.views a:hover { color: var(--ink); background: var(--bg); }
+nav.views a[aria-current="page"] { background: var(--ink); color: var(--bg); }
+a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+@media (max-width: 980px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.stage { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.stage-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 16px; margin-bottom: 10px; }
+.stage-head h2 { font-family: var(--f-display); font-size: 1.25rem; margin: 0; }
+.hint { color: var(--muted); font-size: 0.85rem; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+svg.map { display: block; width: 100%; min-width: 860px; height: auto; font-family: var(--f-body); }
+
+aside.detail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
+@media (max-width: 980px) { aside.detail { position: static; } }
+.detail .eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.detail h3 { font-family: var(--f-display); font-size: 1.35rem; margin: 2px 0 8px; line-height: 1.2; text-wrap: balance; }
+.detail p { margin: 0 0 10px; }
+.detail .files { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.chip { font-family: var(--f-mono); font-size: 0.78rem; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; color: var(--ink); overflow-wrap: anywhere; }
+button.chip { cursor: pointer; }
+button.chip:hover { border-color: var(--accent); color: var(--accent); }
+.detail h4 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 14px 0 6px; }
+.detail ul { margin: 0; padding-left: 18px; }
+.detail li { margin-bottom: 4px; }
+.links button { all: unset; cursor: pointer; color: var(--ink); border-bottom: 1px dotted var(--line-strong); }
+.links button:hover { color: var(--accent); border-color: var(--accent); }
+.links .rel { color: var(--muted); font-size: 0.85rem; }
+
+/* SVG parts */
+.zone rect { stroke-width: 1.5; }
+.zone text.zlabel { font-family: var(--f-display); font-weight: 700; font-size: 15px; fill: var(--ink); }
+.zone text.zsub { font-size: 11.5px; fill: var(--muted); }
+.node { cursor: pointer; }
+.node rect { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1; transition: stroke .15s, fill .15s; }
+.node text.t { font-weight: 600; font-size: 13px; fill: var(--ink); }
+.node text.s { font-size: 11px; fill: var(--muted); font-family: var(--f-mono); }
+.node:hover rect { stroke: var(--ink); }
+.node.sel rect { stroke: var(--accent); stroke-width: 2.5; fill: var(--accent-soft); }
+.node.near rect { stroke: var(--ink); stroke-width: 1.6; }
+.dim .node:not(.sel):not(.near) { opacity: .38; }
+.edge path { fill: none; stroke: var(--line-strong); stroke-width: 1.3; opacity: .55; }
+.edge.dash path { stroke-dasharray: 5 4; }
+.edge text { font-size: 11px; fill: var(--accent); font-weight: 600; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; opacity: 0; }
+.edge.hot path { stroke: var(--accent); stroke-width: 2.2; opacity: 1; }
+.edge.hot text { opacity: 1; }
+.dim .edge:not(.hot) path { opacity: .12; }
+.colhead { font-family: var(--f-display); font-weight: 700; font-size: 14px; fill: var(--ink); }
+.colsub { font-size: 11.5px; fill: var(--muted); }
+.bar { fill: var(--z-vm-edge); }
+
+/* Journey */
+ol.journey { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: step; }
+ol.journey li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; position: relative; padding-bottom: 18px; }
+ol.journey li::before { counter-increment: step; content: counter(step); font-family: var(--f-display); font-weight: 700; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--surface); border: 1.5px solid var(--line-strong); z-index: 1; }
+ol.journey li.gate::before { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+ol.journey li:not(:last-child)::after { content: ""; position: absolute; left: 17px; top: 34px; bottom: 0; width: 1.5px; background: var(--line); }
+.j-body { min-width: 0; padding-top: 4px; }
+.j-body h3 { margin: 0 0 2px; font-size: 1.02rem; }
+.j-body p { margin: 0 0 6px; color: var(--muted); max-width: 70ch; }
+.j-where { display: flex; flex-wrap: wrap; gap: 6px; }
+.j-who { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; margin-left: 8px; color: var(--info); }
+
+/* Walls */
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.wall { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--bg); cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.wall:hover { border-color: var(--line-strong); }
+.wall.sel { border-color: var(--accent); background: var(--accent-soft); }
+.wall h3 { margin: 0 0 4px; font-size: 1rem; font-family: var(--f-display); }
+.wall p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.section-title { font-family: var(--f-display); font-size: 1.1rem; margin: 26px 0 10px; }
+table.matrix { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 0.9rem; }
+table.matrix th, table.matrix td { border-bottom: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+table.matrix th { font-weight: 600; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+table.matrix td:first-child { font-weight: 500; }
+.yes { color: var(--ok); font-weight: 600; } .no { color: var(--off); } .some { color: var(--warn); font-weight: 600; }
+.levels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+@media (max-width: 640px) { .levels { grid-template-columns: minmax(0, 1fr); } }
+.levels > div { padding: 12px 14px; border-right: 1px solid var(--line); }
+.levels > div:last-child { border-right: 0; }
+.levels b { font-family: var(--f-mono); font-size: 0.95rem; }
+.levels p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
+.flowdown { font-size: 0.85rem; color: var(--muted); margin-top: 8px; }
+
+/* Roadmap */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 14px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 0.76rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.st-done { color: var(--ok); background: var(--ok-soft); }
+.st-vm { color: var(--info); background: var(--info-soft); }
+.st-tests { color: var(--warn); background: var(--warn-soft); }
+.st-next { color: var(--accent); background: var(--accent-soft); outline: 1px solid var(--accent); }
+.st-later, .st-parked { color: var(--off); background: var(--off-soft); }
+.road { display: grid; gap: 8px; }
+.step { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 12px; align-items: start; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--bg); cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%; }
+.step:hover { border-color: var(--line-strong); }
+.step.sel { border-color: var(--accent); background: var(--accent-soft); }
+.step .num { font-family: var(--f-mono); font-weight: 500; color: var(--muted); padding-top: 1px; }
+.step h3 { margin: 0; font-size: 0.98rem; }
+.step p { margin: 2px 0 0; color: var(--muted); font-size: 0.88rem; }
+.step .ver { font-family: var(--f-mono); font-size: 0.78rem; color: var(--muted); }
+@media (max-width: 560px) { .step { grid-template-columns: 40px minmax(0, 1fr); } .step .pill { grid-column: 2; justify-self: start; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+footer { margin-top: 22px; color: var(--muted); font-size: 0.82rem; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>UVMC Map<span class="ver">0.18.1 · branch privacy-levels</span></h1>
+      <p class="lede">An Ubuntu VM where AI agents work only through a supervisor you control. Pick a view, then click any box to see what it is, where its code lives, and what it connects to.</p>
+    </div>
+    <nav class="views" aria-label="Views">
+      <a href="#system">System</a>
+      <a href="#code">Code</a>
+      <a href="#journey">A task's journey</a>
+      <a href="#walls">Walls</a>
+      <a href="#roadmap">Roadmap</a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <main class="stage" id="stage"></main>
+    <aside class="detail" id="detail" aria-live="polite"></aside>
+  </div>
+  <footer>Drawn from README.md, docs/guide.md, docs/design.md, CLAUDE.md and the imports in supervisor/uvmc on 2026-11-10. Line counts are from the working tree.</footer>
+</div>
+
+<script>
+// ---------- System view data ----------
+const SYS = {
+  zones: [
+    { x: 10, y: 40, w: 300, h: 750, fill: "--z-pc", edge: "--z-pc-edge", label: "Your PC", sub: "Windows, macOS or Linux" },
+    { x: 340, y: 40, w: 610, h: 750, fill: "--z-vm", edge: "--z-vm-edge", label: "The VM “uvmc”", sub: "Ubuntu 24.04 under Multipass · 2 CPUs · 2–3 GB · 15 GB disk" },
+    { x: 355, y: 70, w: 340, h: 470, fill: "--z-sv", edge: "--z-vm-edge", label: "Supervisor", sub: "uvmc serve · systemd · user ubuntu · port 8080", inner: true },
+    { x: 355, y: 556, w: 580, h: 224, fill: "--z-vm", edge: "--z-vm-edge", label: "Disks and folders", sub: "", inner: true },
+    { x: 980, y: 40, w: 250, h: 750, fill: "--z-out", edge: "--z-out-edge", label: "The internet", sub: "reached only through the walls" },
+  ],
+  nodes: [
+    // PC
+    { id: "pc-browser", x: 30, y: 90, w: 260, t: "Browser: control panel", s: "/?token=… · one HTML file", files: ["supervisor/uvmc/static/index.html", "windows/panel.ps1"], d: "The panel is a single web page served by the supervisor in the VM and opened in your normal browser by the UVMC Panel shortcut, which looks up the VM's address and signs you in with the panel token. Tabs: conversations, Reports, Files, Activity, Runs, Machine, Tools, Projects, Settings. Closing it never stops the agent." },
+    { id: "pc-cli", x: 30, y: 160, w: 260, t: "uvmc command", s: "ask · status · stop · url", files: ["windows/uvmc.ps1", "unix/uvmc"], d: "Runs tasks from a terminal or script through the same HTTP API the panel uses, so its tasks show in the panel too. `uvmc ask --json` waits and prints the result; approvals can be answered here or in the panel." },
+    { id: "pc-apps", x: 30, y: 230, w: 260, t: "Claude Code / Desktop", s: "extension · uvmc mcp relay", files: ["extension/server/index.js", "extension/uvmc.mcpb", "windows/connect-claude-apps.ps1"], d: "Optional. Your PC's Claude apps get five tools (run_task, task_status, stop_task, list_files, read_file). A small relay finds the VM through Multipass each time. They count as a paid model for privacy, can't approve anything, and never reach a private conversation." },
+    { id: "pc-scripts", x: 30, y: 300, w: 260, t: "PC scripts", s: "install · update · stop · reset", files: ["windows/*.cmd / *.ps1", "unix/*.sh", "windows/timeouts.ps1"], d: "Machine controls stay on the PC so they work even if the VM hangs: install, panel, update (pushes supervisor/ into the VM and reruns setup.sh), share, shell, stop, reset, uninstall, diagnose, save-logs. Quick commands to the VM get a time limit, logged in timeouts.log." },
+    { id: "pc-shares", x: 30, y: 370, w: 260, t: "Folders you share", s: "shares.txt · Start UVMC window", files: ["shares.example.txt", "windows/folders.ps1", "windows/share.ps1"], d: "Ticked when you open the panel. Multipass mounts each into the VM. Agents only ever read them; every change is an approval card with a diff, and the supervisor backs up the original to _uvmc_backups first. Each shared folder is a project with one privacy level (local until you set it)." },
+    { id: "pc-llama", x: 30, y: 440, w: 260, t: "llama-server on your GPU", s: "local-model · router · :8091", files: ["windows/local-model.ps1", "unix/local-model.sh", "supervisor/uvmc/local_models.json"], d: "llama.cpp's own server (not Ollama), Vulkan or Metal. Router mode: models.ini lists every downloaded model, one is loaded on the card at a time. 13 models in local_models.json, each with a pinned SHA-256. Listens only on the PC and the VM's network, answers only with its key, and a firewall rule stops it opening connections itself." },
+    { id: "pc-snap", x: 30, y: 510, w: 260, t: "clean snapshot", s: "factory reset point", files: ["windows/reset.cmd"], d: "Taken by the installer. reset puts the VM back to it; run update afterwards to bring the supervisor up to date again. Run logs are copied to the repo's logs folder first." },
+    { id: "pc-multipass", x: 30, y: 720, w: 260, t: "Multipass 1.16.4", s: "creates and runs the VM", files: ["windows/install.ps1", "windows/check-download.cmd"], d: "Canonical's VM manager (Hyper-V on Windows). Pinned to 1.16.4; moving to 1.17 is step 7e. Known issue: `multipass exec` without a real console keeps a CPU core at 100% while it runs, so every exec from scripts is kept short." },
+    // Supervisor
+    { id: "sv-api", x: 372, y: 108, w: 306, t: "HTTP API + panel", s: "service.py · 86 routes · SSE", files: ["supervisor/uvmc/service.py"], d: "FastAPI app under uvicorn. Serves the panel, the live event stream (/api/events) and every call: /api/task, /api/run, /api/approve, conversations, projects, files, tools, settings. Every call needs the panel token, which the agents can't read. Docs at /docs." },
+    { id: "sv-ctl", x: 372, y: 162, w: 306, t: "Controller", s: "conversations · approvals · bring-in", files: ["supervisor/uvmc/service.py"], d: "The heart of service.py. Keeps the open conversations (up to 8 open, 3 working), gives each a Linux user, a copy and a proxy, routes approvals to the conversation that asked, stops runs, brings work into the main folder and keeps resolutions waiting for review. Also closes and erases private conversations." },
+    { id: "sv-loop", x: 372, y: 216, w: 306, t: "Agent loop + models", s: "agent.py · providers.py", files: ["supervisor/uvmc/agent.py", "supervisor/uvmc/providers.py", "supervisor/uvmc/briefing.py"], d: "Ask the model, check each proposed tool call against the rules, run it, log it, repeat. Talks to models through one provider interface with two adapters: anthropic and openai (OpenAI-compatible: DeepSeek, Gemini, OpenRouter, the PC's llama-server). Starts each conversation with house rules, a live briefing and your notes." },
+    { id: "sv-rules", x: 372, y: 270, w: 306, t: "Rules", s: "allow / ask / deny · rules.py", files: ["supervisor/uvmc/rules.py", "supervisor/config.toml"], d: "Decides per tool call whether it runs, waits for your approval card, or is refused. Set in config.toml and the panel's Settings. The agent can't approve its own requests." },
+    { id: "sv-exec", x: 372, y: 324, w: 306, t: "Executor + tools", s: "executor.py · tools.py", files: ["supervisor/uvmc/executor.py", "supervisor/uvmc/tools.py"], d: "Where commands actually run: as the conversation's own user, via sudo, inside its systemd slice, with its proxy. The tools: run_command, read_file, write_file, list_dir, install_system_package, plus delegate, update_shared_file, propose_tool and get_tool_code." },
+    { id: "sv-brain", x: 372, y: 378, w: 306, t: "Brain bridge", s: "brain.py · unix socket", files: ["supervisor/uvmc/brain.py", "supervisor/uvmc/mcp_server.py", "supervisor/uvmc/signin.py"], d: "For the “my plan” models. Runs Claude Code as uvmc-brain with all its own tools off; its only tools come from UVMC's MCP server, which forwards each call over a unix socket to the supervisor, where rules and approvals apply as for any model." },
+    { id: "sv-copies", x: 372, y: 432, w: 306, t: "Work copies & privacy", s: "workcopies · privacy · private", files: ["supervisor/uvmc/workcopies.py", "supervisor/uvmc/privacy.py", "supervisor/uvmc/private.py", "supervisor/uvmc/transcript.py"], d: "Each conversation's filtered copy of the main folder; the three-way bring-in (git merge-file for different lines, an agent for real conflicts); levels local / paid / open on models, projects, zones and files; private conversations that leave nothing behind once closed." },
+    { id: "sv-made", x: 372, y: 486, w: 306, t: "Tools the agent builds", s: "made_tools.py · reports.py", files: ["supervisor/uvmc/made_tools.py", "supervisor/uvmc/reports.py"], d: "Proposals with full code, schedule, sites and secrets; once approved a frozen copy runs on schedule as its own user through its own proxy, in a 512 MB box. Reports are JSON blocks the panel draws itself, so nothing a tool writes runs in the panel." },
+    // VM users
+    { id: "vm-agents", x: 718, y: 90, w: 215, t: "agent1 … agent8", s: "one user per conversation", files: ["supervisor/setup.sh"], d: "Each open conversation runs as its own Linux user with no sudo, in its own copy (/home/agent/conv/<id>), through its own proxy port, inside its own slice. Stop kills only its programs; Undo touches only its copy." },
+    { id: "vm-workers", x: 718, y: 156, w: 215, t: "agent9 … agent14", s: "one user per worker job", files: ["supervisor/orchestrator_rules.md"], d: "When a conversation has a Worker model, the agent you talk to becomes a coordinator and hands jobs to workers. Each job gets its own user, a copy of the coordinator's folder, a proxy and a box. Up to 3 at once per coordinator. The coordinator reviews and brings them in." },
+    { id: "vm-tooluser", x: 718, y: 222, w: 215, t: "Tool users", s: "one per approved tool", files: ["supervisor/uvmc/made_tools.py"], d: "Each approved tool runs as its own user from a frozen copy the agent can't change, reaching only the sites it declared. Secrets are handed over only at run time; the agent never sees them." },
+    { id: "vm-brain", x: 718, y: 288, w: 215, t: "uvmc-brain", s: "Claude Code, tools off", files: ["supervisor/uvmc/brain.py"], d: "Claude Code signed in with your Claude plan (one-year token from setup-token, kept in its environment only). Its network goes through a second proxy that allows only Anthropic's sites. In its own 1000 MB box; closed after 15 idle minutes." },
+    { id: "vm-proxy", x: 718, y: 354, w: 215, t: "Proxies", s: "netproxy.py · port per user", files: ["supervisor/uvmc/netproxy.py"], d: "The agents' only way online. Allowed sites pass, others become an approval card in the conversation that asked, every connection is logged with site and bytes. Refuses the PC's address whatever the list says. A private conversation's proxy refuses everything." },
+    { id: "vm-fw", x: 718, y: 420, w: 215, t: "Firewall + boxes", s: "nftables · systemd slices", files: ["supervisor/setup.sh", "supervisor/config.toml"], d: "The kernel drops every outgoing packet from agent users except to their own proxy on 127.0.0.1. Memory, CPU and process limits per box ([limits]); /tmp and /var/tmp are size-limited, /home/agent is its own 6 GB disk." },
+    { id: "vm-audit", x: 718, y: 486, w: 215, t: "auditd + journald", s: "every program started", files: ["supervisor/uvmc/audit.py", "supervisor/uvmc/private.py"], d: "Linux's audit system records every program an agent starts, even inside scripts; audit.py reads it into the Activity tab. The system log keeps no agent commands. For private conversations only the program name is kept, checked at every start by private.self_check." },
+    // Storage
+    { id: "st-main", x: 372, y: 594, w: 270, t: "/home/agent/work", s: "the main folder", files: ["supervisor/uvmc/workcopies.py"], d: "The shared version of everyone's work. Its top-level folders are projects; the rest is the General project. Conversations read it only through their filtered copy and change it only through Bring into the main folder. Owned by the uvmc-files group, which only the supervisor is in." },
+    { id: "st-conv", x: 658, y: 594, w: 262, t: "/home/agent/conv/<id>", s: "each conversation's copy", files: ["supervisor/uvmc/workcopies.py"], d: "A copy holding only the files of the conversation's projects at its level or below. Survives a restart, so the conversation comes back. Worker jobs get <conv>w<n>." },
+    { id: "st-shares", x: 372, y: 654, w: 270, t: "/srv/uvmc-host · uvmc-views", s: "shares, read-only views", files: ["supervisor/uvmc/shares.py", "supervisor/setup.sh"], d: "Each shared folder is mounted at /srv/uvmc-host/<name> (supervisor only) and given one read-only view at /srv/uvmc-views/<name>/files, opened by an ACL entry only to the conversations that opened it. /mnt/shared/<name> links there and can't be listed." },
+    { id: "st-logs", x: 658, y: 654, w: 262, t: "/var/log/uvmc/runs", s: "conversations as JSON Lines", files: ["supervisor/uvmc/log.py"], d: "Every conversation, replayable under Runs. Copied to the repo's logs folder by stop, reset and uninstall. Private conversations log in memory under /run/uvmc/private instead and are erased on close." },
+    { id: "st-keys", x: 372, y: 714, w: 270, t: "/etc/uvmc", s: "API keys · panel token", files: ["supervisor/uvmc/settings.py"], d: "API keys, the Claude plan token and the panel token, readable only by the supervisor. A pasted key is never shown again, only its last characters. Panel settings are kept here on top of config.toml." },
+    { id: "st-ckpt", x: 658, y: 714, w: 262, t: "Undo points", s: "hard-linked copies, last 20", files: ["supervisor/uvmc/checkpoints.py"], d: "A cheap hard-linked copy before every task (Undo this task) and before every bring-in (Undo this bring-in)." },
+    // Outside
+    { id: "out-models", x: 998, y: 100, w: 214, t: "Model APIs", s: "Anthropic · DeepSeek · …", files: ["supervisor/config.toml [models.*]"], d: "Reached by the supervisor itself, never by an agent. Profiles in config.toml: claude, claude-opus, claude-haiku, deepseek, gpt, gemini, local, and the “my plan” ones. Each has a privacy level (local, paid, open)." },
+    { id: "out-anthropic", x: 998, y: 220, w: 214, t: "Anthropic for Claude Code", s: "your Claude plan", files: ["[subscription] sites"], d: "The only sites uvmc-brain's proxy allows. Usage counts against your plan and shows in the panel header." },
+    { id: "out-sites", x: 998, y: 340, w: 214, t: "Websites", s: "allowed list + approved", files: ["[network] in config.toml"], d: "What agents, their headless browser (Playwright + Chromium) and their tools reach, always through their own proxy. Sites off the list ask you; after a conversation has seen paid or local files they ask every time." },
+    { id: "out-versions", x: 998, y: 460, w: 214, t: "Version sources", s: "pypi · npm · GitHub · Ubuntu", files: ["supervisor/uvmc/updates.py"], d: "Read once a day by the supervisor for Settings › Updates. It only reads version numbers and never installs anything." },
+    { id: "out-hf", x: 998, y: 580, w: 214, t: "Hugging Face · GitHub", s: "model files, llama.cpp", files: ["windows/local-model.ps1"], d: "Downloaded by local-model on the PC, not by the VM. Every model file is checked against the SHA-256 pinned in local_models.json; llama.cpp against its published checksum." },
+  ],
+  edges: [
+    ["pc-browser", "sv-api", "HTTP + panel token"],
+    ["pc-cli", "sv-api", "same API"],
+    ["pc-apps", "sv-api", "MCP over HTTP"],
+    ["pc-scripts", "pc-multipass", "multipass exec", "v"],
+    ["pc-multipass", "pc-snap", "snapshot", "v"],
+    ["pc-shares", "st-shares", "mounted by Multipass"],
+    ["sv-loop", "pc-llama", "{pc}:8091 with key"],
+    ["sv-loop", "out-models", "API keys"],
+    ["sv-api", "sv-ctl", "", "v"],
+    ["sv-ctl", "sv-loop", "", "v"],
+    ["sv-loop", "sv-rules", "each tool call", "v"],
+    ["sv-rules", "sv-exec", "allowed", "v"],
+    ["sv-exec", "vm-agents", "runs as the conversation's user"],
+    ["sv-exec", "vm-workers", "jobs"],
+    ["sv-made", "vm-tooluser", "scheduled runs"],
+    ["sv-brain", "vm-brain", "starts Claude Code"],
+    ["vm-brain", "out-anthropic", "own proxy, Anthropic only"],
+    ["vm-agents", "vm-proxy", "only way out", "v"],
+    ["vm-proxy", "out-sites", "allowed or asked"],
+    ["vm-proxy", "sv-ctl", "asks you", "d"],
+    ["sv-ctl", "sv-copies", "", "v"],
+    ["sv-copies", "st-main", "bring-in"],
+    ["sv-copies", "st-conv", "filtered copy"],
+    ["sv-ctl", "st-logs", "logs", "d"],
+    ["sv-exec", "st-ckpt", "undo point", "d"],
+    ["vm-audit", "sv-api", "Activity tab", "d"],
+    ["sv-api", "out-versions", "daily check", "d"],
+    ["pc-llama", "out-hf", "downloads (on the PC)", "d"],
+    ["sv-loop", "st-keys", "reads keys", "d"],
+  ],
+};
+
+// ---------- Code view data ----------
+const MODS = {
+  "index.html": { L: 3183, layer: 0, g: "panel", d: "The control panel: one HTML file with its own script, no build step. Draws conversations, approval cards, Files, Projects, Tools, Reports, Settings. Talks to service.py over HTTP and server-sent events." },
+  "__main__": { L: 100, layer: 0, g: "entry", d: "Command-line entry: `uvmc serve` starts the service; the old terminal mode is unused." },
+  "mcp_server": { L: 119, layer: 0, g: "entry", d: "A separate process that Claude Code starts as its only tool source. Forwards every tool call over the unix socket to brain.py's Bridge." },
+  "service": { L: 3626, layer: 0, g: "core", d: "The controller and every HTTP route (86). Conversations, approvals, stop, bring-in, resolutions, projects, settings, tools, reports, updates, the PC's model status. The biggest file by far." },
+  "agent": { L: 210, layer: 1, g: "core", d: "The loop: ask the model, check rules, run tools, log, repeat." },
+  "brain": { L: 436, layer: 1, g: "models", d: "Claude Code on your plan as the brain: its process, the stream-json conversation, the tool bridge (Bridge class), plan usage from rate-limit events." },
+  "made_tools": { L: 876, layer: 1, g: "tools", d: "Tools the agent builds: proposals, frozen copies, their users, proxies and schedule." },
+  "workcopies": { L: 794, layer: 1, g: "files", d: "Each conversation's copy of the work folder, the three-way bring-in, resolutions waiting for review, files handed to another conversation." },
+  "mcp_http": { L: 206, layer: 1, g: "entry", d: "UVMC as a tool for the Claude apps on your PC (off until switched on). Counts them as a paid model." },
+  "settings": { L: 259, layer: 1, g: "config", d: "Panel settings on top of config.toml: model profiles, API keys, the chosen model on the PC." },
+  "private": { L: 101, layer: 1, g: "privacy", d: "Private conversations: in-memory log, erase on close and at start, quiet audit rules, the start-up self-check." },
+  "briefing": { L: 138, layer: 1, g: "models", d: "What the agent is told: house rules, the live briefing and your notes." },
+  "signin": { L: 279, layer: 1, g: "models", d: "Sign in with your Claude plan from the panel, through Claude Code's own setup-token." },
+  "updates": { L: 289, layer: 1, g: "config", d: "Settings › Updates: which parts have a newer version out. Never installs anything." },
+  "shares": { L: 236, layer: 1, g: "files", d: "Shared folders from the PC: approved writes, backups, restore." },
+  "tools": { L: 185, layer: 2, g: "tools", d: "run_command, read_file, write_file, list_dir, install_system_package." },
+  "rules": { L: 35, layer: 2, g: "core", d: "Decides allow / ask / deny per call. The smallest module." },
+  "privacy": { L: 302, layer: 2, g: "privacy", d: "Levels on model profiles; projects, zones and marks; the one visibility check used by copies, bring-in, the panel and the briefing; shares as projects." },
+  "reports": { L: 303, layer: 2, g: "tools", d: "The report format tools write (a fixed set of blocks), checked before the panel draws it." },
+  "transcript": { L: 94, layer: 2, g: "files", d: "A conversation's log as a readable transcript, for an agent resolving a conflict or a new conversation's starting context." },
+  "checkpoints": { L: 62, layer: 2, g: "files", d: "Hard-linked work-folder copies for Undo." },
+  "audit": { L: 209, layer: 2, g: "privacy", d: "Reads the audit log into the activity log; quiet rules for private conversations." },
+  "netproxy": { L: 267, layer: 2, g: "core", d: "The agents' only way online: allowed sites, approvals, connection log." },
+  "providers": { L: 280, layer: 3, g: "models", d: "The provider interface and the Anthropic and OpenAI-compatible adapters." },
+  "config": { L: 245, layer: 3, g: "config", d: "Loads config.toml into typed settings." },
+  "executor": { L: 213, layer: 3, g: "core", d: "Where commands run: as the agent user, in its resource box, with its proxy. Swappable to move the supervisor to the host later." },
+  "log": { L: 98, layer: 3, g: "core", d: "Run logs as JSON Lines." },
+  "browser": { L: 39, layer: 3, g: "tools", d: "The headless browser: where agents and tools find Playwright and Chromium, and its line in the briefing." },
+  "pc": { L: 55, layer: 3, g: "models", d: "Finds the PC from the VM's network gateway, to fill in {pc} in a profile's address." },
+  "local_models": { L: 109, layer: 3, g: "models", d: "Reads local_models.json: the catalog, what fits the card, which model to use." },
+};
+const IMPORTS = {
+  "__main__": ["config", "agent", "log", "service", "providers"],
+  "agent": ["config", "log", "providers", "rules", "tools"],
+  "audit": ["executor"], "brain": ["config", "executor"], "briefing": ["browser"],
+  "checkpoints": ["config", "executor"], "config": ["providers"], "executor": ["browser", "config"],
+  "made_tools": ["executor", "netproxy", "browser", "privacy", "reports"],
+  "mcp_http": ["privacy", "service"], "private": ["audit", "executor"], "rules": ["config"],
+  "service": ["config", "privacy", "private", "briefing", "mcp_http", "agent", "brain", "audit", "checkpoints", "executor", "log", "made_tools", "workcopies", "transcript", "netproxy", "providers", "settings", "signin", "shares", "tools", "updates", "local_models", "pc"],
+  "settings": ["briefing", "config", "pc", "privacy", "executor", "providers"],
+  "shares": ["executor"], "tools": ["config", "executor"], "updates": ["browser"],
+  "workcopies": ["checkpoints", "executor"], "providers": ["pc"],
+};
+const EXTRA = [["index.html", "service", "HTTP + SSE"], ["mcp_server", "brain", "unix socket"]];
+const GROUPS = { core: "Core loop", models: "Models", files: "Files & copies", privacy: "Privacy", tools: "Tools", config: "Config", entry: "Entry points", panel: "Panel" };
+const LAYERS = [["Entry points", "what starts or calls in"], ["Features", "one job each"], ["Domain", "rules, formats, checks"], ["Base", "used by everything"]];
+
+// ---------- Journey ----------
+const JOURNEY = [
+  { t: "You type a task", p: "In the panel, from `uvmc ask`, or from a Claude app. The panel posts it to /api/task with the conversation's id.", who: "PC", where: ["index.html", "service"] },
+  { t: "The conversation gets its sandbox", p: "At its first task: a free user from agent1–8, a copy of the main folder filtered by its projects and privacy level, its own proxy port and systemd slice.", who: "Supervisor", where: ["service", "workcopies", "privacy"] },
+  { t: "The agent is briefed", p: "House rules (or the coordinator's rules), a live briefing written for this conversation, and your notes. The text stays fixed for the conversation.", who: "Supervisor", where: ["briefing", "browser"] },
+  { t: "The model proposes a step", p: "Through the provider interface: Anthropic, an OpenAI-compatible API, the PC's llama-server, or Claude Code on your plan through the bridge. The model never touches the machine.", who: "Model", where: ["agent", "providers", "brain"] },
+  { t: "The rules decide", p: "Allow, ask or deny. “Ask” puts an amber approval card in that conversation and the agent waits. The agent can't answer it.", who: "Supervisor", where: ["rules", "service"], gate: true },
+  { t: "It runs as the conversation's user", p: "Via sudo inside its slice, in its copy. An undo point is made before each task. Going online means its own proxy; an unknown site is another approval card.", who: "VM", where: ["executor", "tools", "checkpoints", "netproxy"], gate: true },
+  { t: "Everything is recorded", p: "Output, programs started (from auditd) and sites contacted appear on the step live over server-sent events, and the run goes to /var/log/uvmc/runs.", who: "Supervisor", where: ["audit", "log", "service"] },
+  { t: "Repeat until the reply", p: "The result goes back to the model, which proposes the next step or answers. Stop ends it at any moment; Undo this task puts the copy back.", who: "Model", where: ["agent"] },
+  { t: "Bring into the main folder", p: "A three-way comparison per file. One-sided changes go in, different lines merge, changes to a less private place are held for you, changes where it may not look are never brought in.", who: "You", where: ["workcopies", "privacy", "checkpoints"], gate: true },
+  { t: "Conflicts get an agent", p: "Same lines changed on both sides: this conversation's agent reads both versions and the other side's transcript, then proposes a resolution you accept per file.", who: "Supervisor", where: ["workcopies", "transcript"], gate: true },
+];
+
+// ---------- Walls ----------
+const WALLS = [
+  { t: "No root", p: "Agent users have no sudo. System packages go through install_system_package, which you approve.", m: ["vm-agents"] },
+  { t: "Firewall", p: "The kernel blocks all outgoing traffic from agents except to their own proxy on 127.0.0.1. No DNS, no direct internet.", m: ["vm-fw"] },
+  { t: "Watched proxy", p: "Allowed sites pass, others ask you, every connection logged. Sees which sites, not what's inside HTTPS. The PC is always refused.", m: ["vm-proxy"] },
+  { t: "Resource boxes", p: "Memory, CPU and process limits shared by all agents, with a smaller box per conversation. A runaway hits the box, not the VM.", m: ["vm-fw"] },
+  { t: "One user per conversation", p: "Own user, own filtered copy, own proxy. No agent can open the main folder or another copy (uvmc-files group).", m: ["vm-agents", "st-conv"] },
+  { t: "One user per job", p: "Worker jobs as agent9+, in copies of the coordinator's folder. A finished job's folder is locked.", m: ["vm-workers"] },
+  { t: "Fixed-size disks", p: "/home/agent is its own 6 GB disk; /tmp and /var/tmp are size-limited memory disks.", m: ["vm-fw"] },
+  { t: "Undo", p: "A hard-linked copy before every task and every bring-in, last 20 kept.", m: ["st-ckpt"] },
+  { t: "Activity log", p: "auditd records every program an agent starts, even inside scripts.", m: ["vm-audit"] },
+  { t: "Privacy levels", p: "local > paid > open on models and files. A copy holds only what its model may see; data flows down only through you.", m: ["sv-copies"] },
+  { t: "Keys out of reach", p: "API keys, plan token and panel token in /etc/uvmc, readable only by the supervisor.", m: ["st-keys"] },
+  { t: "Factory reset", p: "The clean snapshot on your PC, for anything else.", m: ["pc-snap"] },
+];
+
+// ---------- Roadmap ----------
+const ST = { done: ["Done", "st-done"], vm: ["On the VM, being tried", "st-vm"], tests: ["Built, tests pass", "st-tests"], next: ["Next", "st-next"], later: ["Later, when asked", "st-later"], parked: ["Parked", "st-parked"] };
+const ROAD = [
+  { n: "1–5", t: "VM, own supervisor, panel, API, Claude apps", p: "Minimal VM, the supervisor loop, control panel, `uvmc` command and API docs, the PC's Claude apps through MCP, plan sign-in and usage in the header.", s: "done", v: "≤ 0.9" },
+  { n: "6", t: "Codex on a ChatGPT plan", p: "Checked with Codex CLI 0.167: its shell can be turned off, apply_patch can't, so the wall would be the OS. No plan to test with.", s: "parked", v: "" },
+  { n: "7", t: "Tools the agent builds, and Reports", p: "Proposals with code, schedule, sites and secrets; frozen copies as their own users; a Reports tab drawn from JSON blocks.", s: "done", v: "0.11 · 0.13" },
+  { n: "7b", t: "Several conversations at once", p: "Tabs, each with its own model, timeline, approvals and Stop; scripts and Claude apps get their own.", s: "done", v: "0.10" },
+  { n: "7c", t: "Conversations isolated from each other", p: "agent1–8, own copies and proxies, three-way bring-in, agent-resolved conflicts.", s: "done", v: "0.12" },
+  { n: "7d", t: "A model on the PC's graphics card", p: "llama.cpp, Vulkan/Metal, checksums, the {pc} address, firewall walls.", s: "done", v: "0.12.5" },
+  { n: "7g", t: "Several workers at once", p: "Each job as its own user in its own copy; bring_in_worker and discard_worker. Not yet tried with Claude Code as coordinator.", s: "tests", v: "0.14.0" },
+  { n: "7k", t: "Projects and privacy levels", p: "Levels on models and files, filtered copies, held bring-ins, shares as projects, the Projects tab. Running on the VM; a real share not tried yet.", s: "vm", v: "0.15–0.16" },
+  { n: "7l", t: "Headless browser", p: "Playwright + Chromium headless shell, installed without root. Still to check: sites through the proxy, memory.", s: "vm", v: "0.16.1" },
+  { n: "7m", t: "Update notices", p: "Exact pins, a daily version check, Settings › Updates. 0.16.3 fixes stacked share mounts found on the VM.", s: "vm", v: "0.16.2–0.16.3" },
+  { n: "7i", t: "More models on the PC, uncensored too", p: "13 models with pinned hashes, router mode, the panel picks one. Tried on the RX 5700 XT; not yet connected to UVMC end to end.", s: "tests", v: "0.17.0" },
+  { n: "7n", t: "Private conversations", p: "Leave nothing behind once closed; three options on the card. Tests pass; update and the self-check not yet on the VM.", s: "tests", v: "0.18.0–0.18.1" },
+  { n: "7e", t: "Multipass 1.17", p: "New Windows driver (works on Home), exit codes, wait-ready. Retest piped input and the 100% CPU exec.", s: "next", v: "" },
+  { n: "7f", t: "Ubuntu 26.04 in the VM", p: "After 7e. Check cloud-init, nftables, slices, auditd, Claude Code's installer against it.", s: "next", v: "" },
+  { n: "8", t: "A proper installer", p: "UVMC-Setup.exe with Inno Setup, Multipass bundled. Needs your decision on code signing first.", s: "next", v: "" },
+  { n: "7h", t: "A stronger sandbox for every agent", p: "Each agent sees only its own folder plus what the supervisor hands it.", s: "later", v: "" },
+  { n: "7j", t: "Claude Code's loop on other models", p: "Through an Anthropic-compatible endpoint. A gateway like LiteLLM was looked at and dropped for now.", s: "later", v: "" },
+];
+
+// ---------- helpers ----------
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const md = s => esc(s).replace(/`([^`]+)`/g, '<code class="chip">$1</code>');
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs = {}, parent) { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function txt(parent, x, y, s, cls) { const t = el("text", { x, y, class: cls }, parent); t.textContent = s; return t; }
+const stage = $("#stage"), detail = $("#detail");
+
+function edgePath(a, b, mode) {
+  const ax = a.x, ay = a.y, aw = a.w, ah = a.h, bx = b.x, by = b.y, bw = b.w, bh = b.h;
+  if (mode === "v" || (bx < ax + aw && bx + bw > ax)) {
+    const down = by > ay;
+    const x1 = ax + aw / 2, y1 = down ? ay + ah : ay, x2 = bx + bw / 2, y2 = down ? by : by + bh;
+    if (Math.abs(x1 - x2) < 2 && Math.abs(y2 - y1) < 40) return { d: `M${x1},${y1} L${x2},${y2}`, mx: x1 + 6, my: (y1 + y2) / 2 + 4, anchor: "start" };
+    const c = Math.max(24, Math.abs(y2 - y1) / 2);
+    return { d: `M${x1},${y1} C${x1},${y1 + (down ? c : -c)} ${x2},${y2 - (down ? c : -c)} ${x2},${y2}`, mx: (x1 + x2) / 2 + 6, my: (y1 + y2) / 2, anchor: "start" };
+  }
+  const right = bx > ax;
+  const x1 = right ? ax + aw : ax, y1 = ay + ah / 2, x2 = right ? bx : bx + bw, y2 = by + bh / 2;
+  const c = Math.max(30, Math.abs(x2 - x1) / 2);
+  return { d: `M${x1},${y1} C${x1 + (right ? c : -c)},${y1} ${x2 - (right ? c : -c)},${y2} ${x2},${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 - 5, anchor: "middle" };
+}
+
+// Selection shared by SVG views
+function wireGraph(svg, nodes, edges, onPick) {
+  const nodeEls = {}, edgeEls = [];
+  function pick(id) {
+    svg.classList.add("dim");
+    const near = new Set();
+    edgeEls.forEach(e => { const hot = e.a === id || e.b === id; e.g.classList.toggle("hot", hot); if (hot) { near.add(e.a); near.add(e.b); e.g.parentNode.appendChild(e.g); } });
+    for (const k in nodeEls) { nodeEls[k].classList.toggle("sel", k === id); nodeEls[k].classList.toggle("near", k !== id && near.has(k)); }
+    onPick(id, edgeEls.filter(e => e.a === id || e.b === id));
+  }
+  return { nodeEls, edgeEls, pick };
+}
+
+// ---------- System view ----------
+function renderSystem(sel) {
+  stage.innerHTML = `<div class="stage-head"><h2>The whole system</h2><span class="hint">Click a box. Dashed lines are side paths: logs, checks, downloads.</span></div><div class="scroll"><svg class="map" viewBox="0 0 1240 800" role="img" aria-label="Map of UVMC: your PC, the VM with the supervisor and agent users, and the internet"></svg></div>`;
+  const svg = $("svg", stage);
+  for (const z of SYS.zones) {
+    const g = el("g", { class: "zone" }, svg);
+    el("rect", { x: z.x, y: z.y, width: z.w, height: z.h, rx: z.inner ? 10 : 14, fill: `var(${z.fill})`, stroke: `var(${z.edge})`, "stroke-dasharray": z.inner ? "" : "" }, g);
+    txt(g, z.x + 14, z.y + 22, z.label, "zlabel");
+    if (z.sub) { const t = txt(g, z.x + 14, z.y + 22, z.sub, "zsub"); t.setAttribute("dx", 0); t.setAttribute("y", z.y + 22); t.setAttribute("x", z.x + 14 + z.label.length * 8.4 + 10); }
+  }
+  // Ubuntu users column label
+  txt(svg, 718, 82, "Linux users and walls", "zsub");
+  txt(svg, 30, 712, "Runs the VM", "zsub");
+  const byId = {}; SYS.nodes.forEach(n => { n.h = n.h || 44; byId[n.id] = n; });
+  const eg = el("g", {}, svg), ng = el("g", {}, svg);
+  const G = wireGraph(svg, SYS.nodes, SYS.edges, (id, es) => showSysDetail(byId[id], es, byId, G));
+  for (const [a, b, label, mode] of SYS.edges) {
+    const p = edgePath(byId[a], byId[b], mode === "d" ? undefined : mode);
+    const g = el("g", { class: "edge" + (mode === "d" ? " dash" : "") }, eg);
+    el("path", { d: p.d, "marker-end": "url(#arr)" }, g);
+    if (label) { const t = txt(g, p.mx, p.my, label); t.setAttribute("text-anchor", p.anchor); }
+    G.edgeEls.push({ a, b, label, g });
+  }
+  const defs = el("defs", {}, svg); const m = el("marker", { id: "arr", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--line-strong)" }, m);
+  for (const n of SYS.nodes) {
+    const g = el("g", { class: "node", tabindex: 0, role: "button", "aria-label": n.t }, ng);
+    el("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 7 }, g);
+    txt(g, n.x + 12, n.y + 19, n.t, "t"); txt(g, n.x + 12, n.y + 35, n.s, "s");
+    g.addEventListener("click", () => G.pick(n.id));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); G.pick(n.id); } });
+    G.nodeEls[n.id] = g;
+  }
+  G.pick(byId[sel] ? sel : "sv-ctl");
+}
+function showSysDetail(n, es, byId, G) {
+  const zone = n.id.startsWith("pc") ? "On your PC" : n.id.startsWith("out") ? "On the internet" : n.id.startsWith("st") ? "In the VM · disks and folders" : n.id.startsWith("sv") ? "In the VM · the supervisor" : "In the VM · Linux users and walls";
+  const links = es.map(e => { const other = e.a === n.id ? e.b : e.a; const dir = e.a === n.id ? "→" : "←"; return `<li><span class="rel">${dir}</span> <button data-go="${other}">${esc(byId[other].t)}</button>${e.label ? ` <span class="rel">${esc(e.label)}</span>` : ""}</li>`; }).join("");
+  detail.innerHTML = `<div class="eyebrow">${zone}</div><h3>${esc(n.t)}</h3><div class="files">${n.files.map(f => `<span class="chip">${esc(f)}</span>`).join("")}</div><p>${md(n.d)}</p>${links ? `<h4>Connected to</h4><ul class="links">${links}</ul>` : ""}`;
+  detail.querySelectorAll("[data-go]").forEach(b => b.onclick = () => G.pick(b.dataset.go));
+}
+
+// ---------- Code view ----------
+function renderCode(sel) {
+  stage.innerHTML = `<div class="stage-head"><h2>The supervisor's code</h2><span class="hint">supervisor/uvmc · arrows point at what a module imports · bar = lines of code</span></div><div class="scroll"><svg class="map" viewBox="0 0 1180 640" role="img" aria-label="Module import graph of the supervisor"></svg></div>`;
+  const svg = $("svg", stage);
+  const colX = [20, 320, 620, 920], W = 230, H = 34, GAP = 10, TOP = 70;
+  const cols = [[], [], [], []];
+  Object.keys(MODS).forEach(k => cols[MODS[k].layer].push(k));
+  const order = { core: 0, entry: 1, panel: 1, models: 2, files: 3, privacy: 4, tools: 5, config: 6 };
+  cols.forEach(c => c.sort((a, b) => order[MODS[a].g] - order[MODS[b].g] || MODS[b].L - MODS[a].L));
+  const nodes = {};
+  cols.forEach((c, i) => {
+    txt(svg, colX[i], 30, LAYERS[i][0], "colhead"); txt(svg, colX[i], 48, LAYERS[i][1], "colsub");
+    c.forEach((k, j) => nodes[k] = { id: k, x: colX[i], y: TOP + j * (H + GAP), w: W, h: H });
+  });
+  const edges = [];
+  for (const a in IMPORTS) IMPORTS[a].forEach(b => edges.push([a, b, "imports"]));
+  EXTRA.forEach(e => edges.push(e));
+  const eg = el("g", {}, svg), ng = el("g", {}, svg);
+  const defs = el("defs", {}, svg); const m = el("marker", { id: "arr2", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--line-strong)" }, m);
+  const G = wireGraph(svg, nodes, edges, (id, es) => showModDetail(id, es, G));
+  const maxL = 900;
+  for (const [a, b, label] of edges) {
+    const A = nodes[a], B = nodes[b]; let p;
+    if (A.x === B.x) { // same column: arc out to the right
+      const x = A.x + A.w, y1 = A.y + A.h / 2, y2 = B.y + B.h / 2, bulge = 40 + Math.abs(y2 - y1) / 6;
+      p = { d: `M${x},${y1} C${x + bulge},${y1} ${x + bulge},${y2} ${x},${y2}`, mx: x + bulge * 0.8, my: (y1 + y2) / 2 };
+    } else p = edgePath(A, B);
+    const g = el("g", { class: "edge" + (label !== "imports" ? " dash" : "") }, eg);
+    el("path", { d: p.d, "marker-end": "url(#arr2)" }, g);
+    if (label !== "imports") { const t = txt(g, p.mx, p.my, label); t.setAttribute("text-anchor", "middle"); }
+    G.edgeEls.push({ a, b, label, g });
+  }
+  for (const k in nodes) {
+    const n = nodes[k], mod = MODS[k];
+    const g = el("g", { class: "node", tabindex: 0, role: "button", "aria-label": k }, ng);
+    el("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 6 }, g);
+    const name = k.endsWith(".html") ? k : k + ".py";
+    txt(g, n.x + 10, n.y + 21, name, "t").style.fontFamily = "var(--f-mono)";
+    const bw = Math.max(3, Math.min(1, mod.L / maxL) * 64);
+    el("rect", { x: n.x + n.w - 74, y: n.y + 15, width: bw, height: 5, rx: 2, class: "bar" }, g).style.stroke = "none";
+    const lt = txt(g, n.x + n.w - 8, n.y + 13, mod.L.toLocaleString("en"), "s"); lt.setAttribute("text-anchor", "end"); lt.style.fontSize = "10px";
+    g.addEventListener("click", () => G.pick(k));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); G.pick(k); } });
+    G.nodeEls[k] = g;
+  }
+  G.pick(nodes[sel] ? sel : "service");
+}
+function showModDetail(id, es, G) {
+  const mod = MODS[id], name = id.endsWith(".html") ? "static/" + id : id + ".py";
+  const uses = es.filter(e => e.a === id).map(e => e.b), usedBy = es.filter(e => e.b === id).map(e => e.a);
+  const list = arr => arr.length ? `<div class="files">${arr.map(k => `<button class="chip" data-go="${k}">${k.endsWith(".html") ? k : k + ".py"}</button>`).join("")}</div>` : `<p class="hint">Nothing in the package.</p>`;
+  detail.innerHTML = `<div class="eyebrow">${GROUPS[mod.g]} · ${mod.L.toLocaleString("en")} lines</div><h3>${esc(name)}</h3><div class="files"><span class="chip">supervisor/uvmc/${esc(name)}</span></div><p>${md(mod.d)}</p><h4>Uses</h4>${list(uses)}<h4>Used by</h4>${list(usedBy)}`;
+  detail.querySelectorAll("[data-go]").forEach(b => b.onclick = () => G.pick(b.dataset.go));
+}
+
+// ---------- Journey view ----------
+function renderJourney() {
+  stage.innerHTML = `<div class="stage-head"><h2>A task's journey</h2><span class="hint">Amber steps are where you, or a wall, can stop it. Click a file to open it in the Code view.</span></div><ol class="journey">${JOURNEY.map(s => `<li class="${s.gate ? "gate" : ""}"><div class="j-body"><h3>${esc(s.t)}<span class="j-who">${s.who}</span></h3><p>${md(s.p)}</p><div class="j-where">${s.where.map(w => `<button class="chip" data-mod="${w}">${w.endsWith(".html") ? w : w + ".py"}</button>`).join("")}</div></div></li>`).join("")}</ol>`;
+  stage.querySelectorAll("[data-mod]").forEach(b => b.onclick = () => { pendingSel = b.dataset.mod; location.hash = "code"; });
+  detail.innerHTML = `<div class="eyebrow">The principle</div><h3>The model only proposes</h3><p>Every model, Claude Code on your plan included, acts only through the supervisor. It proposes a step; the supervisor checks it against your rules, runs it as the conversation's own Linux user, and logs it.</p><p>The walls are enforced by Linux, not by guessing what a command does: no root, a firewall that leaves only the proxy, memory and process limits, and fixed-size disks.</p><h4>Two ways to answer an approval</h4><ul><li>Tool marked “ask”: <b>Allow</b> or <b>Deny</b></li><li>Site off the list: <b>Allow for this task</b>, <b>Always allow</b> or <b>Deny</b> (no “always” once a conversation has seen paid or local files)</li></ul><h4>With a worker model</h4><p>The agent you talk to becomes a coordinator: it plans and calls <code class="chip">delegate</code>; each job repeats steps 2–8 as its own user, then the coordinator brings it into its own folder.</p>`;
+}
+
+// ---------- Walls view ----------
+function renderWalls(sel) {
+  stage.innerHTML = `<div class="stage-head"><h2>The agent's walls</h2><span class="hint">Click a wall to see where it lives in the system.</span></div>
+  <div class="grid-cards">${WALLS.map((w, i) => `<button class="wall" data-i="${i}"><h3>${esc(w.t)}</h3><p>${esc(w.p)}</p></button>`).join("")}</div>
+  <h3 class="section-title">Privacy levels</h3>
+  <div class="levels"><div><b>local</b><p>The model on your PC. The files never leave your PC.</p></div><div><b>paid</b><p>Anthropic API, your Claude plan, other paid APIs. Trusted by contract; UVMC can't check it.</p></div><div><b>open</b><p>Free tiers and anything else. May log or train on what it gets.</p></div></div>
+  <p class="flowdown">A model sees files at its level or below. A conversation's “seen” level is the most private file it has had; bringing work into a less private place is held for you to tick.</p>
+  <h3 class="section-title">Who can do what inside the VM</h3>
+  <div class="scroll"><table class="matrix"><thead><tr><th></th><th>ubuntu (supervisor)</th><th>agentN</th><th>uvmc-brain</th></tr></thead><tbody>
+  <tr><td>Run tools in the work folder</td><td class="some">via sudo, in the box</td><td class="yes">its own copy</td><td class="no">only by asking the supervisor</td></tr>
+  <tr><td>Reach the internet</td><td class="yes">yes</td><td class="some">only through its proxy</td><td class="some">Anthropic only, own proxy</td></tr>
+  <tr><td>sudo</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td></tr>
+  <tr><td>Read API keys</td><td class="yes">yes</td><td class="no">no</td><td class="no">only its own login, in its environment</td></tr>
+  <tr><td>Change config, rules, code</td><td class="yes">yes (as root)</td><td class="no">no</td><td class="no">no</td></tr>
+  <tr><td>Read logs, undo points, activity</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td></tr>
+  <tr><td>Read the panel token</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td></tr>
+  </tbody></table></div>`;
+  const pick = i => {
+    stage.querySelectorAll(".wall").forEach((b, j) => b.classList.toggle("sel", j === i));
+    const w = WALLS[i], byId = Object.fromEntries(SYS.nodes.map(n => [n.id, n]));
+    detail.innerHTML = `<div class="eyebrow">Wall</div><h3>${esc(w.t)}</h3><p>${esc(w.p)}</p><h4>Where it lives</h4>${w.m.map(id => `<p><b>${esc(byId[id].t)}</b><br>${md(byId[id].d)}</p><div class="files">${byId[id].files.map(f => `<span class="chip">${esc(f)}</span>`).join("")}</div>`).join("")}<p><button class="chip" data-sys="${w.m[0]}">Show on the system map</button></p>`;
+    detail.querySelector("[data-sys]").onclick = e => { pendingSel = e.target.dataset.sys; location.hash = "system"; };
+  };
+  stage.querySelectorAll(".wall").forEach(b => b.onclick = () => pick(+b.dataset.i));
+  pick(0);
+}
+
+// ---------- Roadmap view ----------
+function renderRoadmap() {
+  const counts = {}; ROAD.forEach(r => counts[r.s] = (counts[r.s] || 0) + 1);
+  stage.innerHTML = `<div class="stage-head"><h2>Roadmap</h2><span class="hint">From design.md “Planned work” and CLAUDE.md, as of 0.18.1</span></div>
+  <div class="legend">${Object.keys(ST).map(k => `<span class="pill ${ST[k][1]}">${ST[k][0]} · ${counts[k] || 0}</span>`).join("")}</div>
+  <div class="road">${ROAD.map((r, i) => `<button class="step" data-i="${i}"><span class="num">${r.n}</span><span><h3>${esc(r.t)}</h3><p>${md(r.p)}</p></span><span class="pill ${ST[r.s][1]}">${ST[r.s][0]}</span></button>`).join("")}</div>`;
+  const pick = i => {
+    stage.querySelectorAll(".step").forEach((b, j) => b.classList.toggle("sel", j === i));
+    const r = ROAD[i];
+    detail.innerHTML = `<div class="eyebrow">Step ${esc(r.n)}${r.v ? " · " + esc(r.v) : ""}</div><h3>${esc(r.t)}</h3><p><span class="pill ${ST[r.s][1]}">${ST[r.s][0]}</span></p><p>${md(r.p)}</p><h4>Order from here</h4><ol><li>Try 0.15–0.18 on the VM: <code class="chip">update</code>, then a real share, the self-check, a private conversation with the PC's model</li><li>7e Multipass 1.17</li><li>7f Ubuntu 26.04</li><li>8 the installer (code signing decision first)</li></ol>`;
+  };
+  stage.querySelectorAll(".step").forEach(b => b.onclick = () => pick(+b.dataset.i));
+  pick(ROAD.findIndex(r => r.s === "next"));
+}
+
+// ---------- routing ----------
+let pendingSel = null;
+const VIEWS = { system: renderSystem, code: renderCode, journey: renderJourney, walls: renderWalls, roadmap: renderRoadmap };
+function route() {
+  const v = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "system";
+  document.querySelectorAll("nav.views a").forEach(a => { if (a.getAttribute("href") === "#" + v) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+  const s = pendingSel; pendingSel = null;
+  VIEWS[v](s);
+}
+window.addEventListener("hashchange", route);
+route();
+</script>
+
+</body>
+</html>
