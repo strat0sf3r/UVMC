@@ -70,6 +70,23 @@ try {
         }
     }
 
+    Step 'Removing the UVMC helper'
+    try {
+        & (Join-Path $PSScriptRoot 'helper.ps1') -Stop
+        & (Join-Path $PSScriptRoot 'helper.ps1') -NoAutoStart
+    } catch { Write-Host "Skipped: $($_.Exception.Message)" }
+    $data = Join-Path $env:LOCALAPPDATA 'UVMC'
+    foreach ($f in 'helper.json', 'helper.log', 'helper-jobs') { Remove-Item -Recurse -Force (Join-Path $data $f) -ErrorAction SilentlyContinue }
+
+    if (Test-Path (Join-Path $data 'local-model.json')) {
+        Write-Host ''
+        Write-Host 'The model on this PC (llama.cpp, the downloaded models, its firewall rules) is still there.'
+        if ((Read-Host 'Remove it too? This deletes the downloaded models. [y/N]') -match '^[yY]') {
+            Step 'Removing the model on this PC'
+            try { & (Join-Path $PSScriptRoot 'local-model.ps1') -Remove -Yes } catch { Write-Host "Skipped: $($_.Exception.Message)" }
+        } else { Write-Host 'Kept. uninstall-local-model removes it later.' }
+    }
+
     Step 'Taking UVMC out of the Claude apps on this PC'
     try { & (Join-Path $PSScriptRoot 'connect-claude-apps.ps1') -Remove -NoPause } catch { Write-Host "Skipped: $($_.Exception.Message)" }
 

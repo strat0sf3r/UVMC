@@ -305,6 +305,31 @@ try {
         }
     }
 
+    # 6c. The UVMC helper (optional; helper -AutoStart / -NoAutoStart does the same later)
+    if (-not (Test-Path (Join-Path $StateDir 'asked-helper'))) {
+        Step 'The UVMC helper (optional)'
+        Write-Host 'A small program with a tray icon that lets the panel do what only this PC can do:'
+        Write-Host 'download, start, stop and delete the models on your graphics card. It listens on this PC only.'
+        $a = Read-Host 'Add the UVMC tray icon, started each time you log in? [Y/n]'
+        Set-Content -Path (Join-Path $StateDir 'asked-helper') -Value 'yes'
+        if ($a -notmatch '^[nN]') { & (Join-Path $PSScriptRoot 'helper.ps1') -AutoStart }
+        else { Write-Host 'Skipped. The UVMC Panel shortcut still starts it when you open the panel.' }
+    }
+
+    # 6d. Models on this PC's graphics card (optional; local-model does it later)
+    if (-not (Test-Path (Join-Path $StateDir 'asked-local-model')) -and -not (Test-Path (Join-Path $env:LOCALAPPDATA 'UVMC\local-model.json'))) {
+        Step 'Models on this PC (optional)'
+        Write-Host "UVMC's agent can also run on your graphics card (NVIDIA, AMD, Intel), with no account and nothing to buy."
+        Write-Host 'This downloads llama.cpp and a model sized to your card (several GB) in a window of its own.'
+        $a = Read-Host 'Set up a model on this PC now? You can do it later with local-model. [y/N]'
+        Set-Content -Path (Join-Path $StateDir 'asked-local-model') -Value 'yes'
+        if ($a -match '^[yY]') {
+            # In its own window, without administrator rights (it asks for them once, for the firewall rule).
+            Start-Process explorer.exe -ArgumentList "`"$(Join-Path $PSScriptRoot 'local-model.cmd')`""
+            Write-Host 'Started in its own window.'
+        }
+    }
+
     # 7. Shortcuts
     Step 'Adding shortcuts'
     $ws = New-Object -ComObject WScript.Shell

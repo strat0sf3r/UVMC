@@ -102,5 +102,26 @@ if [ ! -f "$HOME/.uvmc/asked-claude-apps" ]; then
   fi
 fi
 
+# The UVMC helper (optional; python3 unix/helper --autostart / --no-autostart does the same later)
+if [ ! -f "$HOME/.uvmc/asked-helper" ]; then
+  step "The UVMC helper (optional)"
+  echo "A small program that lets the panel do what only this computer can do: download, start,"
+  echo "stop and delete the models on your graphics chip. It listens on this computer only."
+  read -rp "Start the UVMC helper each time you log in? [Y/n] " a
+  touch "$HOME/.uvmc/asked-helper"
+  if [[ ! "$a" =~ ^[nN] ]]; then python3 unix/helper --autostart || true
+  else echo "Skipped. unix/panel.sh still starts it when you open the panel."; fi
+fi
+
+# Models on this computer's graphics chip (optional; unix/local-model.sh does it later)
+if [ ! -f "$HOME/.uvmc/asked-local-model" ] && [ ! -f "$HOME/.config/uvmc/local-model.env" ]; then
+  step "Models on this computer (optional)"
+  echo "UVMC's agent can also run on your graphics chip (Apple Silicon, NVIDIA, AMD, Intel), with no account and nothing to buy."
+  echo "This downloads llama.cpp and a model sized to your chip (several GB)."
+  read -rp "Set up a model on this computer now? You can do it later with unix/local-model.sh. [y/N] " a
+  touch "$HOME/.uvmc/asked-local-model"
+  if [[ "$a" =~ ^[yY] ]]; then unix/local-model.sh || echo "The model set-up stopped; run unix/local-model.sh again to continue."; fi
+fi
+
 step "Done"
 echo "Open the control panel with unix/panel.sh. Then, in its Settings tab, add your API key or sign in with your Claude plan."

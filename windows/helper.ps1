@@ -14,7 +14,12 @@
 #
 #   /panel     opens the panel, signed in, at the machine's current address (from the tray or a shortcut)
 #   /pc/...    the panel's calls (status, model actions, job progress)
-param([int]$Port = 8092)
+#
+#   helper.cmd                 start it (hidden; a second start opens the panel)
+#   helper.cmd -AutoStart      start it each time you log in (a shortcut in your Startup folder), and now
+#   helper.cmd -NoAutoStart    stop starting it at login
+#   helper.cmd -Stop           quit the running helper
+param([int]$Port = 8092, [switch]$AutoStart, [switch]$NoAutoStart, [switch]$Stop)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -44,6 +49,42 @@ function Log([string]$text) {
         if (Test-Path $LogFile) { $keep = @(Get-Content -Path $LogFile -Tail 999 -Encoding UTF8) }
         Set-Content -Path $LogFile -Value ($keep + ('{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $text)) -Encoding UTF8
     } catch {}
+}
+
+# --- start at login, stop -----------------------------------------------------------------
+$StartupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'UVMC helper.lnk'
+function Stop-Helper {
+    $n = 0
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like "*$PSCommandPath*" -and $_.CommandLine -notmatch '-(Stop|AutoStart|NoAutoStart)\b' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $n++ }
+    return $n
+}
+if ($Stop) {
+    if ((Stop-Helper) -gt 0) { Write-Host 'The UVMC helper is stopped.' } else { Write-Host 'The UVMC helper was not running.' }
+    exit 0
+}
+if ($NoAutoStart) {
+    if (Test-Path $StartupLink) { Remove-Item $StartupLink; Write-Host 'The UVMC helper no longer starts when you log in.' }
+    else { Write-Host 'The UVMC helper was not starting at login.' }
+    exit 0
+}
+if ($AutoStart) {
+    # Only for you (your Startup folder, no administrator rights). Started through the shortcut, by
+    # Explorer, so it never runs with administrator rights even when an installer asks for it.
+    $sh = New-Object -ComObject WScript.Shell
+    $lnk = $sh.CreateShortcut($StartupLink)
+    $lnk.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$PSCommandPath`""
+    $lnk.WorkingDirectory = $PSScriptRoot
+    $lnk.WindowStyle = 7
+    $lnk.Description = 'UVMC helper: lets the UVMC panel manage the model on this PC'
+    $lnk.Save()
+    Write-Host 'The UVMC helper now starts each time you log in (helper -NoAutoStart turns that off).'
+    $up = $false
+    try { $c = New-Object Net.Sockets.TcpClient; $up = $c.ConnectAsync('127.0.0.1', $Port).Wait(500); $c.Close() } catch {}
+    if (-not $up) { Start-Process explorer.exe -ArgumentList "`"$StartupLink`"" }
+    exit 0
 }
 
 # --- one copy only ----------------------------------------------------------------------

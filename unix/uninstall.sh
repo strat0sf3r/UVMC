@@ -42,6 +42,23 @@ if [ -f "$STATE/installed-multipass" ] && command -v multipass >/dev/null 2>&1; 
   fi
 fi
 "$(dirname "$0")/connect-claude-apps.sh" --remove >/dev/null 2>&1 || true   # take UVMC out of the Claude apps
+
+step "Removing the UVMC helper"
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$(dirname "$0")/helper" --stop || true
+  python3 "$(dirname "$0")/helper" --no-autostart || true
+fi
+rm -rf "$HOME/.config/uvmc/helper.json" "$HOME/.config/uvmc/helper.log" "$HOME/.config/uvmc/helper.pid" "$HOME/.config/uvmc/helper-jobs"
+
+if [ -f "$HOME/.config/uvmc/local-model.env" ]; then
+  echo "The model on this computer (llama.cpp and the downloaded models) is still there."
+  if ask "Remove it too? This deletes the downloaded models. [y/N]"; then
+    step "Removing the model on this computer"
+    "$(dirname "$0")/local-model.sh" --remove --yes || true
+  else
+    echo "Kept. unix/uninstall-local-model.sh removes it later."
+  fi
+fi
 rm -rf "$STATE"
 
 step "Done"

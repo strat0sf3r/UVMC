@@ -7,6 +7,8 @@ windows/helper.ps1, without a tray icon: notifications come from the system.
     python3 unix/helper --background    start it detached and return
     python3 unix/helper --stop          stop the running one
     python3 unix/helper --panel         open the panel through it (starts it first if needed)
+    python3 unix/helper --autostart     start it each time you log in (and now)
+    python3 unix/helper --no-autostart  stop starting it at login
 
 How it is walled off:
   - It listens on 127.0.0.1 only, so the UVMC machine and your home network can't reach it.
@@ -554,6 +556,57 @@ def panel_url():
     return f"http://127.0.0.1:{PORT}/panel"
 
 
+PLIST = os.path.expanduser("~/Library/LaunchAgents/com.uvmc.helper.plist")
+UNIT = os.path.expanduser("~/.config/systemd/user/uvmc-helper.service")
+
+
+def autostart(on):
+    """Only when you ask: a LaunchAgent on a Mac, a systemd user service on Linux (as local-model.sh)."""
+    me = os.path.abspath(__file__)
+    if not on:
+        found = False
+        if os.path.exists(PLIST):
+            run(["launchctl", "unload", PLIST], 20)
+            os.remove(PLIST)
+            found = True
+        if os.path.exists(UNIT):
+            run(["systemctl", "--user", "disable", "--now", "uvmc-helper.service"], 20)
+            os.remove(UNIT)
+            run(["systemctl", "--user", "daemon-reload"], 20)
+            found = True
+        print("The UVMC helper no longer starts when you log in." if found else "The UVMC helper was not starting at login.")
+        return
+    from xml.sax.saxutils import escape
+    if MAC:
+        os.makedirs(os.path.dirname(PLIST), exist_ok=True)
+        with open(PLIST, "w", encoding="utf-8") as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                    '<plist version="1.0"><dict>\n'
+                    "  <key>Label</key><string>com.uvmc.helper</string>\n"
+                    f"  <key>ProgramArguments</key><array><string>{escape(sys.executable)}</string><string>{escape(me)}</string></array>\n"
+                    "  <key>RunAtLoad</key><true/>\n"
+                    "</dict></plist>\n")
+        run(["launchctl", "load", PLIST], 20)   # and now
+    elif shutil.which("systemctl"):
+        os.makedirs(os.path.dirname(UNIT), exist_ok=True)
+        with open(UNIT, "w", encoding="utf-8") as f:
+            f.write("[Unit]\nDescription=UVMC helper (lets the UVMC panel manage the model on this computer)\n\n"
+                    f'[Service]\nExecStart="{sys.executable}" "{me}"\n\n[Install]\nWantedBy=default.target\n')
+        run(["systemctl", "--user", "daemon-reload"], 20)
+        if run(["systemctl", "--user", "enable", "uvmc-helper.service"], 30)[1] != 0:
+            os.remove(UNIT)
+            print("systemd could not set it up for you (no desktop session here?): "
+                  "start it yourself with python3 unix/helper --background.")
+            return
+        if run(["systemctl", "--user", "start", "uvmc-helper.service"], 30)[1] != 0:
+            print("It will start at your next login (systemd did not start it now).")
+    else:
+        print("No LaunchAgent or systemd here: start it yourself with python3 unix/helper --background.")
+        return
+    print("The UVMC helper now starts each time you log in (python3 unix/helper --no-autostart turns that off).")
+
+
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--stop"]:
@@ -584,6 +637,12 @@ def main():
             webbrowser.open(panel_url())
         else:
             print("The UVMC helper is running." if running else "Started the UVMC helper.")
+        return
+    if args[:1] == ["--autostart"]:
+        autostart(True)
+        return
+    if args[:1] == ["--no-autostart"]:
+        autostart(False)
         return
     if args:
         print(__doc__)

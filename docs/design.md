@@ -364,7 +364,8 @@ Later goal (the user, 2026-11-10): the PC helper (0.20, scripts for now: PowerSh
 
 **The PC helper (0.20, in progress), noted and not done yet** (2026-11-10):
 - Done since: the panel shortcut (`panel.ps1` / `panel.sh`) opens through the helper, starting it if needed (the old way if it doesn't answer); tried on the PC 2026-11-10.
-- Still to build: the install and uninstall questions (step 6 of its plan), guide.md and the version (step 7; the helper wants 0.20.0).
+- Done since: the installers ask "tray icon at login?" (default yes) and "a model on this PC now?" (default no, only if none is set up); the uninstallers stop and remove the helper and ask before removing the model (default no). `helper -AutoStart / -NoAutoStart / -Stop` (`--autostart`, `--no-autostart`, `--stop` on Mac/Linux). Tried on the PC 2026-11-10: -Stop, -AutoStart (started by Explorer, so never with administrator rights), -NoAutoStart; the installer questions themselves only parse-checked; Linux start-at-login tried in the VM (no desktop session there: refused, says so).
+- Still to build: guide.md and the version (step 7; the helper wants 0.20.0).
 - Not yet tried for real: a model download end to end in the panel; the confirm windows on the PC (delete, your own file); the relay after `Invoke-VmQuick` closed its input; Chrome and Edge (they may ask once to allow "devices on your local network"; Firefox doesn't); `unix/helper` on a real Mac or Linux desktop.
 - Sign-in, later: the panel's permanent key sits in the address, so it stays in the browser's history (common in local tools such as Jupyter, but not good practice). Better: the shortcut and the helper ask the VM for a one-time code (valid once, about a minute), and the panel swaps it for the cookie, so what's in the history is useless.
 - Helper: while it reads from the VM (up to about 25 s if the VM doesn't answer), its tray and other calls wait. The Go version won't have this.
