@@ -103,7 +103,7 @@
       "weak": "Unofficial. Removing refusals can make tool calls sloppier. What it learned about those political topics is still slanted. No brakes of its own: UVMC's approvals are the brakes."
     },
     "qwen3.5-9b-uncensored-hauhaucs": {
-      "label": "Qwen3.5 9B uncensored (HauhauCS)", "family": "Qwen", "maker": "Alibaba (China)",
+      "label": "Qwen3.5 9B uncensored by HauhauCS (recommended)", "family": "Qwen", "maker": "Alibaba (China)",
       "kind": "uncensored", "by": "HauhauCS",
       "repo": "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive", "file": "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
       "sha256": "2ca636d9e81d3d23ca9b60c234fe185d30ec082eeba69ce770fdb0c76559a4f5",
@@ -113,7 +113,7 @@
       "weak": "Unofficial, from one anonymous uploader who doesn't say how it is made. Doesn't refuse, but still gives Beijing's line: in our test it called Taiwan a region of China and skipped the 1989 crackdown. No brakes of its own: UVMC's approvals are the brakes."
     },
     "gemma4-e4b-uncensored": {
-      "label": "Gemma 4 E4B uncensored", "family": "Gemma", "maker": "Google (USA)",
+      "label": "Gemma 4 E4B uncensored (recommended)", "family": "Gemma", "maker": "Google (USA)",
       "kind": "uncensored", "by": "huihui-ai",
       "repo": "huihui-ai/Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-GGUF", "file": "Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
       "sha256": "64434f2da081f912729e5c4732def7303eb5244d3fee493b9675bc4e9af52d4c",
