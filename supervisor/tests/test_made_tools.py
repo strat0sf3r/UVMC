@@ -3,8 +3,8 @@
 import datetime as dt
 import json
 import os
+import queue
 import sys
-import threading
 import time
 import unittest
 from pathlib import Path
@@ -86,15 +86,26 @@ class MadeToolsTest(ServiceBase):
     def ctl(self, replies):
         self.fake = FakeClient(replies)
         ctl = Controller(self.cfg, lambda *_: self.fake)
-        q = ctl.subscribe()
-
-        def collect():
-            while True:
-                e = q.get()
-                if "seq" in e:
-                    self.events.append(e)
-        threading.Thread(target=collect, daemon=True).start()
+        self.queue = ctl.subscribe()
         return ctl
+
+    def collect(self):
+        """Takes the events published so far, here and now. (A thread collected them before; it could
+        still be behind when the conversation already said idle, and a test then missed the last
+        results: one full run in five or six failed, 2026-11-10.)"""
+        while True:
+            try:
+                e = self.queue.get_nowait()
+            except queue.Empty:
+                return
+            if "seq" in e:   # log events; not the "conversations" list updates
+                self.events.append(e)
+
+    def wait_idle(self, ctl, timeout=5.0):
+        """Until the conversation is idle, then its events: every result is published before that."""
+        ok = wait_for(lambda: ctl.state == "idle", timeout)
+        self.collect()
+        return ok
 
     def approve_next(self, ctl, answer="allow"):
         self.assertTrue(wait_for(lambda: ctl.state == "waiting"))
@@ -110,7 +121,7 @@ class MadeToolsTest(ServiceBase):
         self.assertEqual(card["manifest"]["name"], "greeter")
         self.assertFalse(card["update"])
         self.assertIn("count", card["shown"][0]["text"] + card["shown"][1]["text"])   # the code is on the card
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         result = [e for e in self.events if e["kind"] == "result"][0]
         self.assertFalse(result["is_error"])
         self.assertIn("version 1", result["text"])
@@ -161,7 +172,7 @@ class MadeToolsTest(ServiceBase):
                         propose("t2"), reply(TextBlock(type="text", text="ok"), stop="end_turn")])
         ctl.start_task("make it")
         self.approve_next(ctl)
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         (Path(ctl.conv().copy_dir) / "tools/greeter/main.py").write_text(MAIN.replace("hello", "good morning"))
         ctl.start_task("change the greeting")
         card = self.approve_next(ctl, "deny")
@@ -171,7 +182,7 @@ class MadeToolsTest(ServiceBase):
         self.assertEqual(changed["change"], "changed")
         self.assertIn("-print(f\"hello", changed["text"])
         self.assertIn("+print(f\"good morning", changed["text"])
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         self.assertEqual(ctl.made.view("greeter")["version"], 1)      # declined: nothing changed
         result = [e for e in self.events if e["kind"] == "result"][-1]
         self.assertTrue(result["is_error"])
@@ -183,7 +194,7 @@ class MadeToolsTest(ServiceBase):
         (self.folder / "uvmc-tool.json").write_text(json.dumps({**GOOD, "sites": ["not a site!"]}))
         ctl = self.ctl([propose(), reply(TextBlock(type="text", text="ok"), stop="end_turn")])
         ctl.start_task("make it")
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         self.assertFalse([e for e in self.events if e["kind"] == "approval"])
         result = [e for e in self.events if e["kind"] == "result"][0]
         self.assertIn("sites", result["text"])
@@ -330,7 +341,7 @@ class MadeToolsTest(ServiceBase):
         ctl = self.ctl([propose("t1"), reply(TextBlock(type="text", text="ok"), stop="end_turn"),
                         propose("t2"), reply(TextBlock(type="text", text="ok"), stop="end_turn")])
         ctl.start_task("make it")
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         self.assertFalse([e for e in self.events if e["kind"] == "approval"])   # back to the agent first
         result = [e for e in self.events if e["kind"] == "result"][-1]
         self.assertIn("unknown block type 'nope'", result["text"])
@@ -342,7 +353,7 @@ class MadeToolsTest(ServiceBase):
         card = self.approve_next(ctl, "deny")
         self.assertEqual(card["sample"]["title"], "Sample")
         self.assertTrue(card["sample"]["blocks"][0]["src"].startswith("data:image/png;base64,"))
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
 
 
 class WorkOnToolTest(MadeToolsTest):
@@ -385,7 +396,7 @@ class WorkOnToolTest(MadeToolsTest):
         ctl = self.ctl([get("g1"), get("g2"), reply(TextBlock(type="text", text="ok"), stop="end_turn")])
         self.install(ctl)
         ctl.start_task("make the greeter friendlier")
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         results = [e for e in self.events if e["kind"] == "result"]
         # This conversation built it: its own folder tools/greeter stays; the copy goes next to it.
         self.assertIn("tools/greeter-v1", results[0]["text"])
@@ -405,7 +416,7 @@ class WorkOnToolTest(MadeToolsTest):
         card = ctl.snapshot()["pending"][0]
         self.assertEqual(card["level"], "paid")                           # suggested on the card
         ctl.decide(card["id"], "allow", "local")                          # you may choose another
-        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertTrue(self.wait_idle(ctl))
         self.assertEqual(ctl.made.view("greeter")["level"], "local")
         # Changing it later: raising is done, lowering asks first.
         with self.assertRaises(NeedsConfirm):
