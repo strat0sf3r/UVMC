@@ -42,8 +42,8 @@ import time
 from .audit import AUDIT_LOG, set_quiet
 from .executor import SLICE, make_executor, no_sudo, root
 
-JOURNAL_FIX = ("The system log (journald) keeps the agent's commands. Run update on your PC: it sets sudo not to "
-               "log the supervisor's commands (/etc/sudoers.d/uvmc-quiet).")
+JOURNAL_FIX = ("The system log (journald) keeps the agent's commands or a conversation's file names. Run update on "
+               "your PC: it sets sudo not to log the commands that carry them (/etc/sudoers.d/uvmc-quiet).")
 AUDIT_FIX = ("The audit log keeps the agent's commands (sudo's own records, or the rule that leaves out a private "
              "conversation's had no effect). Run update on your PC: it adds the audit rules UVMC needs "
              "(/etc/audit/rules.d/uvmc.rules).")
@@ -80,6 +80,10 @@ def self_check(cfg, spare_user: str, wait: float = 6.0) -> list[str]:
                             + (p.stderr.decode(errors="replace").strip()[:300] or f"exit code {p.returncode}"))
     except Exception as e:   # noqa: BLE001
         problems.append(f"The check's test command didn't run: {e}")
+    try:   # a file command as the supervisor runs them (its paths name a conversation's files)
+        root(["test", "-e", f"/{marker}"], timeout=15)
+    except Exception as e:   # noqa: BLE001
+        problems.append(f"The check's file command didn't run: {e}")
     in_journal = in_audit = False
     deadline = time.time() + wait
     while True:

@@ -519,14 +519,16 @@ WantedBy=multi-user.target
 EOF
 
 # --- activity log: record every program the agent starts --------------------------
-# The last rule: sudo writes each command it runs into the audit log too (USER_CMD, the whole
-# command line), and every tool call goes through the supervisor's sudo, so the agent's scripts
-# would stay there. UVMC's run logs have them; a private conversation's must not stay anywhere
-# (private.py checks it at every start).
+# gid= also matches supplementary groups, and the supervisor's user is in the agent's group (to
+# reach the copies), so it is left out by uid: otherwise every command the supervisor runs, with
+# the agent's scripts in its sudo calls, would be recorded. The last rule: sudo writes each command
+# it runs into the audit log too (USER_CMD, the whole command line). UVMC's run logs have them; a
+# private conversation's must not stay anywhere (private.py checks it at every start).
+OWNER_UID="$(id -u "$OWNER")"
 cat > /etc/audit/rules.d/uvmc.rules <<EOF
--a always,exit -F arch=b64 -S execve -F gid=$AGENT_GID -k uvmc-agent
--a always,exit -F arch=b32 -S execve -F gid=$AGENT_GID -k uvmc-agent
--a exclude,always -F msgtype=USER_CMD -F uid=$(id -u "$OWNER")
+-a always,exit -F arch=b64 -S execve -F gid=$AGENT_GID -F uid!=$OWNER_UID -k uvmc-agent
+-a always,exit -F arch=b32 -S execve -F gid=$AGENT_GID -F uid!=$OWNER_UID -k uvmc-agent
+-a exclude,always -F msgtype=USER_CMD -F uid=$OWNER_UID
 EOF
 usermod -aG adm "$OWNER"
 sed -i 's/^log_group *=.*/log_group = adm/' /etc/audit/auditd.conf
@@ -537,11 +539,23 @@ chmod 640 /var/log/audit/audit.log 2>/dev/null || true
 
 # --- the system log keeps no agent commands -----------------------------------------
 # Every tool call goes through the supervisor's sudo, whose log line would hold the whole
-# command (the agent's script) in journald. UVMC's own run logs already have them, and a
-# private conversation's must not stay anywhere (supervisor/uvmc/private.py checks this at
-# every start). Refused sudo calls are still logged.
+# command (the agent's script) in journald, and its file operations name the files. UVMC's own
+# run logs already have them, and a private conversation's must not stay anywhere
+# (supervisor/uvmc/private.py checks this at every start). So sudo doesn't log only these
+# commands: the three that carry the agent's scripts and the file commands the supervisor runs
+# with paths (keep the list in step with root()/_run() calls in supervisor/uvmc). Every other
+# sudo use (package installs, editors, sudo -i, services, users) is logged as usual, and refused
+# calls always are. Later: the supervisor as its own user, so this applies to it alone (design.md 7o).
 QUIET=/etc/sudoers.d/uvmc-quiet
-printf '# Written by UVMC setup: the supervisor'"'"'s sudo calls carry the agent'"'"'s commands.\nDefaults:%s !log_allowed\n' "$OWNER" > "$QUIET.new"
+cat > "$QUIET.new" <<'QEOF'
+# Written by UVMC setup: these commands, as the supervisor runs them, carry the agent's scripts
+# or the names of a conversation's files, so sudo doesn't log them.
+Cmnd_Alias UVMC_QUIET = /usr/bin/systemd-run, /usr/bin/setpriv, /usr/bin/env, \
+    /usr/bin/install, /usr/bin/rm, /usr/bin/rmdir, /usr/bin/mv, /usr/bin/stat, /usr/bin/rsync, \
+    /usr/bin/find, /usr/bin/chown, /usr/bin/chmod, /usr/bin/chgrp, /usr/bin/cat, \
+    /usr/bin/setfacl, /usr/bin/test
+Defaults!UVMC_QUIET !log_allowed
+QEOF
 chmod 440 "$QUIET.new"
 if visudo -cf "$QUIET.new" >/dev/null; then
   mv -f "$QUIET.new" "$QUIET"
