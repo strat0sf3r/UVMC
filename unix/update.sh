@@ -4,6 +4,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 multipass start uvmc
+# The lock (panel) keeps every program on this computer out of the VM, this one too.
+if ! multipass exec uvmc -- true >/dev/null 2>&1; then
+  echo "UVMC doesn't let this computer in: it's probably locked. Unlock it in the panel (or restart the VM: multipass restart uvmc), then run update again." >&2
+  exit 1
+fi
 multipass exec uvmc -- rm -rf /tmp/supervisor
 # Sent through tar on stdin, so a sandboxed (snap) Multipass can read it from anywhere.
 tar --exclude='__pycache__' -cf - supervisor | multipass exec uvmc -- tar -C /tmp -xf -

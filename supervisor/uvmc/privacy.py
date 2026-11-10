@@ -82,11 +82,16 @@ def on_pc(base_url: str) -> bool:
     return "{pc}" in base_url or base_url.startswith(("http://localhost", "http://127.0.0.1"))
 
 
+def pc_model(profile) -> bool:
+    """A model on the PC, through the OpenAI-compatible connection local-model sets up (never a
+    provider online, never Claude Code). The only kind used while the VM is locked (lock.py)."""
+    return profile.provider == "openai" and on_pc(profile.base_url or "")
+
+
 def private_ok(profile) -> bool:
-    """Whether a model profile may run a private conversation: only a model on the PC, through
-    the OpenAI-compatible connection local-model sets up (never a provider online, never Claude
-    Code), at level local."""
-    return profile.provider == "openai" and on_pc(profile.base_url or "") and profile.level == "local"
+    """Whether a model profile may run a private conversation restricted to the PC: a model on
+    the PC at level local."""
+    return pc_model(profile) and profile.level == "local"
 
 
 def suggest(provider: str, base_url: str) -> str:

@@ -207,6 +207,9 @@ main {
 .banner button { margin-left: 8px; }
 .banner[hidden] { display: none; }
 .banner.bad { background: var(--bad-bg); }
+.lockbtn { align-self: center; padding: 4px 10px; font-size: 14px; }
+.lockbtn[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); font-weight: 700; }
+.conv .waits { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 /* Feed: one thread of steps ------------------------------------------------ */
 #feed {
@@ -648,6 +651,7 @@ pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; ove
   <span class="meta" id="tokens"></span>
   <span class="conn" id="conn" hidden>Reconnecting to the machine…</span>
   <span class="spacer"></span>
+  <button class="btn lockbtn" id="lockBtn" type="button" aria-pressed="false" hidden title="Close the VM to every program on your PC, and use only the model on your PC">Lock</button>
   <label class="picker"><span>Model</span><select id="model" aria-label="Model you talk to"></select></label>
   <label class="picker"><span>Worker</span><select id="worker" aria-label="Model that does the work"></select></label>
 </header>
@@ -661,6 +665,7 @@ pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; ove
     </nav>
     <div class="folderbar" id="folderbar" hidden></div>
     <div>
+      <p class="banner" id="lockBanner" hidden>Locked: no program on your PC can reach the VM (Multipass, scripts, AI agents, you in a terminal), and only the model on your PC works. Restarting the VM unlocks it.</p>
       <p class="banner" id="keyBanner" hidden></p>
       <p class="banner bad" id="memBanner" role="alert" hidden><span id="memText"></span><button class="btn" id="memClose" type="button">Dismiss</button></p>
       <p class="banner" id="pastBanner" hidden><span id="pastText"></span><button class="btn" id="backLive" type="button">Back to the live conversation</button></p>
@@ -1905,7 +1910,7 @@ function renderConvs() {
     const privacyText = where ? `, on ${where}, ${c.level}` : "";   // its projects and privacy level
     tab.innerHTML = `<button type="button" class="pick" role="tab" data-conv="${esc(c.id)}" aria-selected="${selected}"
         title="${esc(title)} (${esc(c.model_label)}${esc(privacyText)})${words[state] || ""}"><span class="dot" aria-hidden="true"></span>
-        <span class="title">${esc(title)}</span>${c.private ? `<span class="private" title="${esc(privateWords(c))}">private</span>` : ""}${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
+        <span class="title">${esc(title)}</span>${c.private ? `<span class="private" title="${esc(privateWords(c))}">private</span>` : ""}${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}${c.waits_for_unlock ? '<span class="waits" title="UVMC is locked and this conversation uses a model that is not on your PC">waits for unlock</span>' : ""}
         <span class="visually-hidden">${words[state] || ""}</span></button>
       <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="${c.private ? "Close and erase this private conversation" : "Close this conversation (it stays under Runs)"}" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
     tab.querySelector(".pick").addEventListener("click", () => {
@@ -2008,6 +2013,53 @@ async function closeConv(id, discard = false, erase = false) {
   }
   add(el("div", "item err", `<div class="box">${esc(r.error || r.detail || "Closing failed.")}</div>`));
 }
+
+// The lock (lock.py): the VM closed to the PC, only the model on the PC. A PIN to lock and to unlock.
+let lockState = null;
+function showLock(lv) {
+  if (!lv) return;
+  lockState = lv;
+  const b = $("lockBtn");
+  b.hidden = !lv.available;
+  b.textContent = lv.locked ? "Locked" : "Lock";
+  b.setAttribute("aria-pressed", String(lv.locked));
+  b.title = lv.locked ? "UVMC is locked. Click to unlock it (your PIN)." : "Close the VM to every program on your PC, and use only the model on your PC (your PIN)";
+  $("lockBanner").hidden = !lv.locked;
+  if (lv.released_by_restart) {
+    add(el("div", "item line", "The VM was restarted, which released the lock: UVMC is unlocked."));
+    api("/api/lock/seen", {}).catch(() => {});
+    lv.released_by_restart = false;
+  }
+}
+function lockCard() {
+  $("lockCard")?.remove();
+  const lv = lockState || {};
+  const on = !lv.locked, first = on && !lv.pin_set;
+  const n = el("div", "item ask");
+  n.id = "lockCard";
+  n.innerHTML = `<div class="box"><h3>${on ? "Lock UVMC?" : "Unlock UVMC?"}</h3>
+    <p class="why">${on ? "No program on your PC will reach the VM (Multipass, update, scripts, AI agents, you in a terminal), and only the model on your PC will work: tasks on other models stop. The panel and the model on your PC keep working. Restarting the VM unlocks it."
+      : "Programs on your PC can reach the VM again, and every model works again."}</p>
+    <form class="inline-form" data-form>
+      <label>${first ? "Choose a PIN" : "PIN"} <input type="password" data-pin autocomplete="off" minlength="4" maxlength="64" required></label>
+      ${first ? '<label>The same PIN again <input type="password" data-pin2 autocomplete="off" required></label>' : ""}
+      <p class="small form-msg">${first ? "You'll need it to lock and to unlock. It's kept only as a hash in the VM; if you forget it, restart the VM to unlock." : ""}</p>
+      <div class="actions"><button type="submit" class="btn primary">${on ? "Lock" : "Unlock"}</button><button type="button" class="btn" data-cancel>Cancel</button></div>
+    </form></div>`;
+  n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
+  n.querySelector("[data-form]").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = n.querySelector(".form-msg"), pin = n.querySelector("[data-pin]").value;
+    if (first && pin !== n.querySelector("[data-pin2]").value) { msg.classList.add("bad"); msg.textContent = "The two PINs differ."; return; }
+    const btn = n.querySelector("button[type=submit]");
+    btn.disabled = true;
+    try { showLock(await api("/api/lock", { on, pin })); n.remove(); refreshConvsSoon(); }
+    catch (err) { msg.classList.add("bad"); msg.textContent = err.message; btn.disabled = false; }
+  });
+  add(n);
+  n.querySelector("[data-pin]").focus();
+}
+$("lockBtn").addEventListener("click", lockCard);
 
 // What closing a private conversation couldn't remove (also after a restart), told once.
 let privateLeftShown = 0;
@@ -2200,6 +2252,7 @@ function connect() {
     refreshReportCounts();
     refreshUpdatesDot();
     if (s.private?.left?.length) privateNotice();
+    showLock(s.lock);
   });
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
@@ -2209,6 +2262,7 @@ function connect() {
     if (ev.kind === "tool_run") { toolRunEnded(ev); return; }
     if (ev.kind === "updates") { updatesNotice(ev); return; }
     if (ev.kind === "private") { privateNotice(); return; }
+    if (ev.kind === "lock") { api("/api/lock").then(showLock).catch(() => {}); refreshConvsSoon(); return; }
     if (ev.kind === "shared_folder") { refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "plan_usage") { planUsage = ev; showTokens(); }
     if (ev.kind === "memory_full") memoryAlert(ev);

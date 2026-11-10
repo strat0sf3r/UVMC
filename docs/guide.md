@@ -244,6 +244,17 @@ A conversation that leaves nothing behind in UVMC once you close it ([private.py
 - **What stays anyway:** files you bring into the main folder (and the main folder's undo points, the last 20), tools you approve, files it writes into a folder shared from your PC once you allow it, and deleted data on the disk until it is overwritten (UVMC deletes files; it doesn't shred them). Files it brings into a less private place than local are held for your review, as for any conversation that has seen local files.
 - The API: `POST /api/conversations` with `"private": true` and optionally `"private_options": {"offline": false, "pc_only": false, "sealed": false}` (each true unless given false); `POST /api/conversations/close` answers 409 with `"confirm"` until you send `"erase": true`, and with `"unsaved"` and `"sealed"` when it keeps changed files to itself (send `"discard": true, "erase": true` to erase everything, or `POST /api/conversations/keep` to keep them and bring them in). A private conversation takes tasks from the panel only: not from `/api/run`, never from the Claude apps.
 
+## The lock
+
+The **Lock** button in the panel's header closes the VM to every program on your PC and keeps every conversation on the model on your PC ([lock.py](../supervisor/uvmc/lock.py), step 7q in design.md). Use it with private conversations when nothing should get in or out.
+
+- **A PIN to lock and to unlock.** You choose it the first time you lock; it's kept only as a hash in the VM, and wrong PINs are slowed down (after 3, each try waits longer, up to 5 minutes). If you forget it, restart the VM.
+- **While locked, no program on your PC gets in:** Multipass (`exec`, `shell`, `transfer`, new `mount`s), `update` (it says the VM is locked), the PC's other scripts, the Claude apps' UVMC tools, any AI agent, and you in a terminal. Open sessions from the PC are ended. Shared folders already mounted stay. How: everything from the PC comes in by SSH as `ubuntu` with Multipass's key, and SSH reads that key from a file in memory (`/run/uvmc-ssh/ubuntu.keys`) that the lock empties (`uvmc-lock`); root can't log in by SSH at all.
+- **While locked, only the model on your PC works,** for every conversation, normal or private, and their workers: conversations on another model show "waits for unlock" and can't start a task; a task running on one is stopped when you lock; Claude Code's idle processes are closed. The panel and the model on your PC keep working (the VM calls the PC, not the other way). The agents' internet isn't changed by the lock: each conversation keeps its own rules.
+- **Restarting the VM always unlocks it** (`multipass restart uvmc`): your way back if the panel can't be reached. Any program on the PC can restart the VM, so the lock isn't proof against that: a restart erases private conversations, normal ones come back readable. The panel tells you when a restart released the lock.
+- **What it isn't:** a wall against what is already inside the VM as `ubuntu` or root (until step 7o), or against an administrator on the PC, who can read the VM's disk and memory.
+- The API: `GET /api/lock`; `POST /api/lock` with `{"on": true|false, "pin": "..."}` (403 for a wrong PIN or while tries are slowed down).
+
 ## Keeping UVMC up to date
 
 UVMC is built from parts made by others. None of them updates by itself into something untested: each version is pinned, and you choose when to move. **Settings > Updates** in the panel shows what is behind (since 0.16.2).

@@ -39,6 +39,7 @@ from .checkpoints import Checkpoints
 from .executor import (agent_users, clean_user, conversation_slice, kill_all_agent_processes, kill_slice, make_executor,
                        no_sudo, oom_kills, root, slice_of_pid, slice_usage)
 from .executor import SLICE as SLICE_AGENT
+from .lock import Lock, LockError
 from .log import ChildLog, RunLog, read_log
 from .made_tools import GET_CODE_SPEC, PROPOSE_SPEC, ToolBox, ToolError
 from .workcopies import CONTEXT_DIR, MERGE_DIR, SyncError, WorkCopies
@@ -252,6 +253,8 @@ class Controller:
                             on_run=lambda name, record: self._broadcast(
                                 {"kind": "tool_run", **self.made.result(name, record["id"])}))
         # newer versions of UVMC's parts, for Settings > Updates (a notice the first time one is seen)
+        # The lock: the VM closed to the PC, only the model on the PC used (lock.py)
+        self.vm_lock = Lock(cfg.state_dir)
         self.updates = Updates(cfg.state_dir, claude_version=self.claude_version,
                                notify=lambda items: self._broadcast({"kind": "updates", "new": items}))
         self.copies = WorkCopies(cfg)             # each conversation's own copy of the work folder
@@ -631,6 +634,38 @@ class Controller:
         return c
 
     # --- privacy: projects and levels (privacy.py) ---------------------------------------------
+
+    # --- the lock (lock.py) ----------------------------------------------------------------
+
+    def model_allowed(self, profile: Profile) -> bool:
+        """While the VM is locked, only the model on the PC is used."""
+        return privacy.pc_model(profile) or not self.vm_lock.locked
+
+    def _locked_text(self, profile: Profile) -> str:
+        return (f"UVMC is locked: only the model on your PC works, and {profile.label} isn't it. Unlock it in "
+                "the panel, or switch this conversation to the model on your PC.")
+
+    def set_lock(self, on: bool, pin: str) -> dict:
+        """Locks or unlocks the VM (the PIN both ways; the first lock sets it). Locking stops the
+        tasks that use another model and closes Claude Code's idle processes."""
+        self.vm_lock.set(on, pin)
+        if on:
+            for c in list(self.running()):
+                profiles = [self.cfg.profile(c.model)] + [w.profile for w in c.running_jobs()]
+                if not all(privacy.pc_model(p) for p in profiles):
+                    c.log.event("notice", text="Stopped: UVMC was locked, and this task uses a model that isn't on "
+                                               "your PC.")
+                    self.stop(c.id)
+            with self.lock:
+                for c in self.convs.values():
+                    if not c.busy and c.session.brain is not None:
+                        c.session.close()
+        text = ("UVMC is locked: no program on your PC can reach the VM, and only the model on your PC works."
+                if on else "UVMC is unlocked.")
+        for c in list(self.convs.values()):
+            c.log.event("notice", text=text)
+        self._broadcast({"kind": "lock"})
+        return self.vm_lock.view()
 
     def _check_private(self, profile: Profile, pc_only: bool = True) -> None:
         """A private conversation may start: the machine was checked, and (pc_only) the model is on the PC."""
@@ -1201,6 +1236,7 @@ class Controller:
                         "created": c.created, "last_active": c.last_active, "current": c.id == self.current,
                         "projects": [{"name": n, "label": self._project_label(n)} for n in c.projects],
                         "level": c.level, "seen": c.seen, "private": c.private, "private_opts": dict(c.opts) if c.private else None, "sealed": c.sealed,
+                        "waits_for_unlock": c.model in self.cfg.models and not self.model_allowed(self.cfg.profile(c.model)),
                         "ceiling": self.cfg.models[c.model].level if c.model in self.cfg.models else "open"})
         return out
 
@@ -1702,6 +1738,8 @@ class Controller:
         if name not in self.allowed_workers():
             return f"'{name}' is not an allowed worker. Choose one of: {', '.join(self.allowed_workers())}.", True
         profile = self.cfg.profile(name)
+        if not self.model_allowed(profile):
+            return (f"UVMC is locked: only the model on the user's PC works, and {profile.label} isn't it.", True)
         if c.pc_only and not privacy.private_ok(profile):
             return (f"This is a private conversation: its workers can only be the model on the user's PC, and "
                     f"{profile.label} isn't.", True)
@@ -1975,6 +2013,7 @@ class Controller:
             "network": self.proxy is not None,
             "activity": bool(self.watcher and self.watcher.available),
             "private": self.private_view(),
+            "lock": self.vm_lock.view(),
         }
 
     def pending_public(self, cid: str | None = None):
@@ -1999,6 +2038,9 @@ class Controller:
             if self.pool_missing:
                 raise Busy(f"Run update on your PC first: this version gives each conversation its own user, "
                            f"and {self.pool_missing} doesn't exist yet.")
+            profile = self.cfg.profile(c.model) if c.model in self.cfg.models else None
+            if profile is not None and not self.model_allowed(profile):
+                raise Busy(self._locked_text(profile))
             working = len(self.running())
             if working >= self.cfg.conv_max_running:
                 raise Busy(f"{working} conversations are already working, the most at once "
@@ -2018,6 +2060,9 @@ class Controller:
     def _run(self, c: Conversation, text: str) -> None:
         try:
             profile = self.cfg.profile(c.model)
+            if not self.model_allowed(profile):
+                c.log.event("error", text=self._locked_text(profile))
+                return
             try:
                 client = self.provider_factory(profile)
             except ProviderError as e:
@@ -3162,6 +3207,27 @@ def create_app(ctl: Controller, token: str | None):
             fail(409, str(e))
         except KeyError as e:
             fail(400, str(e.args[0] if e.args else e))
+
+    @app.get("/api/lock")
+    def lock_view():
+        return ctl.vm_lock.view()
+
+    @app.post("/api/lock")
+    async def lock_set(request: Request):
+        """Locks ({"on": true, "pin": ...}) or unlocks ({"on": false, "pin": ...}) the VM: closed to
+        every program on the PC, only the model on the PC used (lock.py). The first lock sets the
+        PIN. 403 for a wrong PIN or while wrong tries are slowed down."""
+        body = await request.json()
+        try:
+            return await run_in_threadpool(ctl.set_lock, bool(body.get("on")), str(body.get("pin") or ""))
+        except LockError as e:
+            fail(403, str(e))
+
+    @app.post("/api/lock/seen")
+    def lock_seen():
+        """The panel showed that a restart released the lock."""
+        ctl.vm_lock.forget_restart()
+        return {"ok": True}
 
     @app.post("/api/stop")
     async def stop(request: Request):

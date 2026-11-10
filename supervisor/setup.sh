@@ -736,6 +736,73 @@ for dir in /tmp /var/tmp; do
   fi
 done
 
+# --- the lock: the VM closed to the PC (supervisor/uvmc/lock.py) ----------------------
+# Everything on the PC (Multipass exec/shell/transfer/mount, the scripts, any program or AI
+# agent) comes in by SSH as ubuntu with Multipass's key. SSH reads that user's keys from a file
+# in memory, copied from ~/.ssh/authorized_keys at every boot (so restarting the VM always
+# unlocks it: the way back if the panel can't). uvmc-lock empties it (lock) or copies it back.
+# The panel and the model on the PC keep working: the VM calls the PC, not the other way.
+LOCK_USER=ubuntu
+cat > /etc/tmpfiles.d/uvmc-ssh.conf <<EOF
+d /run/uvmc-ssh 0755 root root -
+C /run/uvmc-ssh/$LOCK_USER.keys 0644 root root - /home/$LOCK_USER/.ssh/authorized_keys
+EOF
+cat > /usr/local/sbin/uvmc-lock <<'LEOF'
+#!/bin/bash
+# UVMC: closes (on) or opens (off) the VM to every program on the PC. Written by setup.sh.
+set -u
+U=ubuntu
+KEYS=/run/uvmc-ssh/$U.keys
+SRC=/home/$U/.ssh/authorized_keys
+serves_folder() {   # a session carrying a shared folder (Multipass's sshfs): left alone
+  local c
+  for c in $(pgrep -P "$1"); do
+    case "$(tr '\0' ' ' < "/proc/$c/cmdline" 2>/dev/null)" in *multipass-sshfs*|*"sshfs -o slave"*) return 0 ;; esac
+    serves_folder "$c" && return 0
+  done
+  return 1
+}
+case "${1:-status}" in
+  on)
+    install -d -m 755 -o root -g root /run/uvmc-ssh || exit 1
+    : > "$KEYS.new" && chmod 644 "$KEYS.new" && mv -f "$KEYS.new" "$KEYS" || exit 1
+    # Open sessions end too (an open connection could carry new commands), except shared folders.
+    for pid in $(pgrep -u "$U" -f "^sshd: $U@"); do
+      serves_folder "$pid" || kill -TERM "$pid" 2>/dev/null
+    done ;;
+  off)
+    install -d -m 755 -o root -g root /run/uvmc-ssh || exit 1
+    install -m 644 -o root -g root "$SRC" "$KEYS.new" && mv -f "$KEYS.new" "$KEYS" || exit 1 ;;
+  status)
+    if [ ! -e "$KEYS" ]; then echo unavailable; elif [ -s "$KEYS" ]; then echo open; else echo locked; fi ;;
+  *) echo "usage: uvmc-lock on|off|status" >&2; exit 2 ;;
+esac
+LEOF
+chmod 755 /usr/local/sbin/uvmc-lock
+# Fill the file now (open), and only point SSH at it once it holds the key and the config passes.
+systemd-tmpfiles --create /etc/tmpfiles.d/uvmc-ssh.conf >/dev/null 2>&1 || true
+[ -s "/run/uvmc-ssh/$LOCK_USER.keys" ] || /usr/local/sbin/uvmc-lock off
+SSHD_LOCK=/etc/ssh/sshd_config.d/10-uvmc-lock.conf
+if [ -s "/run/uvmc-ssh/$LOCK_USER.keys" ] && cmp -s "/run/uvmc-ssh/$LOCK_USER.keys" "/home/$LOCK_USER/.ssh/authorized_keys"; then
+  cat > "$SSHD_LOCK.new" <<EOF
+# Written by UVMC setup: the lock (supervisor/uvmc/lock.py). No root login; $LOCK_USER's keys
+# come from a file in memory that the lock empties.
+PermitRootLogin no
+Match User $LOCK_USER
+    AuthorizedKeysFile /run/uvmc-ssh/%u.keys
+EOF
+  mv -f "$SSHD_LOCK.new" "$SSHD_LOCK"
+  if sshd -t 2>/dev/null; then
+    systemctl reload ssh >/dev/null 2>&1 || systemctl reload ssh.service >/dev/null 2>&1 || true
+  else
+    rm -f "$SSHD_LOCK"
+    say "Warning: SSH didn't accept the lock's settings, so the lock is off (the panel says so)."
+  fi
+else
+  rm -f "$SSHD_LOCK"
+  say "Warning: the lock's key file couldn't be made, so the lock is off (the panel says so)."
+fi
+
 # --- start -------------------------------------------------------------------------
 if [ -d /run/systemd/system ]; then
   systemctl enable uvmc.service >/dev/null 2>&1
