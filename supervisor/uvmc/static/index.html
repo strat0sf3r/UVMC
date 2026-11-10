@@ -418,8 +418,13 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .mtool details summary { margin: 0; font-size: 14px; }
 .mtool .setup { background: var(--signal-bg); border-radius: 6px; padding: 8px 10px; font-size: 14px; white-space: pre-wrap; margin: 8px 0; }
 .mtool .pform { margin: 8px 0; }
-.mtool.unofficial { border-color: var(--signal); }
-.mtool > details > summary.top { cursor: pointer; list-style-position: inside; }
+.mtool > details > summary.top { cursor: pointer; list-style: none; }
+.mtool > details > summary.top::-webkit-details-marker { display: none; }
+.mtool > details > summary.top::before { content: "\25B8"; color: var(--muted); }
+.mtool > details[open] > summary.top::before { content: "\25BE"; }
+.mtool .tag-unc { font-size: 12px; color: var(--signal); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+.more-local { margin: 10px 0; }
+.more-local > summary { cursor: pointer; font-size: 14px; font-weight: 600; }
 .mtool table.sizes { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
 .mtool table.sizes th { text-align: left; font-weight: 600; color: var(--muted); padding: 2px 6px 2px 0; }
 .mtool table.sizes td { padding: 5px 6px 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
@@ -3018,17 +3023,20 @@ function localSizeRow(s, m) {
     <td class="nw">${esc(String(s.size_gb))} GB</td><td><span class="nw">card ${esc(String(s.card_gb))} GB</span><br><span class="nw">Mac ${esc(String(s.mac_gb))} GB</span></td>
     <td>${state}<br>${act}</td></tr>${need}`;
 }
-function localFamily(f, m) {
+// A model's card, closed until clicked, with only the sizes given (on the PC, or still to add).
+// `where` keeps cards apart in the two lists, so a card stays open when the list is redrawn.
+function localFamily(f, sizes, m, where) {
   const kind = KIND_TEXT[f.kind] ? KIND_TEXT[f.kind](f) : "";
-  const mine = f.sizes.some(s => m.status[s.id] || s.id === m.picked);
-  return `<li class="mtool${f.kind === "uncensored" ? " unofficial" : ""}"><details${f.recommended || mine ? " open" : ""}>
-    <summary class="top"><strong>${esc(f.label)}</strong>${f.recommended ? `<span class="chip on">recommended</span>` : ""}<span class="ver">${esc(f.maker)}</span></summary>
-    <p class="desc">${esc(f.about)} <span class="when">${esc(kind)}.</span></p>
+  const key = `${where}:${f.id}`;
+  return `<li class="mtool"><details data-local-card="${esc(key)}"${localOpen.has(key) ? " open" : ""}>
+    <summary class="top"><strong>${esc(f.label)}</strong>${f.kind === "uncensored" ? `<span class="tag-unc" title="${esc(kind)}">uncensored</span>` : ""}${f.recommended ? `<span class="chip on">recommended</span>` : ""}</summary>
+    <p class="desc">${esc(f.about)} <span class="when">${esc(f.maker)}; ${esc(kind)}.</span></p>
     <p class="desc"><strong>Good:</strong> ${esc(f.good)}</p>
     <p class="desc"><strong>Weak:</strong> ${esc(f.weak)}</p>
     <table class="sizes"><thead><tr><th>Size</th><th>Download</th><th>Needs</th><th></th></tr></thead>
-      <tbody>${f.sizes.map(s => localSizeRow(s, m)).join("")}</tbody></table></details></li>`;
+      <tbody>${sizes.map(s => localSizeRow(s, m)).join("")}</tbody></table></details></li>`;
 }
+const localOpen = new Set();   // cards (and the "more" list) the user opened, kept across redraws
 function localOwn(x, m) {
   const act = x.id === m.in_use ? `<span class="plan-ok">&#10003; in use</span>`
     : `<button class="btn" type="button" data-use-local="${esc(x.id)}" data-have="1">Select</button>`;
@@ -3052,8 +3060,17 @@ async function loadLocalModel() {
     body = `<p class="plan-ok">&#10003; Running on your PC${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}${m.context ? `; holds ${m.context.toLocaleString()} tokens of conversation` : ""}. ${using}</p>
       <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header; the model it runs is chosen here, for every conversation, from the next message on. Switching loads the new one on the card (a few seconds). Local models are slower and less capable than Claude: give them small tasks, and start a new conversation when one says it's too long.</p>
       <p class="small">${hwText}</p>
-      <ul class="mtools">${(m.families || []).map(f => localFamily(f, m)).join("")}
-      ${own.length ? `<li class="mtool"><div class="top"><strong>Your own models</strong></div><table class="sizes"><tbody>${own.map(x => localOwn(x, m)).join("")}</tbody></table></li>` : ""}</ul>
+      ${(() => {
+        // A model with a size on the PC (downloaded, or picked and waiting to be) is shown, with all
+        // its sizes; the models with none go under "More models you can add".
+        const here = f => f.sizes.some(s => m.status[s.id] || s.id === m.picked);
+        const fams = m.families || [];
+        const mine = fams.filter(here), more = fams.filter(f => !here(f));
+        return `<ul class="mtools">${mine.map(f => localFamily(f, f.sizes, m, "pc")).join("")}
+          ${own.length ? `<li class="mtool"><div class="top"><strong>Your own models</strong></div><table class="sizes"><tbody>${own.map(x => localOwn(x, m)).join("")}</tbody></table></li>` : ""}</ul>
+          ${more.length ? `<details class="more-local" data-local-card="more"${localOpen.has("more") ? " open" : ""}><summary>More models you can add (${more.length})</summary>
+            <ul class="mtools">${more.map(f => localFamily(f, f.sizes, m, "add")).join("")}</ul></details>` : ""}`;
+      })()}
       <p class="small">On your PC: ${run} -Add <em>name</em> downloads a size (the name is in ${run} -List), ${run} -AddFile <em>file.gguf</em> adds your own, ${run} -Delete <em>name</em> deletes one, ${run} -Update gets the newest llama.cpp.</p>`;
   } else if (m.running && m.key_ok) {
     body = `<p class="plan-ok">&#10003; Running: <strong>${esc(m.model || m.file)}</strong>${m.file && m.model ? ` (${esc(m.file)})` : ""}, holds ${m.context.toLocaleString()} tokens of conversation${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}.</p>
@@ -3067,6 +3084,9 @@ async function loadLocalModel() {
   }
   box.innerHTML = `<h3>Models on your PC</h3>${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
   $("localCheck").addEventListener("click", loadLocalModel);
+  box.querySelectorAll("[data-local-card]").forEach(d => d.addEventListener("toggle", () => {
+    if (d.open) localOpen.add(d.dataset.localCard); else localOpen.delete(d.dataset.localCard);
+  }));
   box.querySelectorAll("[data-use-local]").forEach(b => b.addEventListener("click", async () => {
     b.disabled = true; b.textContent = b.dataset.have ? "Switching..." : "Saving...";
     try { await api("/api/local-model", { model: b.dataset.useLocal }); }

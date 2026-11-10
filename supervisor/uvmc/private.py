@@ -44,8 +44,9 @@ from .executor import SLICE, make_executor, no_sudo, root
 
 JOURNAL_FIX = ("The system log (journald) keeps the agent's commands. Run update on your PC: it sets sudo not to "
                "log the supervisor's commands (/etc/sudoers.d/uvmc-quiet).")
-AUDIT_FIX = ("The audit log keeps a private conversation's commands: the rule that should leave them out had no "
-             "effect.")
+AUDIT_FIX = ("The audit log keeps the agent's commands (sudo's own records, or the rule that leaves out a private "
+             "conversation's had no effect). Run update on your PC: it adds the audit rules UVMC needs "
+             "(/etc/audit/rules.d/uvmc.rules).")
 
 
 def _audit_tail(limit: int = 4_000_000) -> str:

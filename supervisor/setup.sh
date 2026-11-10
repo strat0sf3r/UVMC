@@ -519,9 +519,14 @@ WantedBy=multi-user.target
 EOF
 
 # --- activity log: record every program the agent starts --------------------------
+# The last rule: sudo writes each command it runs into the audit log too (USER_CMD, the whole
+# command line), and every tool call goes through the supervisor's sudo, so the agent's scripts
+# would stay there. UVMC's run logs have them; a private conversation's must not stay anywhere
+# (private.py checks it at every start).
 cat > /etc/audit/rules.d/uvmc.rules <<EOF
 -a always,exit -F arch=b64 -S execve -F gid=$AGENT_GID -k uvmc-agent
 -a always,exit -F arch=b32 -S execve -F gid=$AGENT_GID -k uvmc-agent
+-a exclude,always -F msgtype=USER_CMD -F uid=$(id -u "$OWNER")
 EOF
 usermod -aG adm "$OWNER"
 sed -i 's/^log_group *=.*/log_group = adm/' /etc/audit/auditd.conf
