@@ -13,7 +13,7 @@
       "weak": "Loses the thread on longer tasks. Follows China's rules on political topics."
     },
     "qwen3.5-9b": {
-      "label": "Qwen3.5 9B", "family": "Qwen", "maker": "Alibaba (China)",
+      "label": "Qwen3.5 9B (recommended)", "family": "Qwen", "maker": "Alibaba (China)",
       "kind": "quantized", "by": "Unsloth",
       "repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q4_K_M.gguf",
       "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
@@ -113,7 +113,7 @@
       "weak": "Unofficial, from one anonymous uploader who doesn't say how it is made. Doesn't refuse, but still gives Beijing's line: in our test it called Taiwan a region of China and skipped the 1989 crackdown. No brakes of its own: UVMC's approvals are the brakes."
     },
     "gemma4-e4b-uncensored": {
-      "label": "Gemma 4 E4B uncensored (recommended)", "family": "Gemma", "maker": "Google (USA)",
+      "label": "Gemma 4 E4B uncensored", "family": "Gemma", "maker": "Google (USA)",
       "kind": "uncensored", "by": "huihui-ai",
       "repo": "huihui-ai/Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-GGUF", "file": "Huihui-gemma-4-E4B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf",
       "sha256": "64434f2da081f912729e5c4732def7303eb5244d3fee493b9675bc4e9af52d4c",
