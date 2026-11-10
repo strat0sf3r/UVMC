@@ -325,6 +325,9 @@ main {
 }
 .composer .buttons { display: flex; gap: 8px; }
 .composer .hint { grid-column: 1 / -1; font-size: 13px; color: var(--muted); margin: 0; }
+.compactbox { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+.compactbox p { margin: 4px 0 8px; }
+.compactbox .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
 
 /* Side panel -------------------------------------------------------------- */
 aside { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: var(--surface); }
@@ -681,6 +684,14 @@ pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; ove
         <div class="buttons">
           <button class="btn primary" id="runBtn" type="submit">Run</button>
           <button class="btn stop" id="stopBtn" type="button" hidden>Stop</button>
+          <button class="btn" id="compactBtn" type="button" aria-expanded="false" aria-controls="compactBox" hidden title="Make the conversation take less of the model's memory">Compact</button>
+        </div>
+        <div class="compactbox" id="compactBox" hidden>
+          <p>The model on your PC holds only so much of the conversation. Compacting makes the history it gets shorter; this panel keeps showing all of it, and the agent can read anything shortened with <strong>recall</strong>.</p>
+          <div class="row"><button class="btn" id="trimBtn" type="button">Trim old outputs</button><span class="small">At once: long command outputs and file contents, except the latest 3, become a short note.</span></div>
+          <div class="row"><button class="btn" id="summaryBtn" type="button">Summarize</button><span class="small">The model writes a summary that replaces the history (your last task and its answer stay as they are). Takes a while; Stop leaves the conversation as it was.</span></div>
+          <div class="row"><label class="small"><input type="checkbox" id="summaryCheck"> Check the summary once more for left-out details (slower)</label></div>
+          <div class="row"><button class="btn" id="compactCancel" type="button">Close</button><span class="small" id="compactMsg" role="status"></span></div>
         </div>
         <p class="hint">Enter runs the task, Shift+Enter starts a new line. Follow-up tasks continue the same conversation.</p>
       </form>
@@ -872,7 +883,44 @@ function showTokens() {
   t.className = "meta";
   t.title = "";
   t.textContent = view.tokens ? `${view.tokens.toLocaleString()} tokens this conversation` : "";
+  const c = ctxInfo;
+  if (c && c.compact && c.tokens) {   // the model on the PC: how full its context is
+    const share = c.size ? c.tokens / c.size : 0;
+    t.textContent += `${t.textContent ? " · " : ""}context ${c.estimated ? "about " : ""}${c.tokens.toLocaleString()}${c.size ? " of " + c.size.toLocaleString() : ""}`;
+    t.title = "What the model on your PC holds of this conversation. Compact (next to Run) makes it smaller.";
+    if (share >= 0.9) t.className = "meta bad"; else if (share >= 0.7) t.className = "meta warn";
+  }
 }
+
+// --- Compacting (the model on the PC) ---------------------------------------------
+let ctxInfo = null;
+function showCompact() {
+  const on = !!(ctxInfo && ctxInfo.compact && view.live);
+  $("compactBtn").hidden = !on;
+  $("compactBtn").disabled = current !== "idle" || !(ctxInfo && ctxInfo.can_trim);
+  if (!on || current !== "idle") { $("compactBox").hidden = true; $("compactBtn").setAttribute("aria-expanded", "false"); }
+}
+$("compactBtn").addEventListener("click", () => {
+  const box = $("compactBox");
+  box.hidden = !box.hidden;
+  $("compactBtn").setAttribute("aria-expanded", String(!box.hidden));
+  $("compactMsg").textContent = "";
+  if (!box.hidden) $("trimBtn").focus();
+});
+$("compactCancel").addEventListener("click", () => { $("compactBox").hidden = true; $("compactBtn").setAttribute("aria-expanded", "false"); $("compactBtn").focus(); });
+async function compactNow(mode) {
+  const msg = $("compactMsg");
+  msg.textContent = mode === "trim" ? "Trimming…" : "Starting…";
+  try {
+    const r = await api("/api/conversations/compact", withConv({ mode, check: $("summaryCheck").checked }));
+    if (r.context) ctxInfo = r.context;
+    showTokens();
+    if (mode === "trim") msg.textContent = r.shortened ? `Shortened ${r.shortened}.` : "Nothing long enough to trim.";
+    else { $("compactBox").hidden = true; $("compactBtn").setAttribute("aria-expanded", "false"); }
+  } catch (err) { msg.textContent = err.message; }
+}
+$("trimBtn").addEventListener("click", () => compactNow("trim"));
+$("summaryBtn").addEventListener("click", () => compactNow("summary"));
 
 function apply(ev) {
   if (view.live && ev.session && view.session && ev.session !== view.session) { view.session = ev.session; resetFeed(); }
@@ -916,6 +964,7 @@ function apply(ev) {
     case "reply": {
       view.steps += 1;
       view.tokens += (ev.usage?.in || 0) + (ev.usage?.out || 0);
+      if (ctxInfo && !box && ev.usage?.in) { ctxInfo.tokens = ev.usage.in + (ev.usage.out || 0); ctxInfo.estimated = false; ctxInfo.can_trim = true; }
       showTokens();
       for (const b of ev.content || []) {
         if (b.type === "text" && b.text?.trim()) put(el("div", "item agent", `<div class="text">${md(b.text)}</div>`));
@@ -1135,6 +1184,16 @@ function apply(ev) {
     case "error": put(el("div", "item err", `<div class="box">${esc(ev.text)}</div>`)); break;
     case "memory_full": put(el("div", "item err", `<div class="box"><strong>Out of memory.</strong> ${esc(ev.text)}</div>`)); break;
     case "notice": put(el("div", "item line", esc(ev.text))); break;
+    case "compact": {
+      if (ctxInfo) { ctxInfo.tokens = ev.after || ctxInfo.tokens; ctxInfo.estimated = true; }
+      showTokens();
+      const sizes = `about ${Number(ev.before || 0).toLocaleString()} → ${Number(ev.after || 0).toLocaleString()} tokens`;
+      if (ev.mode === "trim") { put(el("div", "item line", ev.shortened ? `Compacted: ${ev.shortened} old outputs shortened (${sizes}). The agent can read them again with recall.` : "Compacting found nothing long enough to trim.")); break; }
+      const n = el("div", "item line", `Compacted: the model summarized the history (${sizes})${ev.checked ? ", checked once more" : ""}. The agent can read any entry again with recall.`);
+      const d = el("details", "code", "<summary>The summary the agent goes on from</summary>");
+      const pre = el("pre"); pre.textContent = ev.summary || ""; d.appendChild(pre); n.appendChild(d);
+      put(n); break;
+    }
     case "status": if (view.live) setState(ev.state); break;
   }
 }
@@ -1820,6 +1879,7 @@ function setState(s) {
   const busy = s !== "idle";
   $("stopBtn").hidden = !busy;
   $("runBtn").disabled = busy || !view.live;
+  showCompact();
   $("model").disabled = busy || !view.live;
   $("worker").disabled = busy || !view.live;
   let t = $("thinking");
@@ -1833,6 +1893,7 @@ let modelList = [], currentWorker = null, sharesList = [];
 function workerLabel(name) { return (modelList.find((m) => m.name === name) || {}).label; }
 function showModels(s) {
   if (s.conversations) { convs = s.conversations; renderConvs(); }
+  if (s.context) { ctxInfo = s.context; showCompact(); }
   modelList = s.models;
   sharesList = s.shares || [];
   currentWorker = s.worker;

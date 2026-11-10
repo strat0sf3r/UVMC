@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from typing import Callable
 
+from . import compact
 from .config import Config
 from .log import RunLog
 from .providers import AnthropicProvider, Provider, ToolCall
@@ -41,6 +42,9 @@ class Session:
         self.last_text = ""                         # the model's latest message, e.g. a worker's report
         self.brain = None                           # the Claude Code process, when that is the brain
         self.briefing = None                        # (settings, live text) fixed at the first task
+        self.context_tokens = 0                     # what the last request held (in + out), or an estimate
+        self.context_estimated = False              # True after compacting, until the next request
+        self.compacted = False                      # something was trimmed or summarized: recall is offered
 
     @property
     def provider(self) -> Provider | None:
@@ -58,24 +62,30 @@ class Session:
         if getattr(self.provider, "drives_loop", False):  # Claude Code on your plan runs its own loop
             from . import brain
             return brain.run_task(self, task)
-        self.messages.append({"role": "user", "text": task})
-        self.log.event("task", text=task, model=self.provider.profile.name, **self._task_by())
+        rec = self.log.event("task", text=task, model=self.provider.profile.name, **self._task_by())
+        self.messages.append({"role": "user", "text": task, "seq": _seq(rec)})
         self.last_text = ""
         used = 0
         max_steps = self.max_steps or self.cfg.max_steps
         system = self.system if self.system is not None else self.cfg.house_rules
         tools = self.tools.definitions(self.tool_names) + self.extra_tools
+        if self.compacted:   # the agent can read what compacting shortened (compact.py)
+            tools = tools + [compact.RECALL_SPEC]
+            self.handlers = {**self.handlers, "recall": lambda args, call_id: compact.recall(self.log, args)}
         try:
             for step in range(1, max_steps + 1):
                 if self.cancel.is_set():
                     raise KeyboardInterrupt
                 reply = self.provider.complete(system, self.messages, tools, self.cfg.max_tokens)
                 used += reply.input_tokens + reply.output_tokens
+                if reply.input_tokens:
+                    self.context_tokens, self.context_estimated = reply.input_tokens + reply.output_tokens, False
+                rec = self.log.event("reply", step=step, stop=reply.stop, model=self.provider.profile.name,
+                                     usage={"in": reply.input_tokens, "out": reply.output_tokens},
+                                     content=reply.blocks(), **reply.extra)
                 self.messages.append({"role": "assistant", "text": reply.text, "tool_calls": reply.tool_calls,
-                                      "native": {self.provider.kind: reply.native} if reply.native is not None else {}})
-                self.log.event("reply", step=step, stop=reply.stop, model=self.provider.profile.name,
-                               usage={"in": reply.input_tokens, "out": reply.output_tokens},
-                               content=reply.blocks(), **reply.extra)
+                                      "native": {self.provider.kind: reply.native} if reply.native is not None else {},
+                                      "seq": _seq(rec)})
                 if reply.text:
                     self.last_text = reply.text
                     self.out(f"\n{reply.text}")
@@ -173,8 +183,8 @@ class Session:
                 self.current_call = None
             first = text.splitlines()[0] if text else ""
             self.out(f"  {'error' if is_error else 'ok'}: {first[:100]}")
-        self.log.event("result", id=call.id, tool=call.name, is_error=is_error, text=text)
-        return {"id": call.id, "content": text, "is_error": is_error}
+        rec = self.log.event("result", id=call.id, tool=call.name, is_error=is_error, text=text)
+        return {"id": call.id, "content": text, "is_error": is_error, "seq": _seq(rec)}
 
     def _close_open_calls(self, reason: str) -> None:
         """Every tool call needs a result before the conversation can go on."""
@@ -189,6 +199,11 @@ class Session:
         self.log.event("end", reason=why, tokens=used)
         self.out(f"\n[{why}; {used:,} tokens]")
         return why
+
+
+def _seq(record) -> int | None:
+    """An event's number in the conversation's log: what compacting refers to, and recall reads."""
+    return record.get("seq") if isinstance(record, dict) else None
 
 
 def _summary(name: str, args: dict) -> str:

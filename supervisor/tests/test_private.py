@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 os.environ["UVMC_NO_SUDO"] = "1"
@@ -25,7 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from test_service import ServiceBase, wait_for  # noqa: E402
 from test_supervisor import reply  # noqa: E402
-from uvmc import audit, mcp_http, private  # noqa: E402
+from uvmc import audit, mcp_http, pc, private  # noqa: E402
 from uvmc.netproxy import Proxy, SiteList  # noqa: E402
 from uvmc.privacy import NeedsConfirm, PrivacyError  # noqa: E402
 from uvmc.service import Busy, Unsaved, create_app  # noqa: E402
@@ -111,12 +112,18 @@ class PrivateTest(ServiceBase):
         ctl = self.controller([
             run("c1", f"printf {marker} > secret-{marker}.txt && printf {marker} > {self.tmpdir}/t-{marker}"),
             say(f"Done: {marker}."),
+            say(f"Summary: wrote the {marker} files."),   # compacting (compact.py)
         ])
         p = self.private_conv(ctl)
         ctl.net_recent.append({"host": f"{marker}.example", "conv": p.id})
         ctl.exec_recent.append({"args": [marker], "conv": p.id})
         ctl.start_task(f"Write the {marker} files", p.id)
         self.assertTrue(wait_for(lambda: p.state == "idle"))
+        ctl.compact(p.id, "trim")
+        with mock.patch.object(pc, "address", return_value=""):   # never the real PC's model server
+            ctl.compact(p.id, "summary")
+            self.assertTrue(wait_for(lambda: p.state == "idle"))
+        self.assertTrue(p.session.messages[0].get("summary"))
         self.assertTrue(self.where_is(marker), "the test itself must put the marker somewhere")
         self.assertNotIn(p.log.name, [r["name"] for r in ctl.history()])   # never under Runs
         with self.assertRaises(NeedsConfirm):   # erased only once you confirm

@@ -248,6 +248,7 @@ class Controller:
         self.mcp_seen: dict = self._load_json("mcp_seen.json") or {}   # Claude apps on your PC that connected: name -> info
         self.mcp_conv: str | None = None          # the conversation the Claude apps used last
         self.plan_usage = self._load_plan_usage()   # the latest from Claude Code, for the header
+        self.pc_context = 0                         # tokens the model on the PC holds (/props), once seen
         self.watcher: ExecWatcher | None = None
         self.made = ToolBox(cfg, notify=lambda: self._broadcast({"kind": "made_tools"}),   # tools the agent built
                             on_run=lambda name, record: self._broadcast(
@@ -1357,6 +1358,8 @@ class Controller:
         out.update(build=str(d.get("build_info") or ""),
                    file=str(d.get("model_path") or "").replace("\\", "/").rsplit("/", 1)[-1],
                    context=int((d.get("default_generation_settings") or {}).get("n_ctx") or 0))
+        if out["context"]:
+            self.pc_context = out["context"]
         if not out["router"]:
             out["model"] = out["in_use"] = str(d.get("model_alias") or "")
         return out
@@ -2014,7 +2017,78 @@ class Controller:
             "activity": bool(self.watcher and self.watcher.available),
             "private": self.private_view(),
             "lock": self.vm_lock.view(),
+            "context": self.context_view(c),
         }
+
+    # --- compacting (compact.py) ---------------------------------------------------
+
+    def context_view(self, c: Conversation) -> dict:
+        """How full the conversation's context is, and whether it can be compacted (the model on the PC)."""
+        from . import pc
+        p = self.cfg.models.get(c.model)
+        on_pc = bool(p and pc.PLACEHOLDER in p.base_url and p.provider != "claude-code")
+        return {"tokens": c.session.context_tokens, "estimated": c.session.context_estimated,
+                "size": self.pc_context if on_pc else 0, "compact": on_pc,
+                "can_trim": on_pc and bool(c.session.messages)}
+
+    def compact(self, cid: str, mode: str, check: bool = False) -> dict:
+        """Compacts a conversation's history, when you ask (never by itself). "trim": long tool
+        outputs shortened, at once. "summary": the model writes a summary that replaces the history,
+        in the background (the conversation shows as working; Stop leaves it as it was)."""
+        from . import compact as compact_mod, pc
+        c = self.conv(cid)
+        p = self.cfg.profile(c.model)
+        if pc.PLACEHOLDER not in p.base_url or p.provider == "claude-code":
+            raise ValueError("Compacting is for the model on your PC; other models keep their own context.")
+        if mode not in ("trim", "summary"):
+            raise ValueError("mode is trim or summary.")
+        with self.lock:
+            if c.busy:
+                raise Busy("Compact when this conversation isn't working.")
+            if not c.session.messages:
+                raise ValueError("There's nothing to compact yet.")
+            if mode == "trim":
+                before = compact_mod.estimate(c.session)
+                r = compact_mod.trim(c.session)
+                c.log.event("compact", mode="trim", shortened=r["shortened"], before=before,
+                            after=compact_mod.estimate(c.session))
+                self._broadcast({"kind": "conversations", "conv": c.id})
+                return r
+            if not self.model_allowed(p):
+                raise Busy(self._locked_text(p))
+            c.cancel.clear()
+            self._set_state(c, "running")
+            c.thread = threading.Thread(target=self._compact_run, args=(c, p, check), daemon=True)
+            c.thread.start()
+        self._broadcast({"kind": "conversations", "conv": c.id})
+        return {"started": True}
+
+    def _compact_run(self, c: Conversation, p: Profile, check: bool) -> None:
+        from . import compact as compact_mod
+        try:
+            client = self.provider_factory(p)
+            if client is None:
+                raise ProviderError(f"No key for {p.label}: run local-model on your PC.")
+            c.session.provider = client
+            try:
+                self.local_model()   # the context size, if the PC answers
+            except Exception:
+                pass
+            before = compact_mod.estimate(c.session)
+            summary = compact_mod.summarize(c.session, self.pc_context, check)
+            if c.cancel.is_set():
+                raise KeyboardInterrupt
+            compact_mod.apply_summary(c.session, summary)
+            c.log.event("compact", mode="summary", before=before, after=compact_mod.estimate(c.session),
+                        summary=summary, checked=check)
+        except KeyboardInterrupt:
+            c.log.event("notice", text="Compacting stopped: the conversation is as it was.")
+        except Exception as e:
+            c.log.event("error", text=f"Compacting failed ({type(e).__name__}: {e}). The conversation is as it was.")
+        finally:
+            c.cancel.clear()
+            self._set_state(c, "idle")
+            self._broadcast({"kind": "conversations", "conv": c.id})
 
     def pending_public(self, cid: str | None = None):
         for pid, p in list(self.pending.items()):
@@ -3316,6 +3390,18 @@ def create_app(ctl: Controller, token: str | None):
         except KeyError as e:
             fail(404, str(e.args[0]))
         return ctl.snapshot(c.id)
+
+    @app.post("/api/conversations/compact")
+    async def conversation_compact(request: Request):
+        body = await request.json()
+        c = conv_or_404(body.get("conv"))
+        try:
+            r = await run_in_threadpool(ctl.compact, c.id, str(body.get("mode", "")), bool(body.get("check")))
+        except Busy as e:
+            fail(409, str(e))
+        except ValueError as e:
+            fail(400, str(e))
+        return {**r, "context": ctl.context_view(c)}
 
     @app.post("/api/worker")
     async def worker(request: Request):
