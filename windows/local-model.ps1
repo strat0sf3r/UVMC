@@ -99,7 +99,7 @@ function Save-State($s) {
 function Set-Field($s, $name, $value) { $s | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
 function Installed($s) {
     $own = Own $s
-    $list = if ($s.PSObject.Properties['models']) { @($s.models | Where-Object { $Models.Contains($_) }) } else { @() }
+    $list = @(if ($s.PSObject.Properties['models']) { $s.models | Where-Object { $Models.Contains($_) } })
     return @($list) + @($own.Keys)
 }
 
@@ -257,7 +257,9 @@ function Get-Model($s, $name) {
     }
     $verified[$m.file] = $m.sha256
     Set-Field $s 'verified' ([pscustomobject]$verified)
-    $list = if ($s.PSObject.Properties['models']) { @($s.models | Where-Object { $Models.Contains($_) }) } else { @() }
+    # @( ) around the whole "if": an "if" hands back a one-item list as plain text, and += then glued
+    # the new name onto it ("models": "aaabbb", as seen 2026-11-10), so no model was found any more.
+    $list = @(if ($s.PSObject.Properties['models']) { $s.models | Where-Object { $Models.Contains($_) } })
     if ($list -notcontains $name) { $list += $name }
     Set-Field $s 'models' $list
 }
