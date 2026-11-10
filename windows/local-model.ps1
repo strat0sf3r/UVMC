@@ -119,8 +119,10 @@ function Find-Multipass {
     return $null
 }
 
-# The address the UVMC machine reaches this PC at: its network gateway. Windows gives the
-# Hyper-V network a new range at each restart, so this is looked up every time, never stored.
+# The address the UVMC machine reaches this PC at: its network gateway. With Multipass's old
+# Hyper-V driver, Windows gave that network a new range at each restart; the HCS driver (1.17)
+# keeps one per zone (10.97.0.1 for zone1), but the network card changed with the move. So this
+# is looked up every time, never trusted from before.
 function Find-VmNetwork {
     $mp = Find-Multipass
     if (-not $mp) { return $null }
@@ -135,6 +137,27 @@ function Find-VmNetwork {
     $nic = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $gw -ErrorAction SilentlyContinue
     if (-not $nic) { return $null }
     return @{ Address = $gw; Interface = $nic.InterfaceAlias }
+}
+
+# The network card this PC has on the UVMC machine's network right now, found from the
+# machine's address without starting it or running anything in it ($null when it's stopped or
+# not found). Used to notice that the network moved (Multipass 1.17's HCS driver).
+function Find-VmInterfaceNow {
+    $mp = Find-Multipass
+    if (-not $mp) { return $null }
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $json = (& $mp info $VmName --format json 2>$null | Out-String)
+    $ErrorActionPreference = $old
+    try { $vmIp = @(($json | ConvertFrom-Json).info.$VmName.ipv4)[0] } catch { return $null }
+    if (-not $vmIp) { return $null }
+    $vm = ([Net.IPAddress]$vmIp).GetAddressBytes(); [Array]::Reverse($vm); $vmN = [BitConverter]::ToUInt32($vm, 0)
+    foreach ($a in Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue) {
+        if ($a.PrefixLength -lt 8 -or $a.PrefixLength -gt 30) { continue }
+        $b = ([Net.IPAddress]$a.IPAddress).GetAddressBytes(); [Array]::Reverse($b); $n = [BitConverter]::ToUInt32($b, 0)
+        $mask = [uint32]([math]::Pow(2, 32) - [math]::Pow(2, 32 - $a.PrefixLength))
+        if (($n -band $mask) -eq ($vmN -band $mask)) { return $a.InterfaceAlias }
+    }
+    return $null
 }
 
 function Server-Exe($s) { Join-Path $s.dir 'llama.cpp\llama-server.exe' }
@@ -300,8 +323,11 @@ function Write-Preset($s) {
 
 function Open-Firewall($s, $net) {
     # Windows asks for administrator rights once, for these two rules: llama-server may accept
-    # connections on the network to the UVMC machine, on its port only, and may not open any
-    # connection itself. (It never needs to: answers to the UVMC machine go back on the connection
+    # connections from the local subnet, on its port only, and may not open any connection
+    # itself. It listens only on 127.0.0.1 and the PC's address on the UVMC machine's network
+    # (Start-Server), so of the local subnets only that network reaches it. The rule isn't tied
+    # to that network card: Multipass's HCS driver makes the card anew at each start of Windows,
+    # and a rule tied to the old card let nothing through after a restart (found 2026-11-10). (It never needs to: answers to the UVMC machine go back on the connection
     # it opened, and downloads are done by this script. The firewall doesn't filter 127.0.0.1,
     # which the router uses to reach the model it loaded.)
     # Already there for this llama-server? (netsh, since Get-NetFirewallRule sees nothing without
@@ -309,13 +335,15 @@ function Open-Firewall($s, $net) {
     $exeRx = [regex]::Escape((Server-Exe $s))
     $haveIn = (& netsh advfirewall firewall show rule name="$RuleName" verbose 2>$null | Out-String)
     $haveOut = (& netsh advfirewall firewall show rule name="$OutRuleName" verbose 2>$null | Out-String)
-    if ($haveIn -match $exeRx -and $haveOut -match $exeRx) { return }
+    # ...and in today's form (older ones were tied to a network card, see above).
+    $current = $haveIn -match 'RemoteIP:\s+LocalSubnet'
+    if ($haveIn -match $exeRx -and $haveOut -match $exeRx -and $current) { return }
     Say "Allowing the UVMC machine to reach the model, and nothing else (Windows will ask for administrator rights)..."
     $exe = (Server-Exe $s).Replace("'", "''")
     $cmd = "Remove-NetFirewallRule -DisplayName '$RuleName' -ErrorAction SilentlyContinue; " +
            "Remove-NetFirewallRule -DisplayName '$OutRuleName' -ErrorAction SilentlyContinue; " +
            "New-NetFirewallRule -DisplayName '$RuleName' -Direction Inbound -Action Allow -Protocol TCP " +
-           "-LocalPort $Port -Program '$exe' -InterfaceAlias '$($net.Interface)' | Out-Null; " +
+           "-LocalPort $Port -Program '$exe' -RemoteAddress LocalSubnet | Out-Null; " +
            "New-NetFirewallRule -DisplayName '$OutRuleName' -Direction Outbound -Action Block " +
            "-Program '$exe' | Out-Null"
     $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
@@ -343,6 +371,11 @@ function Start-Server($s) {
         $ip = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $s.vm_interface -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
     }
     if ($ip) { $hosts += ",$ip" } else { Say 'The network to the UVMC machine was not found; the model starts for this PC only.' 'Yellow' }
+    $now = Find-VmInterfaceNow
+    if ($now -and $s.PSObject.Properties['vm_interface'] -and $now -ne $s.vm_interface) {
+        Say "The UVMC machine is on another network now ($now, was $($s.vm_interface)), so it can't reach the model." 'Yellow'
+        Say 'Run local-model once (no options) to connect it again; Windows asks for administrator rights for the firewall.' 'Yellow'
+    }
     # Router mode: no model on the command line. --models-max 1: one model on the card at a time;
     # asking for another unloads the first.
     $args_ = @('--models-preset', (Preset-File $s), '--models-max', '1',
@@ -387,7 +420,7 @@ function Restart-IfRunning($s) {
 
 function Send-Key($mp, $value) {
     # Stores a key in UVMC with uvmc-setkey (where the agent can't read it). Piping it into
-    # "multipass exec" hangs (Multipass 1.16 on Windows passes no input through), so the key goes
+    # "multipass exec" hangs (Multipass on Windows passes no input through: 1.16, still in 1.17.0), so the key goes
     # over as a file, into the ubuntu user's home (the agent users can't read it), and is deleted
     # right after.
     $name = 'uvmc-key-' + [guid]::NewGuid().ToString('N')

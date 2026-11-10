@@ -98,7 +98,7 @@ class UpdatesTest(unittest.TestCase):
         self.assertIn("browser-requirements.txt", by["browser"]["how"])
         self.assertTrue(by["claude"]["behind"])
         self.assertEqual((by["multipass"]["installed"], by["multipass"]["latest"]), ("1.16.4", "1.17.0"))
-        self.assertIn("7e", by["multipass"]["how"])                        # wait for UVMC's tested move
+        self.assertIn("install.cmd", by["multipass"]["how"])               # upgrades to UVMC's tested pin
         self.assertTrue(by["ubuntu"]["behind"])
         self.assertEqual(by["apt"]["installed"], "3 waiting")
         self.assertFalse(by["apt"]["behind"])

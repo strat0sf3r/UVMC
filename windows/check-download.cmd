@@ -5,7 +5,7 @@ setlocal
 cd /d "%~dp0.."
 if not exist logs mkdir logs
 set "OUT=logs\download-check.txt"
-set "URL=https://github.com/canonical/multipass/releases/download/v1.16.4/multipass-1.16.4%%2Bwin-win64.msi"
+set "URL=https://github.com/canonical/multipass/releases/download/v1.17.0/multipass-1.17.0%%2Bwin-win64.msi"
 echo Checking, this takes up to 2 minutes...
 > "%OUT%" echo === %DATE% %TIME%
 >>"%OUT%" ver

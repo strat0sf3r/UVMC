@@ -156,7 +156,7 @@ For an interactive map of the whole system (its code, a task's path, the securit
 
 | | |
 | --- | --- |
-| **Host OS** | Windows 10/11 Pro, Enterprise or Education (Hyper-V), macOS, or Linux |
+| **Host OS** | Windows 10 (2004 or newer) or 11, any edition (Multipass's HCS driver; tried on Windows 10 Pro, not yet on Home), macOS, or Linux |
 | **Disk** | About 5 GB free at first, growing to about 16 GB |
 | **Memory** | The VM takes 2 GB, or 3 GB on computers with 12 GB or more |
 | **A model** | An Anthropic API key, a Claude Pro or Max plan, another provider's key, or a graphics card for a local model |
@@ -171,8 +171,8 @@ Download or clone this repository, then:
 
 The installer:
 
-1. asks for administrator rights once and turns on Hyper-V if needed (one restart, then it continues by itself);
-2. installs Multipass if it is missing;
+1. asks for administrator rights once and turns on Virtual Machine Platform if needed (one restart, then it continues by itself);
+2. installs Multipass if it is missing, or upgrades an older one and moves the machine to its new driver (run it again to upgrade);
 3. creates the VM, installs the supervisor and takes a `clean` snapshot for factory resets;
 4. offers the UVMC helper (started at login) and a model on your graphics card;
 5. on Windows, adds a **UVMC Panel** shortcut.
@@ -236,19 +236,20 @@ Also check the panel's script (`node --check` on the `<script>` part of `supervi
 
 ## Project status
 
-**Version 0.21.0**, a personal project in active development.
+**Version 0.21.1**, a personal project in active development. Runs on Multipass 1.17.0 (its new HCS driver on Windows).
 
-**Tried on a real VM (Windows host):** installation, the panel, API and plan models, the Claude Desktop extension, parallel conversations with bring-in and agent-resolved conflicts, tools the agent builds, the headless browser, the private-conversation self-check, the lock, the helper with model downloads, and local models on an AMD RX 5700 XT.
+**Tried on a real VM (Windows host):** installation (from scratch, and upgrading Multipass 1.16 to 1.17), uninstall, factory reset, the panel, API and plan models, the Claude Desktop extension, parallel conversations with bring-in and agent-resolved conflicts, tools the agent builds, the headless browser, the private-conversation self-check, the lock, the helper with model downloads, and local models on an AMD RX 5700 XT.
 
-**Not yet tried for real:** macOS and Linux hosts, projects and privacy levels on a real shared folder, several workers with Claude Code as coordinator, and compaction with the real local model.
+**Not yet tried for real:** Windows Home and Windows 11, macOS and Linux hosts, projects and privacy levels on a real shared folder, several workers with Claude Code as coordinator, and compaction with the real local model.
 
 **Known limitations:**
 
 - Agents can currently see every process's command line (`/proc` has no `hidepid`) and share a world-readable `/tmp`, private conversations included. Fixing this is the next step (7p in [design.md](docs/design.md)).
 - The supervisor runs as the VM's admin user `ubuntu`; separating it into its own user is planned (7o).
 - An agent can change files in its home outside the work folder; Undo covers only the work folder.
+- Multipass 1.17.0 on Windows: piping input into `multipass exec` doesn't work, an exec without a console keeps a CPU core busy, and its service crashes on its first starts on Windows 10 (the installer starts it again). UVMC's scripts work around all three ([design.md](docs/design.md), step 7e).
 
-**Next:** 7p and 7o above, then Multipass 1.17, Ubuntu 26.04 in the VM, and a proper installer (`UVMC-Setup.exe`). See [design.md](docs/design.md) for the full roadmap.
+**Next:** 7p and 7o above, then Ubuntu 26.04 in the VM, and a proper installer (`UVMC-Setup.exe`). See [design.md](docs/design.md) for the full roadmap.
 
 Using UVMC with your Claude plan is meant for your own use: don't run it as a service for other people on your plan.
 

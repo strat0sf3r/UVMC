@@ -212,7 +212,8 @@ class Updates:
         latest, err = self._latest(GITHUB_MULTIPASS, lambda t: json.loads(t)["tag_name"])
         latest = clean(latest)
         how = ("Multipass is on your PC. UVMC is pinned to the version it was tested with "
-               "(install.ps1); upgrade it when UVMC moves to the new one (design.md, step 7e). "
+               "(windows\\multipass.ps1) and moves to a newer one once it's tested. If your PC's is "
+               "older than that, run install.cmd: it upgrades Multipass in place and keeps the machine. "
                "The version shown is the one your PC had at the last update.")
         if not have:
             how = "Run windows\\update.cmd once so the VM learns your PC's Multipass version. " + how

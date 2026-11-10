@@ -44,7 +44,10 @@ function Update-DesktopConfig($path, [bool]$add) {
 $did = $false
 
 # Claude Code
-$claude = Get-Command claude -ErrorAction SilentlyContinue
+# The program (claude.exe, or npm's claude.cmd), never npm's claude.ps1: PowerShell runs a .ps1 as
+# a script and takes "--" and "-NoProfile" as its own arguments, so "mcp add" failed (2026-11-10).
+$claude = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue |
+    Where-Object { $_.Source -match '\.(exe|cmd|bat)$' } | Select-Object -First 1
 if ($claude) {
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & $claude.Source mcp remove --scope user uvmc *> $null

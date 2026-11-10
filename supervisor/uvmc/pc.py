@@ -1,7 +1,8 @@
 """The PC that runs this machine, as the machine sees it.
 
-The PC is this machine's network gateway. On Windows the Hyper-V network gets a new range
-at each restart, so a model running on the PC (windows\\local-model.cmd) can't have a fixed
+The PC is this machine's network gateway. On Windows it isn't fixed: Multipass's old Hyper-V
+driver got a new range at each restart, and the HCS driver (Multipass 1.17) has one per zone
+(10.97.0.1 for zone1), on a network card of its own. So a model running on the PC (windows\\local-model.cmd) can't have a fixed
 address in config.toml: its profile says "{pc}", and that is filled in here, each time.
 
 The agent never reaches the PC: the firewall only lets it talk to the proxy, and the proxy

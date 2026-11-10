@@ -1,5 +1,6 @@
-# UVMC installer for Windows (Pro, Enterprise or Education: uses Hyper-V).
-# Start it with install.cmd. Safe to run again: finished steps are skipped.
+# UVMC installer for Windows 10/11, any edition (Multipass's HCS driver, on Windows's Virtual
+# Machine Platform). Start it with install.cmd. Safe to run again: finished steps are skipped,
+# an older Multipass is upgraded in place and its machines moved off the old Hyper-V driver.
 
 $ErrorActionPreference = 'Stop'
 $Name     = 'uvmc'
@@ -7,6 +8,7 @@ $Repo     = Split-Path -Parent $PSScriptRoot
 $StateDir = Join-Path $env:ProgramData 'UVMC'
 $TaskName = 'UVMC install (continue after restart)'
 . (Join-Path $PSScriptRoot 'timeouts.ps1')
+. (Join-Path $PSScriptRoot 'multipass.ps1')   # $MultipassVersion, Find-Multipass, Wait-Multipass, ...
 
 function Step($text) { Write-Host ''; Write-Host "==> $text" -ForegroundColor Cyan }
 function Fail($text) {
@@ -25,74 +27,45 @@ function Test-Ok([scriptblock]$cmd) {
     $ErrorActionPreference = $old
     return ($code -eq 0)
 }
-function Find-Multipass {
-    $c = Get-Command multipass.exe -ErrorAction SilentlyContinue
-    if ($c) { return $c.Source }
-    $p = Join-Path $env:ProgramFiles 'Multipass\bin\multipass.exe'
-    if (Test-Path $p) { return $p }
-    return $null
-}
-
-# Multipass straight from its GitHub release, checked against the hash winget lists for it.
-# (Update the version and hash together, from winget-pkgs: manifests/c/Canonical/Multipass.)
-# Pinned to the version UVMC is tested with; winget uses it too. 1.17.0 (2026-10-19) is out and
-# the upgrade is planned (docs/design.md, Planned work, "Multipass 1.17"): check for a newer
-# release before each piece of work, and move this pin up once it's tested.
-$MultipassVersion = '1.16.4'
-$MultipassSha256  = 'B0C417FB8254FA61E4AA63895F59354BB3717C58100816651A9300DD98124AEA'
+# Multipass straight from its GitHub release, checked against the pinned hash (multipass.ps1),
+# with the download shown as it goes. curl.exe comes with Windows 10 (1803) and 11; it's much
+# faster than PowerShell 5's Invoke-WebRequest, which is only the fallback.
 function Install-MultipassDirect {
     $url = "https://github.com/canonical/multipass/releases/download/v$MultipassVersion/multipass-$MultipassVersion%2Bwin-win64.msi"
     $msi = Join-Path $env:TEMP "multipass-$MultipassVersion-win64.msi"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    Write-Host "Downloading Multipass $MultipassVersion from GitHub (about 80 MB)..."
     $downloaded = $false
     for ($try = 1; $try -le 3 -and -not $downloaded; $try++) {
-        try {
-            $ProgressPreference = 'SilentlyContinue'   # the progress bar makes downloads very slow in PowerShell 5
-            Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
-            $downloaded = $true
-        } catch {
-            Write-Host "Download failed ($($_.Exception.Message)); try $try of 3."
-            if ($try -lt 3) { Start-Sleep -Seconds 15 }
+        Remove-Item -Force $msi -ErrorAction SilentlyContinue
+        if (Test-Path $curl) {
+            & $curl -L --fail --connect-timeout 30 --retry 2 --progress-bar -o $msi $url
+            $downloaded = ($LASTEXITCODE -eq 0)
+            if (-not $downloaded) { Write-Host "Download failed (curl code $LASTEXITCODE); try $try of 3." }
+        } else {
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $ProgressPreference = 'SilentlyContinue'   # the progress bar makes it very slow in PowerShell 5
+                Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
+                $downloaded = $true
+            } catch { Write-Host "Download failed ($($_.Exception.Message)); try $try of 3." }
         }
+        if (-not $downloaded -and $try -lt 3) { Start-Sleep -Seconds 10 }
     }
-    $mine = $true   # a file we downloaded (deleted afterwards), not one of yours
-    if ($downloaded) {
-        if ((Get-FileHash -Algorithm SHA256 $msi).Hash -ne $MultipassSha256) {
-            Remove-Item -Force $msi -ErrorAction SilentlyContinue
-            Write-Host 'The downloaded file is not the expected Multipass installer (hash mismatch), so it was not run.'
-            return $null
-        }
-    } else {
-        # GitHub's download servers sometimes refuse programs in a region while browsers still
-        # get through: use an installer you downloaded in your browser, if it's genuine.
-        $msi = Find-DownloadedMultipass
-        if (-not $msi) {
-            Write-Host 'Tip: download Multipass for Windows in your browser (https://canonical.com/multipass/install),'
-            Write-Host 'leave it in your Downloads folder, and run install.cmd again: it will use that file.'
-            return $null
-        }
-        Write-Host "Using the installer from your Downloads folder: $msi"
-        $mine = $false
+    if (-not $downloaded) {
+        Write-Host 'Multipass could not be downloaded. check-download.cmd (in the windows folder) finds out why.'
+        return $null
     }
+    if ((Get-FileHash -Algorithm SHA256 $msi).Hash -ne $MultipassSha256) {
+        Remove-Item -Force $msi -ErrorAction SilentlyContinue
+        Write-Host 'The downloaded file is not the expected Multipass installer (hash mismatch), so it was not run.'
+        return $null
+    }
+    Write-Host "Installing Multipass $MultipassVersion..."
     $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
-    if ($mine) { Remove-Item -Force $msi -ErrorAction SilentlyContinue }
+    Remove-Item -Force $msi -ErrorAction SilentlyContinue
     if ($p.ExitCode -notin 0, 3010) { Write-Host "The Multipass installer ended with code $($p.ExitCode)."; return $null }
     return Find-Multipass
-}
-
-# A Multipass installer in your Downloads folder: either exactly the version above, or any
-# version signed by Canonical (Windows checks the signature).
-function Find-DownloadedMultipass {
-    $dl = Join-Path $env:USERPROFILE 'Downloads'
-    $files = Get-ChildItem -Path $dl -Filter 'multipass*.msi' -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending
-    foreach ($f in $files) {
-        if ((Get-FileHash -Algorithm SHA256 $f.FullName).Hash -eq $MultipassSha256) { return $f.FullName }
-        $sig = Get-AuthenticodeSignature $f.FullName
-        if ($sig.Status -eq 'Valid' -and $sig.SignerCertificate.Subject -match 'Canonical') { return $f.FullName }
-        Write-Host "Skipping $($f.Name): not a genuine Multipass installer (no valid Canonical signature)."
-    }
-    return $null
 }
 
 # 1. Admin rights (asks once, then reopens this script elevated)
@@ -102,80 +75,135 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     exit
 }
 
+Disable-QuickEdit
 try {
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-    # 2. Hyper-V
-    Step 'Checking Hyper-V'
-    $hv = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -ErrorAction SilentlyContinue
-    if (-not $hv) {
-        Fail 'Hyper-V is not available on this PC. It needs Windows Pro, Enterprise or Education.'
+    # 2. Virtual Machine Platform: what Multipass's HCS driver runs on. Every edition of Windows
+    #    10/11 has it, Home included (Hyper-V, which Multipass 1.16 needed, is Pro and up only).
+    Step 'Checking Virtual Machine Platform'
+    $vmp = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -ErrorAction SilentlyContinue
+    if (-not $vmp) {
+        Fail 'Virtual Machine Platform is not available on this PC (Windows 10 version 2004 or newer is needed).'
     }
-    if ($hv.State -ne 'Enabled') {
-        if ($hv.State -ne 'EnablePending') {
-            Step 'Turning on Hyper-V (needs one restart)'
-            Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All -All -NoRestart | Out-Null
+    if ($vmp.State -ne 'Enabled') {
+        if ($vmp.State -ne 'EnablePending') {
+            Step 'Turning on Virtual Machine Platform (needs one restart)'
+            Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart | Out-Null
         }
         $user      = "$env:USERDOMAIN\$env:USERNAME"
         $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
         $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-        Write-Host 'Hyper-V is turned on. After the restart, the installer continues by itself.'
+        Write-Host 'Virtual Machine Platform is turned on. After the restart, the installer continues by itself.'
         if ((Read-Host 'Restart now? [Y/n]') -notmatch '^[nN]') { Restart-Computer -Force }
         exit
     }
-    Write-Host 'Hyper-V is on.'
+    Write-Host 'Virtual Machine Platform is on.'
 
-    # 3. Multipass
+    # 3. Multipass: installed if missing, upgraded if older than the version UVMC is tested with.
+    #    Its installer upgrades in place and keeps the machines (nothing to uninstall first).
     $mp = Find-Multipass
-    if (-not $mp) {
-        Step 'Installing Multipass'
-        # 1) An installer you already downloaded in your browser (genuine ones only).
-        $local = Find-DownloadedMultipass
-        if ($local) {
-            Write-Host "Using the installer from your Downloads folder: $local"
-            $p = Start-Process msiexec.exe -ArgumentList "/i `"$local`" /qn /norestart" -Wait -PassThru
-            if ($p.ExitCode -notin 0, 3010) { Write-Host "The Multipass installer ended with code $($p.ExitCode)." }
-            $mp = Find-Multipass
+    $have = if ($mp) { Get-MultipassVersion $mp } else { $null }
+    $pinned = [version]$MultipassVersion
+    function Good-Enough {
+        $m = Find-Multipass
+        if (-not $m) { return $false }
+        $v = Get-MultipassVersion $m
+        return ($v -and $v -ge $pinned)
+    }
+    if (-not $mp -or ($have -and $have -lt $pinned)) {
+        $upgrading = [bool]$mp
+        if ($upgrading) {
+            Step "Upgrading Multipass $have to $MultipassVersion (the UVMC machine is kept)"
+            & (Join-Path $PSScriptRoot 'save-logs.cmd')
+            $null = Invoke-Mp $mp @('stop', '--all')
+            # A service stuck in "stopping" would keep Multipass's installer waiting: end it.
+            $svc = Get-Service -Name Multipass -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq 'StopPending') {
+                Get-Process multipassd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+            }
+        } else {
+            Step 'Installing Multipass'
         }
+        # 1) Downloaded from its GitHub release (winget doesn't list the pinned version yet).
+        $null = Install-MultipassDirect
         # 2) winget, given at most 5 minutes (it can hang when GitHub's downloads misbehave).
         #    The same version as the direct download, so every PC gets the one UVMC is tested with.
-        if (-not $mp -and (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            $w = Start-Process winget.exe -ArgumentList "install -e --id Canonical.Multipass --version $MultipassVersion --silent --accept-package-agreements --accept-source-agreements" -NoNewWindow -PassThru
+        if (-not (Good-Enough) -and (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Write-Host 'Trying winget instead.'
+            $verb = if ($upgrading) { 'upgrade' } else { 'install' }
+            $w = Start-Process winget.exe -ArgumentList "$verb -e --id Canonical.Multipass --version $MultipassVersion --silent --accept-package-agreements --accept-source-agreements" -NoNewWindow -PassThru
             if (-not $w.WaitForExit(300000)) {
                 Write-Host 'winget is taking too long; stopping it.'
                 Stop-Process -Id $w.Id -Force -ErrorAction SilentlyContinue
             }
-            $mp = Find-Multipass
         }
-        # 3) Downloading the installer directly.
-        if (-not $mp) {
-            Write-Host 'winget could not install Multipass; downloading it directly instead.'
-            $mp = Install-MultipassDirect
+        $mp = Find-Multipass
+        if (-not (Good-Enough)) {
+            if ($upgrading -and $mp) {
+                Write-Host "Multipass could not be upgraded; UVMC carries on with $have, which it no longer tests." -ForegroundColor Yellow
+                Write-Host "Install $MultipassVersion by hand from https://canonical.com/multipass/install, then run install.cmd again." -ForegroundColor Yellow
+            } else {
+                Fail 'Multipass did not install. Install it by hand from https://canonical.com/multipass/install, then run install.cmd again.'
+            }
         }
-        if (-not $mp) { Fail 'Multipass did not install. Install it by hand from https://canonical.com/multipass/install, then run install.cmd again.' }
-        Set-Content -Path (Join-Path $StateDir 'installed-multipass') -Value 'yes'
+        if (-not $upgrading) { Set-Content -Path (Join-Path $StateDir 'installed-multipass') -Value 'yes' }
+        # Multipass 1.17.0's installer, upgrading a PC whose storage was moved, writes
+        # "local.driver=hyperv" to "<storage>multipassd.conf" (no backslash: next to the storage
+        # folder, e.g. machinemultipassd.conf in the repo). Nothing reads it; take it away.
+        $st = [Environment]::GetEnvironmentVariable('MULTIPASS_STORAGE', 'Machine')
+        if ($st -and (Test-Path -LiteralPath "$($st.TrimEnd('\'))multipassd.conf")) {
+            $stray = "$($st.TrimEnd('\'))multipassd.conf"
+            if ((Get-Content -LiteralPath $stray -Raw) -match '^\s*local\.driver=\w+\s*$') { Remove-Item -LiteralPath $stray -Force }
+        }
     } else {
-        Write-Host "Multipass found: $mp"
+        Write-Host "Multipass $have found: $mp"
     }
 
+    # Tell the service its storage folder directly (see Sync-MultipassServiceStorage).
+    $null = Sync-MultipassServiceStorage
+
     Step 'Waiting for Multipass to be ready'
-    $ready = $false
-    for ($i = 0; $i -lt 60; $i++) {
-        if (Test-Ok { & $mp list }) { $ready = $true; break }
-        Start-Sleep -Seconds 3
+    if (-not (Wait-Multipass $mp)) { if ($script:MultipassWaitError) { Fail $script:MultipassWaitError }; Fail 'Multipass is not responding. Restart the PC and run the installer again.' }
+
+    # 3a. Multipass 1.17 deprecates its Hyper-V driver, and a PC that had 1.16 keeps it after the
+    #     upgrade, so its machines are moved to the HCS driver (Multipass copies them, snapshots
+    #     included, and keeps the originals until they're deleted below).
+    if ((Get-MultipassDriver $mp) -eq 'hyperv') {
+        Step "Moving Multipass's machines to its new HCS driver (copies each machine's disks; a few minutes)"
+        if (-not (Switch-ToHcs $mp)) { Fail 'Moving to the HCS driver failed. Run install.cmd again; the machines stay on Hyper-V meanwhile.' }
+        Write-Host 'Moved.'
+        if (Test-Ok { & $mp info $Name }) {
+            # The Hyper-V original is deleted only once the copy starts and answers.
+            $null = Invoke-Mp $mp @('start', $Name)
+            $null = Invoke-Mp $mp @('exec', $Name, '--', 'timeout', '-k', '5', '30', 'true')
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host 'The UVMC machine works on the new driver. Its old Hyper-V copy is kept as a fallback until you remove it;'
+                Write-Host 'it takes as much disk space as the machine itself.'
+                if ((Read-Host 'Remove the old Hyper-V copy now? [Y/n]') -notmatch '^[nN]') {
+                    if (Remove-HyperVOriginal $mp $Name) { Write-Host 'Removed.' }
+                    else { Write-Host 'Could not remove it. uninstall.cmd removes it with the machine.' -ForegroundColor Yellow }
+                    $null = Invoke-Mp $mp @('start', $Name)
+                }
+            } else {
+                Write-Host 'The UVMC machine did not answer on the new driver; its Hyper-V copy is kept.' -ForegroundColor Yellow
+            }
+            if (Test-Path (Join-Path $env:LOCALAPPDATA 'UVMC\local-model.json')) {
+                Write-Host 'The machine is on a new network now: run local-model once so the model on this PC follows it.' -ForegroundColor Yellow
+            }
+        }
     }
-    if (-not $ready) { Fail 'Multipass is not responding. Restart the PC and run the installer again.' }
 
     # 3b. Where the machine is stored. You choose: next to UVMC (this repo's 'machine' folder,
     # ignored by git), Multipass's default (C:\ProgramData\Multipass), or another folder.
     # It's Multipass's own setting (MULTIPASS_STORAGE), so it's only offered while Multipass
     # has no other machines.
     $EnvKey  = 'HKLM:\System\CurrentControlSet\Control\Session Manager\Environment'
-    $current = (Get-ItemProperty -Path $EnvKey -Name MULTIPASS_STORAGE -ErrorAction SilentlyContinue).MULTIPASS_STORAGE
-    $mpHome  = if ($current) { $current } else { Join-Path $env:ProgramData 'Multipass' }
+    $mpHome  = Get-MultipassStorage
     $Storage = $mpHome
     if (-not (Test-Ok { & $mp info $Name })) {
         $others = @()
@@ -200,7 +228,7 @@ try {
                 if ($choice -notmatch '^[A-Za-z]:\\.+') { Write-Host 'Type a full folder path, like E:\VMs\uvmc (not a whole drive).'; continue }
                 if (-not (Test-Path (Split-Path -Qualifier $choice))) { Write-Host "There is no drive $(Split-Path -Qualifier $choice)."; continue }
                 if ($choice -ne $mpHome -and (Test-Path $choice) -and (Get-ChildItem -Force $choice | Select-Object -First 1)) {
-                    Write-Host 'That folder is not empty. Pick a new or empty folder, so nothing else gets mixed in.'; continue
+                    Write-Host 'That folder is not empty. Pick a new or empty folder, so nothing else gets mixed in.'; Write-Host '(Just uninstalled UVMC? Restart Windows first: until then Multipass may still be using that folder. Do not empty it by hand.)'; continue
                 }
                 break
             }
@@ -213,13 +241,8 @@ try {
                 Set-ItemProperty -Path $EnvKey -Name MULTIPASS_STORAGE -Value $choice
                 # Remembered so uninstall can undo it; UVMC made this folder, so uninstall may delete it.
                 Set-Content -Path (Join-Path $StateDir 'storage') -Value $choice
-                Start-Service Multipass
-                $ready = $false
-                for ($i = 0; $i -lt 60; $i++) {
-                    if (Test-Ok { & $mp list }) { $ready = $true; break }
-                    Start-Sleep -Seconds 3
-                }
-                if (-not $ready) { Fail 'Multipass did not come back after moving its storage. Restart the PC and run the installer again.' }
+                $null = Sync-MultipassServiceStorage   # the service uses it now, not after a restart of Windows
+                if (-not (Wait-Multipass $mp)) { Fail 'Multipass did not come back after moving its storage. Restart the PC and run the installer again.' }
                 $Storage = $choice
             }
         }
@@ -246,7 +269,7 @@ try {
         Write-Host "Memory for the machine: $vmMem"
         & $mp launch 24.04 --name $Name --cpus 2 --memory $vmMem --disk 15G --cloud-init (Join-Path $Repo 'cloud-init.yaml') --timeout 1800
         if ($LASTEXITCODE -ne 0) { Fail 'Creating the machine failed.' }
-        $records = Join-Path $Storage 'data\vault\multipassd-instance-image-records.json'
+        $records = Join-Path $Storage 'data\hcs\vault\multipassd-instance-image-records.json'   # the HCS driver's records
         if ((Test-Path (Join-Path $StateDir 'storage')) -and -not (Select-String -Path $records -Pattern "`"$Name`"" -Quiet -ErrorAction SilentlyContinue)) {
             Write-Host "Note: the machine was not stored in $Storage (Multipass may need a restart of Windows to see the new location). It works anyway, from C:." -ForegroundColor Yellow
         }
@@ -267,7 +290,7 @@ try {
         if ($LASTEXITCODE -ne 0) { Fail 'Installing the supervisor failed.' }
 
         # 5. API keys and the Claude plan sign-in are done in the panel (Settings), not here:
-        #    typed input piped into "multipass exec" hangs with Multipass 1.16 on Windows.
+        #    typed input piped into "multipass exec" hangs with Multipass on Windows (1.16, still in 1.17).
 
         # 6. Factory snapshot (kept if an earlier run already took it)
         if (-not (Test-Ok { & $mp info "$Name.clean" })) {

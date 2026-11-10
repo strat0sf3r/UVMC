@@ -15,7 +15,15 @@ if "%CODE%"=="137" goto timedout
 if not "%CODE%"=="0" exit /b 0
 "%MP%" exec uvmc -- sudo chmod 644 /tmp/uvmc-logs.tgz
 cd logs
-"%MP%" transfer uvmc:/tmp/uvmc-logs.tgz uvmc-logs.tgz || exit /b 0
+rem Multipass on Windows copies the file's Unix permissions into its Windows ones (no inheritance,
+rem no delete right for you), then reports an error although the file arrived
+rem (canonical/multipass#4446, 1.16 and 1.17). So the file is what counts, not the exit code, and
+rem its permissions are reset (you own it, so you may) before it's deleted.
+if exist uvmc-logs.tgz icacls uvmc-logs.tgz /reset /q >nul 2>nul
+if exist uvmc-logs.tgz del uvmc-logs.tgz
+"%MP%" transfer uvmc:/tmp/uvmc-logs.tgz uvmc-logs.tgz 2>nul
+if not exist uvmc-logs.tgz exit /b 0
+icacls uvmc-logs.tgz /reset /q >nul 2>nul
 tar -xzf uvmc-logs.tgz && del uvmc-logs.tgz
 echo Run logs saved to %CD%\runs
 exit /b 0

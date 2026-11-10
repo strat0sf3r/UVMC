@@ -51,7 +51,8 @@ else { Add 'none recorded' }
 
 # --- the PC side of the Claude apps ---
 Run 'Claude Code on this PC' {
-    $c = Get-Command claude -ErrorAction SilentlyContinue
+    $c = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -match '\.(exe|cmd|bat)$' } | Select-Object -First 1
     if (-not $c) { 'claude is not on PATH' } else { $c.Source; & $c.Source --version; & $c.Source mcp get uvmc }
 }
 Section 'Claude Desktop config (only the uvmc entry)'

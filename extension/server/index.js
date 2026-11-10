@@ -50,7 +50,7 @@ function run(file, args, timeout = 120000) {
 
 // A quick lookup with a limit on both sides: "timeout" in the machine (which stops the command
 // and all it started, so the exec ends), and the Multipass client stopped here 10 s later if it
-// still hasn't returned. With Multipass 1.16 on Windows, an exec started without a console keeps
+// still hasn't returned. With Multipass on Windows (1.16, still in 1.17.0), an exec started without a console keeps
 // a CPU core busy while it runs, and one the machine never answers never ends.
 function quick(mp, cmd, limit = 20) {
   const what = cmd.join(" ");

@@ -1,7 +1,7 @@
 # Time limits for quick commands sent to the UVMC machine, and a log of the ones that ran out.
 # Dot-sourced by the other scripts: . (Join-Path $PSScriptRoot 'timeouts.ps1')
 #
-# Why: with Multipass 1.16 on Windows, "multipass exec" keeps a CPU core busy for as long as it
+# Why: with Multipass on Windows (1.16, still in 1.17.0), "multipass exec" keeps a CPU core busy for as long as it
 # runs whenever its input isn't a console window (the Claude apps' relay, scripts started without
 # a window), and an exec the machine never answers never ends. Quick commands therefore get
 # "timeout" inside the machine, which stops the command and everything it started, so the exec

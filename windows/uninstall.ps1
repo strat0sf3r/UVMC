@@ -22,13 +22,7 @@ function Test-Ok([scriptblock]$cmd) {
     $ErrorActionPreference = $old
     return ($code -eq 0)
 }
-function Find-Multipass {
-    $c = Get-Command multipass.exe -ErrorAction SilentlyContinue
-    if ($c) { return $c.Source }
-    $p = Join-Path $env:ProgramFiles 'Multipass\bin\multipass.exe'
-    if (Test-Path $p) { return $p }
-    return $null
-}
+. (Join-Path $PSScriptRoot 'multipass.ps1')   # Find-Multipass, Remove-HyperVOriginal, ...
 
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -36,6 +30,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     exit
 }
 
+Disable-QuickEdit
 try {
     Write-Host 'This removes the UVMC machine (everything inside it and all its snapshots) and its shortcuts.'
     Write-Host 'This folder (the repo) is not touched.'
@@ -51,8 +46,12 @@ try {
                 & $mp start $Name
                 & $mp exec $Name -- sudo tar -czf /tmp/uvmc-work.tgz -C /home/agent work
                 Push-Location $docs
-                & $mp transfer "${Name}:/tmp/uvmc-work.tgz" $file
-                $ok = ($LASTEXITCODE -eq 0)
+                # Multipass on Windows reports an error after pulling a file (it can't give it Unix
+                # permissions; canonical/multipass#4446) although the file arrived: the file counts.
+                $null = Invoke-Mp $mp @('transfer', "${Name}:/tmp/uvmc-work.tgz", $file)
+                $ok = (Test-Path -LiteralPath $file) -and ((Get-Item -LiteralPath $file).Length -gt 0)
+                # ...and gives it the Unix permissions as Windows ones (no delete right): back to the folder's.
+                if ($ok) { & icacls.exe $file /reset /q *> $null }
                 Pop-Location
                 if ($ok) {
                     Write-Host "Saved to $(Join-Path $docs $file) (open with: tar -xzf $file)"
@@ -67,6 +66,11 @@ try {
             if ($LASTEXITCODE -ne 0) { Fail 'Deleting the machine failed.' }
         } else {
             Write-Host 'No UVMC machine found.'
+        }
+        # A machine Multipass moved off its old Hyper-V driver (1.17) may still have its original.
+        if ((Get-MultipassDriver $mp) -eq 'hcs' -and (Test-HyperVOriginal $mp $Name)) {
+            Step 'Deleting the old Hyper-V copy of the machine'
+            if (-not (Remove-HyperVOriginal $mp $Name)) { Write-Host 'Could not delete it.' -ForegroundColor Yellow }
         }
     }
 
@@ -113,6 +117,9 @@ try {
             if (Test-Path $storageFile) {
                 $storage = (Get-Content $storageFile -Raw).Trim()
                 Remove-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Session Manager\Environment' -Name MULTIPASS_STORAGE -ErrorAction SilentlyContinue
+                # Services get the system environment as it was when Windows started: a Multipass
+                # installed before the next restart would still store its data in this folder.
+                $restartNeeded = $true
                 if ($storage -match '^[A-Za-z]:\\.+' -and (Test-Path $storage)) {   # a folder the installer made, never a drive
                     Remove-Item -Recurse -Force $storage -ErrorAction SilentlyContinue
                 }
@@ -122,9 +129,14 @@ try {
     Remove-Item -Recurse -Force $StateDir -ErrorAction SilentlyContinue
 
     Step 'Done'
-    Write-Host 'Hyper-V stays on (harmless when unused). To turn it off, run as administrator:'
-    Write-Host '  Disable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All'
-    Write-Host 'and restart.'
+    Write-Host 'Virtual Machine Platform stays on (harmless when unused; WSL uses it too). To turn it off, run as administrator:'
+    Write-Host '  Disable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform'
+    Write-Host 'and restart. (UVMC before 0.21.1 turned on Hyper-V: Microsoft-Hyper-V-All, the same way.)'
+    if ($restartNeeded) {
+        Write-Host ''
+        Write-Host 'Restart Windows before installing UVMC or Multipass again: until then, a new Multipass would' -ForegroundColor Yellow
+        Write-Host "still put its data in the folder just removed ($storage)." -ForegroundColor Yellow
+    }
     Read-Host 'Press Enter to close' | Out-Null
 }
 catch {
