@@ -2827,6 +2827,13 @@ class Machine:
 
 # --- HTTP ---------------------------------------------------------------------
 
+def signin_target(path: str | None) -> str:
+    """Where the panel goes after taking ?token=: the same page (deep links work), but only ever a page
+    of the panel. Browsers drop tabs and newlines from addresses and read "//host" or "/\\host" as
+    another site, so those go and the leading slashes become one."""
+    return "/" + (path or "/").translate({9: None, 10: None, 13: None}).lstrip("/\\")
+
+
 def create_app(ctl: Controller, token: str | None):
     app = FastAPI(title="UVMC supervisor", version=__version__, docs_url="/docs", redoc_url=None,
                   description="The API behind the UVMC panel. Sign in with the panel token: "
@@ -2841,7 +2848,19 @@ def create_app(ctl: Controller, token: str | None):
         if given is not None:
             if not hmac.compare_digest(given, token):
                 return PlainTextResponse("Wrong access token.", 401)
-            resp = RedirectResponse(request.url.path or "/", 303)
+            # A page that sets the cookie and moves on by itself, not a redirect: opened through the PC
+            # helper's link (it starts at 127.0.0.1), the browser counts a whole redirect chain as
+            # cross-site and withholds the Strict cookie at its end. The page's own step starts here,
+            # same-site, so the cookie goes along. It keeps the part after "#" (the helper's key).
+            # (Not only for Sec-Fetch-Site: cross-site: browsers send that header to HTTPS only.)
+            target = signin_target(request.url.path)
+            target_js = json.dumps(target).replace("<", "\\u003c")   # safe inside <script>
+            target_attr = target.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+            resp = Response(
+                '<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>UVMC</title>'
+                f"<script>location.replace({target_js} + location.hash)</script>"
+                f'<noscript><a href="{target_attr}">Open the UVMC panel</a></noscript>', media_type="text/html")
+            resp.headers["Cache-Control"] = "no-store"
             resp.set_cookie("uvmc_token", token, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 365)
             return resp
         auth_header = request.headers.get("authorization", "")

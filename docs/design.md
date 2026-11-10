@@ -362,6 +362,14 @@ Parked: GPU jobs on the PC, autocomplete.
 
 Later goal (the user, 2026-11-10): the PC helper (0.20, scripts for now: PowerShell on Windows, Python on Mac/Linux, the same calls for the panel) rewritten as one Go program for all three: a tray icon on Mac and Linux too, a few MB of memory instead of about 85, no script host. Needs code signing (Windows) and Apple's notarization (Mac) first, the same decision as step 8.
 
+**The PC helper (0.20, in progress), noted and not done yet** (2026-11-10):
+- Still to build: `panel.ps1` / `panel.sh` opening through the helper (step 5 of its plan), the install and uninstall questions (step 6), guide.md and the version (step 7; the working tree is at 0.19.3 from other work, the helper wants 0.20.0).
+- Not yet tried for real: a model download end to end in the panel; the confirm windows on the PC (delete, your own file); the relay after `Invoke-VmQuick` closed its input; Chrome and Edge (they may ask once to allow "devices on your local network"; Firefox doesn't); `unix/helper` on a real Mac or Linux desktop.
+- Sign-in, later: the panel's permanent key sits in the address, so it stays in the browser's history (common in local tools such as Jupyter, but not good practice). Better: the shortcut and the helper ask the VM for a one-time code (valid once, about a minute), and the panel swaps it for the cookie, so what's in the history is useless.
+- Helper: while it reads from the VM (up to about 25 s if the VM doesn't answer), its tray and other calls wait. The Go version won't have this.
+- A flaky test: `test_made_tools.WorkOnToolTest.test_the_agent_gets_the_code_without_losing_its_own` failed once in a full run in the VM (`results[1]` missing, IndexError) and passed 5 times out of 5 alone. Something in it depends on timing.
+- For CLAUDE.md's Multipass notes: `multipass exec` from a hidden program hangs unless its input is closed; when starting something detached, the `&` goes on that command alone (`cd x; setsid nohup CMD > log 2>&1 < /dev/null &`, not after a `&&` chain, which keeps a shell waiting); `pkill -f` inside `bash -c` matches its own command line.
+
 ## Open questions
 
 - [ ] What will it actually do day to day: a focused assistant (inbox, paperwork) or a general machine?

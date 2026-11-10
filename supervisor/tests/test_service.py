@@ -3,6 +3,7 @@
 Run from the supervisor folder:  UVMC_NO_SUDO=1 python3 -m unittest discover tests
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -137,9 +138,43 @@ class ApiTest(ServiceBase):
         c = TestClient(app)
         self.assertEqual(c.get("/api/state").status_code, 401)
         self.assertEqual(c.get("/?token=wrong", follow_redirects=False).status_code, 401)
-        r = c.get("/?token=secret-token", follow_redirects=False)
-        self.assertEqual(r.status_code, 303)
-        self.assertIn("uvmc_token", r.headers["set-cookie"])
+        # The right key: a page (not a redirect) that sets the Strict cookie and moves on by itself,
+        # keeping the part after "#". Through the PC helper's link a redirect would lose the cookie
+        # (the browser counts the whole chain as cross-site), and the Sec-Fetch-Site header can't be
+        # relied on to spot that (browsers send it to HTTPS only).
+        for headers in ({}, {"Sec-Fetch-Site": "cross-site"}):
+            r = TestClient(app).get("/?token=secret-token", headers=headers, follow_redirects=False)
+            self.assertEqual(r.status_code, 200, headers)
+            self.assertIn("uvmc_token", r.headers["set-cookie"])
+            self.assertIn("samesite=strict", r.headers["set-cookie"].lower())
+            self.assertIn('location.replace("/" + location.hash)', r.text)
+            self.assertNotIn("secret-token", r.text)
+            self.assertEqual(TestClient(app).get("/?token=wrong", headers=headers).status_code, 401)
+        c.get("/?token=secret-token")   # signs this client in (the cookie)
+        # Back to the same page (deep links), but never to another site: "//host", "/\host" and tabs
+        # or newlines (which browsers drop) all end up as a page of the panel.
+        # (An encoded backslash or tab, %5C or %09, is an ordinary character for browsers, not a slash.)
+        def a_panel_page(loc):
+            return loc.startswith("/") and loc[1:2] not in ("/", "\\") and not any(c in loc for c in "\t\n\r")
+        for asked, lands in [("/docs", "/docs"), ("//evil.example/x", "/evil.example/x"), ("///evil.example/", "/evil.example/"),
+                             ("/%5Cevil.example/", None), ("/%5C%5Cevil.example/", None), ("/%09/evil.example/", None),
+                             ("/%0A%0D//evil.example/", None), ("/a%3Cb%3E", None), ('/a%22b', None)]:
+            x = TestClient(app).get(f"http://testserver{asked}?token=secret-token", follow_redirects=False)
+            self.assertEqual(x.status_code, 200, asked)
+            link = x.text.split('<noscript><a href="')[1].split('"')[0]
+            self.assertTrue(a_panel_page(link), (asked, link))   # the no-script link: the same rule
+            script = x.text.split("<script>")[1].split("</script>")[0]
+            target = json.loads(script[len("location.replace("):script.index(" + location.hash)")])
+            self.assertTrue(a_panel_page(target), (asked, target))
+            self.assertNotIn("<", script, asked)   # nothing that could end the script early
+            if lands:
+                self.assertEqual(target, lands, asked)
+        # And when the path arrives decoded: literal backslashes, tabs and newlines.
+        from uvmc.service import signin_target
+        for raw, want in [("/\\evil.example/", "/evil.example/"), ("/\t/evil.example/", "/evil.example/"),
+                          ("/\\/\\evil.example/", "/evil.example/"), ("/\n\r//evil.example/x", "/evil.example/x"),
+                          ("", "/"), (None, "/"), ("/reports/7", "/reports/7")]:
+            self.assertEqual(signin_target(raw), want, raw)
         self.assertEqual(c.get("/api/state").json()["state"], "idle")
         self.assertIn("UVMC", c.get("/").text)
         self.assertEqual(c.post("/api/task", content="text=hi").status_code, 415)  # JSON only
