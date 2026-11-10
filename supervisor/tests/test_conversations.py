@@ -335,7 +335,8 @@ class WorkCopyTest(ServiceBase):
         self.assertTrue(wait_for(lambda: b.state == "idle" and b.session.last_text == "Resolved.", 10))
         task = [x for x in b.log.read() if x["kind"] == "task"][0]["text"]
         self.assertIn("alpha work", task)                                             # what the other side was for
-        self.assertIn(a.copy_dir, task)                                               # and where to look
+        self.assertNotIn(a.copy_dir, task)                                            # no agent opens another's copy
+        self.assertIn(".uvmc-merge/notes.txt.main", task)                             # the versions are handed over
         self.assertTrue(any(x["kind"] == "resolution_ready" for x in b.log.read()))
         prop = {f["path"]: f for f in ctl.resolution(b.id)["files"]}
         self.assertEqual(set(prop), {"notes.txt", "data.bin"})

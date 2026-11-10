@@ -62,10 +62,10 @@ class ServiceBase(unittest.TestCase):
 class ControllerTest(ServiceBase):
     def test_task_with_approval(self):
         ctl = self.controller([
-            reply(ToolUseBlock(type="tool_use", id="c1", name="run_command", input={"command": "pip install --help >/dev/null; echo installed"})),
+            reply(ToolUseBlock(type="tool_use", id="c1", name="run_command", input={"command": "mkdir -p old/sub && rm -r old && echo removed"})),
             reply(TextBlock(type="text", text="All done."), stop="end_turn"),
         ])
-        ctl.start_task("install something")
+        ctl.start_task("clean up")   # rm -r matches an ask rule (make_cfg)
         self.assertTrue(wait_for(lambda: ctl.state == "waiting"))
         pending = ctl.snapshot()["pending"]
         self.assertEqual(len(pending), 1)
@@ -73,7 +73,7 @@ class ControllerTest(ServiceBase):
         ctl.decide(pending[0]["id"], "allow")
         self.assertTrue(wait_for(lambda: ctl.state == "idle"))
         results = [e for e in self.events if e["kind"] == "result"]
-        self.assertEqual(results[0]["text"], "exit code 0\ninstalled")
+        self.assertEqual(results[0]["text"], "exit code 0\nremoved")
         self.assertIn("approval_done", self.kinds())
         self.assertEqual(self.events[-1]["kind"], "status")
         seqs = [e["seq"] for e in self.events]

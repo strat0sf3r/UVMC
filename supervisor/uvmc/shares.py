@@ -28,6 +28,11 @@ from .executor import root
 
 RW_ROOT = Path(os.environ.get("UVMC_SHARES_RW", "/srv/uvmc-host"))
 VIEW_ROOT = Path(os.environ.get("UVMC_SHARES_VIEW", "/mnt/shared"))
+# Each read-only view sits in a folder of its own, /srv/uvmc-views/<name>/files, which /mnt/shared/<name>
+# links to. That folder is the supervisor's (mode 700); an agent user gets in only through an ACL entry
+# the supervisor sets when one of its conversations opens the share (privacy.py), so a share is closed
+# to every conversation that didn't open it or may not see it at its level.
+HOLD_ROOT = Path(os.environ.get("UVMC_SHARES_HOLD", "/srv/uvmc-views"))
 BACKUPS = "_uvmc_backups"
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
 MAX_SIZE = 200 * 1024 * 1024
@@ -76,10 +81,30 @@ def _sha256_file(path: Path) -> str:
 
 
 class Shares:
-    def __init__(self, agent_home: str = "/home/agent", rw_root: Path = RW_ROOT, view_root: Path = VIEW_ROOT):
-        self.rw_root, self.view_root = rw_root, view_root
+    def __init__(self, agent_home: str = "/home/agent", rw_root: Path = RW_ROOT, view_root: Path = VIEW_ROOT,
+                 hold_root: Path = HOLD_ROOT):
+        self.rw_root, self.view_root, self.hold_root = rw_root, view_root, hold_root
         self.agent_home = agent_home.rstrip("/")
         self.updates: dict[str, Update] = {}
+        self.access: dict[str, frozenset[str]] = {}   # what was last set, per share
+
+    def set_access(self, access: dict[str, set[str]]) -> list[str]:
+        """Lets exactly these users into each share's folder (setfacl --set, replacing what was
+        there). A share's folder that isn't there (outside the VM, or not synced yet) is skipped;
+        its view isn't reachable then anyway. Returns the shares changed."""
+        changed = []
+        for name, users in access.items():
+            hold = self.hold_root / name
+            want = frozenset(users)
+            if self.access.get(name) == want or not NAME.match(name) or not hold.is_dir():
+                continue
+            spec = ",".join(["u::rwx", "g::---", "o::---"] + [f"u:{u}:--x" for u in sorted(want)])
+            p = subprocess.run(["setfacl", "--set", spec, str(hold)], capture_output=True, timeout=15)
+            if p.returncode != 0:
+                raise ShareError(f"setfacl on {hold} failed: {p.stderr.decode(errors='replace').strip()}")
+            self.access[name] = want
+            changed.append(name)
+        return changed
 
     def names(self) -> list[str]:
         try:

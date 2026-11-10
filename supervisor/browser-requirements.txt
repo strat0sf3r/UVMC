@@ -1,0 +1,4 @@
+# The headless browser for the agents and their tools (setup.sh installs it in /opt/uvmc/browser,
+# with Chromium's headless shell in /opt/uvmc/ms-playwright). Changing this line makes the next
+# `update` install that version and the browser build that goes with it.
+playwright==1.64.1

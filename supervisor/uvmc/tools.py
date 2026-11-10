@@ -67,7 +67,7 @@ SPECS = {
         "tag": "irreversible",
         "description": (
             "Install Ubuntu packages with apt (you have no root yourself). The user approves each "
-            "request, so say why in 'reason'. Prefer user-level installs (pip install --user, "
+            "request, so say why in 'reason'. Prefer user-level installs (pip in a venv, "
             "npm in a project folder) when they are enough."
         ),
         "input_schema": {

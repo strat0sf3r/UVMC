@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Callable
 
-from . import __version__
+from . import __version__, browser
 
 PARTS = {
     "version": "UVMC's version and the model you are",
@@ -23,6 +23,7 @@ PARTS = {
     "sites": "The allowed sites",
     "limits": "Your limits (memory, processor, disk)",
     "work": "What's in the work folder",
+    "browser": "The headless browser, when it's installed",
     "made_tools": "The tools it built that you approved",
     "date": "Today's date",
     "panel": "What the user can do in the panel",
@@ -56,17 +57,23 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
     if on("date"):
         lines.append(f"- Today is {dt.date.today().isoformat()} (the machine's clock).")
     if on("shares"):
-        shares = ctl.shares.names()
+        # Only the ones this conversation opened and may see at its level (privacy.py).
+        shares = getattr(ctl, "share_names", None)
+        if shares is None:
+            shares = ctl.shares.names()
         if shares:
-            lines.append("- Folders shared from the user's computer right now (read-only for you): "
+            lines.append("- Folders shared from the user's computer that you can read (read-only for you): "
                          + ", ".join(f"/mnt/shared/{n}" for n in shares) + ".")
         else:
-            lines.append("- No folders are shared from the user's computer right now.")
+            lines.append("- No folders are shared from the user's computer with this conversation.")
     if on("sites"):
         snap = ctl.sites.snapshot()
         sites = snap["configured"] + snap["learned"]
         ask = ("other sites need the user's approval" if ctl.cfg.net_ask_unknown
                else "other sites are refused")
+        if ctl.cfg.net_ask_unknown and getattr(ctl, "seen", "open") != "open":
+            ask = ("other sites need the user's approval each time, since this conversation has seen "
+                   f"{ctl.seen} files")
         lines.append(f"- Allowed sites (and their subdomains): {', '.join(sites) or 'none'}; {ask}.")
     if on("limits"):
         c = ctl.cfg
@@ -88,13 +95,20 @@ def live(ctl, parts: dict, work_lister: Callable[[], list[str]] | None = None,
                          "the coordinator checks your changes and brings them into its folder.")
         elif work != shared:
             lines.append(f"- Your work folder is {work}: this conversation's own copy of the main work folder "
-                         f"({shared}, read-only for you). Commands start there. The user brings your changes into "
-                         "the main folder when they're ready, and the latest files from it into your copy.")
+                         f"({shared}, which you can't open directly). Commands start there. The user brings your "
+                         "changes into the main folder when they're ready, and the latest files from it into your copy.")
+        note = getattr(ctl, "privacy_note", "")
+        if note:
+            lines.append(note)
         if names:
             more = f" and {len(names) - 30} more" if len(names) > 30 else ""
             lines.append(f"- In your work folder: {', '.join(names[:30])}{more}.")
         else:
             lines.append("- Your work folder is empty.")
+    if on("browser"):
+        line = browser.briefing_line(getattr(ctl, "browser_ready", None))
+        if line:
+            lines.append(line)
     if on("made_tools"):
         made = getattr(ctl, "made", None)
         listed = made.summary_for_agent() if made is not None else ""

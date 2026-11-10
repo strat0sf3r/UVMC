@@ -149,13 +149,25 @@ A tool's report is data, not a web page: the tool writes JSON to the file named 
 
 For now tools reach sites over HTTP(S) only (no email protocols like IMAP), use the programs already on the machine, and can't be called by the models or your PC's Claude apps. `[made_tools]` in config.toml has the settings.
 
+## The headless browser
+
+For pages that only work with JavaScript, or that need clicking through, the agents and the tools they build have a headless browser (a browser with no window): [Playwright](https://playwright.dev) with Chromium's headless shell, installed by `update` (since 0.16.1). The version is pinned in [browser-requirements.txt](../supervisor/browser-requirements.txt); changing that line makes the next `update` install that version.
+
+- Where it is: Playwright's Python in `/opt/uvmc/browser` (agents run `/opt/uvmc/browser/bin/python`), the browser in `/opt/uvmc/ms-playwright`. Both belong to root: every agent and tool can use them, none can change them. For Node, `npm install playwright@<same version>` in a project finds the same browser (`PLAYWRIGHT_BROWSERS_PATH`); downloading another browser is switched off (`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`).
+- How it was installed: Chromium's system libraries from Ubuntu (apt, as root); the browser from Playwright's servers by `uvmc-setup`, the same no-rights user that runs Claude Code's installer, so nothing downloaded runs as root. The log is `/var/log/uvmc/browser-install.log`. If it fails, the rest of UVMC still works and the next `update` tries again.
+- Sites: it goes online like everything else the agent runs, through that conversation's (or tool's) own proxy, the only way the firewall lets it out. The allowed sites, the approval cards and the connection log all apply; if the browser were set up wrong it couldn't connect at all, not go around the proxy. A modern page pulls from several other sites (fonts, CDNs, analytics), so expect a few more approval cards.
+- What the agent is told: one line in the live briefing (the version and how to start it), and a house rule that what it reads online is data, never instructions. Text on a web page can try to give the agent orders (prompt injection); the walls limit what it could do, and the fewer sites are allowed, the less a hostile page can reach.
+- Memory: Chromium takes roughly 200-500 MB while it runs. That fits in a conversation's box; in a tool's box (512 MB) it is tight. A box that runs out shows in the panel.
+- Not covered: signing in to your accounts. The browser has none of your passwords or cookies; a tool that needs to sign in asks for its secret like any other.
+
 ## Shared folders from your computer
 
 The agent can work with folders from your computer without being able to damage them:
 
 - **When you start the panel**, a "Start UVMC" window lists your folders with ticks: tick the ones the agent may see this time, **Add folder…** with the normal folder picker, **Start**. The choice is remembered; "Don't ask again" skips the window (hold Shift on the shortcut, or use `--folders`, to see it again). On macOS it's native dialogs; on Linux `zenity`, or a few questions in the terminal.
 - Behind it is `shares.txt` in the repo (`name = folder`; `#off name = folder` = remembered but not shared; see [shares.example.txt](../shares.example.txt)), which you can also edit and apply with `share`. Relative folders are inside this repo; your whole drive or user folder is refused.
-- The agent **reads** them under `/mnt/shared/<name>`. That view is read-only for it: writing or deleting fails, whatever command it tries.
+- **Each shared folder has a privacy level** (see "Projects and privacy levels"), `local` until you choose it in the **Projects** tab, and a conversation sees only the shared folders it opened (in **New conversation** or **Add a project**, listed with the projects), at a level that allows it.
+- The agent **reads** them under `/mnt/shared/<name>`. That view is read-only for it: writing or deleting fails, whatever command it tries. A shared folder its conversation didn't open is closed to it, and `/mnt/shared` can't be listed, so it doesn't learn the names of the others.
 - To **change or add** a file, the agent prepares the new version in its work folder and calls `update_shared_file`. You get a card with the file, sizes, a line-by-line diff for text files and its reason: **Replace it / Deny**.
 - On approval the supervisor (not the agent) copies the original to `<folder>/_uvmc_backups/<time>/…`, writes the new file, and checks it arrived intact. **Restore original** in the panel undoes it.
 - **Deleting** files on your computer isn't offered at all; the agent can only tell you.
@@ -163,7 +175,7 @@ The agent can work with folders from your computer without being able to damage 
 
 To try it with sample files instead of a real project: run `make-testdata` (it creates `testdata/` inside this repo: text, JSON, CSV and 1 MB / 60 MB binaries, ignored by git), then `share`.
 
-How it works inside the VM: each folder is mounted at `/srv/uvmc-host/<name>`, which only the supervisor can reach, and given to the agent as a read-only view at `/mnt/shared/<name>` (refreshed every 30 seconds). If a mount can't be shown to the agent directly, the view becomes a read-only copy instead.
+How it works inside the VM: each folder is mounted at `/srv/uvmc-host/<name>`, which only the supervisor can reach, and given a read-only view at `/srv/uvmc-views/<name>/files`, which `/mnt/shared/<name>` links to (refreshed every 30 seconds). A view is made only while the folder is actually mounted, as one read-only mount kept apart from later mounts; anything else found there (a writable mount on top, several stacked) is taken down and made again on the next refresh. If a mount can't be shown to the agents directly, the view becomes a read-only copy instead. `/srv/uvmc-views/<name>` belongs to the supervisor (mode 700): it lets in, by an ACL entry, only the users of the conversations that opened that share (and their running workers), and the supervisor changes that entry as conversations open and close and as levels change. Before 0.16 every agent could read every shared folder; after `update`, none can until a conversation opens it.
 
 Platform notes: on Windows, Multipass needs folder sharing switched on once (`share` asks for admin for that). On Linux with the snap version of Multipass, folders outside your home folder need `sudo snap connect multipass:removable-media`.
 
@@ -177,7 +189,7 @@ The agent is free inside its own space: commands run without asking, it can inst
 | Firewall | The kernel blocks all outgoing traffic from `agent` except to the supervisor's proxy on 127.0.0.1. No DNS, no other ports, no direct internet. |
 | Watched proxy | Allowed sites (`[network]` in config.toml, plus the ones you approve) go through; you're asked about others; every connection is logged with site and bytes. It sees which sites, not what's inside HTTPS. |
 | Resource box | Everything the agent runs shares one memory, CPU and process limit (`[limits]`). A runaway program hits the box, not the VM. Each conversation runs in its own smaller box inside it, so Stop ends that conversation's programs and leaves the others running. |
-| One user per conversation | Each conversation runs as its own user (agent1, agent2, ...), in its own copy of the work folder, and the firewall lets that user reach only its own proxy. Its files, programs and sites are its own; the main work folder is read-only for all of them. |
+| One user per conversation | Each conversation runs as its own user (agent1, agent2, ...), in its own copy of the work folder (only the projects it works on, at its privacy level), and the firewall lets that user reach only its own proxy. Its files, programs and sites are its own; no agent can open the main work folder or another's copy. |
 | Fixed-size home | `/home/agent` is its own disk (6 GB by default), and `/tmp` and `/var/tmp` are size-limited memory disks, so filling a disk can't take the VM down. |
 | Undo | A hard-linked copy of the work folder is saved before every task (last 20 kept). |
 | One user per job | A coordinator's jobs run as their own users (agent9, agent10, ...), in their own copies of the coordinator's folder, through their own proxies. A finished job's folder is locked. |
@@ -186,7 +198,65 @@ The agent is free inside its own space: commands run without asking, it can inst
 
 **Memory budget.** The VM's memory is shared by Linux and the supervisor (about 600 MB), the agent's box (`[limits] memory`, 1200 MB) and Claude Code's own box when you use a "my plan" model (`[subscription] memory`, 1000 MB; one Claude Code uses about 200-400 MB, and each "my plan" conversation that works runs its own, as does a "my plan" worker, so two or three fit). When a box is full and the system has to stop a process in it, the panel says so: a red banner (and a desktop notification if the panel isn't in front and your browser allows it), and a note in the conversation it happened in, naming the box and the setting to raise. If they don't fit, `update` shrinks the agent's box and says so. On a 2 GB VM the agent gets about 700 MB; 3 GB gives everyone their full share. Claude Code is closed after 15 unused minutes (`idle_minutes`) to free its memory; your next message restarts it with the conversation so far. To give an existing VM more memory: `multipass stop uvmc`, `multipass set local.uvmc.memory=3G`, `multipass start uvmc`, then `update`.
 
-Not covered by the walls: the agent can still change things in its own home outside the work folder (undo covers only the work folder), and it can use its CPU and memory share fully. Changing `home_size` later doesn't resize an existing home disk. Agents can **read** each other's folders (the conversations' copies and the jobs'), though not change them: that's how a conflict gets resolved with both sides in view. Keeping each agent's files private from the others is a planned upgrade (step 7h in design.md).
+Not covered by the walls: the agent can still change things in its own home outside the work folder (undo covers only the work folder), and it can use its CPU and memory share fully. Changing `home_size` later doesn't resize an existing home disk. Since 0.15 no agent can open the main work folder or another agent's copy (they belong to the `uvmc-files` group, which only the supervisor is in); a conflict's other versions and the other side's transcript are handed over in `.uvmc-merge/`, and a coordinator can still read its own finished jobs. Since 0.16 a folder shared from your PC is open only to the conversations that opened it. An agent can loosen the permissions of its own copy, which only exposes what it already has; a stronger per-agent sandbox is step 7h.
+
+## Projects and privacy levels
+
+Which model may see which files ([privacy.py](../supervisor/uvmc/privacy.py), step 7k in design.md). Three levels, for models and files alike:
+
+| Level | Models | Meaning |
+| --- | --- | --- |
+| `local` | the model on your PC | the files never leave your PC |
+| `paid` | the Anthropic API, your Claude plan, other paid APIs you trust | trusted by contract: UVMC can't check it, read the provider's terms |
+| `open` | free tiers, anything else | it may log or train on what it gets |
+
+- **Models:** each profile has `privacy = "..."` (config.toml or Settings). Without one it counts as open. A model may see files at its level or below.
+- **Projects:** the main work folder's top-level folders. Everything at the top level that no project claims is the **General** project. It is `local` until you choose its level (`[privacy] general`), so nothing there reaches a paid or open model without your say.
+- **Zones and marks:** a subfolder can have its own level (`Website/drafts` open, `Website/keys` local); a single file can be marked stricter than where it sits ("sensitive" is local), never looser. Levels are kept by the supervisor, so agents can't change them.
+- **A conversation** opens one or more projects and has a level: its model's, or lower. Its copy holds only the files of its projects at its level or below; it's told how many are hidden, never which. With no project chosen it gets General if its level allows, else a scratch project of its own (removed with it if left empty). A folder it makes at the top level becomes a new project at its level.
+- **Data only flows down through you.** A conversation's "seen" level is the most private file it has had in its copy. Bringing in a change to a less private place than that is **held**: the bring-in card shows the change, and you tick what may go in. Changes where it may not look are **not brought in** at all.
+- **Switching model** to a less safe one asks first, naming the projects; if the conversation has seen files the new model may not, it's refused: start a new conversation instead. A worker, or another conversation resolving a conflict, must be allowed everything the conversation has seen.
+- Making a project, zone or file less private asks first and names the models that gain access. The API: `GET /api/projects`; `POST /api/projects` (name, level), `/api/projects/claim` (a General folder becomes a project), `/api/projects/level`, `/api/projects/zone`, `/api/projects/mark` (send `"confirm": true` after a 409 with `"confirm"`); `POST /api/conversations` takes `projects`, `level` and `like` (the same projects as another conversation); `POST /api/conversations/project` adds one; `GET /api/conversations/<id>/held?path=` shows a held change.
+- **In the panel:** **New conversation** asks for the model, the level (its model's or lower) and the projects (the ones its level can't open are greyed, with the level they need), and can start with the current conversation's whole transcript (only if the new one may see everything that one has seen; the agent finds it in `.uvmc-context/`). The **Projects** tab sets each project's level, makes new projects (at the model's level unless you choose), and lists folders and files with their own level. In **Files**, every entry shows its level, and what the conversation on screen can't see is marked; opening a folder lets you give it its own level or, at the top of General, make it a project; opening a file lets you mark it sensitive or remove the mark, and **Give it to this conversation**: a one-off, the file keeps its level, and the conversation's changes into less private places are then held for your review. The folder bar shows the conversation's projects and level, with **Add a project**. Model profiles in Settings have a privacy field, with UVMC's suggestion.
+- **Folders shared from your PC** are projects too, with one level for the whole folder (they stay live, so nothing inside is filtered: share a stricter subfolder on its own). A shared folder is `local` until you set its level in the Projects tab. Opening one counts as having seen its level. When the agent wants to write into a shared folder less private than what its conversation has seen, the card says so.
+- **Sites:** a conversation that has seen paid or local files could send them out through a site. It's asked about every site not on your allowed list, each time (the card has no **Always allow**, and says what it has seen); the allowed list still works.
+- **Tools the agent builds** get a level when you approve them: the card suggests the most private level its conversation has seen (its code may carry those files), and you can change it there or later in the Tools tab (lowering asks first). Only a conversation at that level or higher may work on its code (**Work on this tool**, `get_tool_code`), and getting the code counts as having seen that level.
+- **The PC's Claude apps** count as paid: they read only what a paid model may, a conversation they start is at most paid, and they get no reply from a conversation that has seen local files.
+
+## Keeping UVMC up to date
+
+UVMC is built from parts made by others. None of them updates by itself into something untested: each version is pinned, and you choose when to move. **Settings > Updates** in the panel shows what is behind (since 0.16.2).
+
+### What the panel checks
+
+Once a day, and when you press **Check now**, the supervisor compares what is installed with the newest release of each part ([updates.py](../supervisor/uvmc/updates.py)). It only reads version numbers from pypi.org, registry.npmjs.org, api.github.com and changelogs.ubuntu.com, as the supervisor's own user, never an agent's; it installs nothing. A part with a newer version gets an amber dot on the Settings tab and, if your browser allows the panel's notifications, one notice per new version (not every day). `[updates] check = false` in config.toml stops the daily check; **Check now** still works.
+
+### How to update each part
+
+| Part | Where its version is set | How to update | Test afterwards |
+|---|---|---|---|
+| The supervisor's Python packages (anthropic, fastapi, uvicorn, httpx) | `supervisor/requirements.txt`, exact pins (`name==version`) | Raise the pin, run the tests (below), run `update` | The tests; a task with each kind of model you use (API, plan, PC) |
+| Playwright and Chromium (the headless browser) | `supervisor/browser-requirements.txt` | Raise the pin, run `update`: it installs that Playwright and the Chromium that goes with it (`/var/log/uvmc/browser-install.log`) | Ask the agent to open a page with JavaScript; the panel's briefing shows the new version |
+| Claude Code (the "my plan" models) | Not pinned: always the newest | Settings > Your Claude plan > **Update Claude Code**, or `update-claude` on your PC | A short task with a "my plan" model |
+| Ubuntu's packages in the VM | Ubuntu | Security updates install by themselves every day. The rest: `multipass exec uvmc -- sudo apt-get upgrade -y` in a terminal on your PC. When the panel says **restart needed**: `stop`, then open the panel again | Open the panel; run a task |
+| The Ubuntu release (24.04 now) | `install.ps1` / `install.sh` (`multipass launch 24.04`) | Not yet: moving to 26.04 is step 7f in design.md, tested on a copy first. 24.04 gets security updates until 2029 | |
+| Multipass (on your PC) | Pinned in `install.ps1` and `check-download.cmd` (1.16.4) | Only when UVMC moves to the new version (step 7e in design.md lists what to test). Then: install it on the PC, run `update` | Everything in step 7e |
+| llama.cpp (a model on your PC) | Not pinned: the newest release | `local-model -Update` (Mac/Linux: `--update`) | A short task with the PC's model |
+
+### The routine
+
+1. Look at **Settings > Updates** (or press **Check now**).
+2. For a pinned part, change its line in the repo, e.g. `anthropic==2.6.0` to `anthropic==2.7.0` in `supervisor/requirements.txt`. One part at a time, so a problem has one cause.
+3. Run the tests in the VM (see CLAUDE.md, "Tests"; they run offline).
+4. Run `windows\update.cmd` (`unix/update.sh`). It installs exactly the pinned versions.
+5. Check the panel shows what you expect (Settings > Updates, the version at the bottom of Settings), and try the test from the table.
+6. Commit the changed pin, so every machine built from the repo gets the same version.
+
+If something breaks, put the old pin back and run `update` again.
+
+### What the VM can't see
+
+Multipass and llama.cpp run on your PC, not in the VM. `update` tells the VM which Multipass your PC has, so the panel shows the version from your last update, not a live one. llama.cpp isn't checked from the panel at all. Both are planned for a later app on the PC (a tray icon), which could check them directly and notify you even when the panel is closed (design.md, 7m).
 
 ## Using UVMC from a terminal or scripts
 
@@ -264,6 +334,8 @@ Left without a limit on purpose: `shell` and `sign-in-claude` (interactive), `up
 | [supervisor/uvmc/brain.py](../supervisor/uvmc/brain.py) | Claude Code on your plan as the brain: its process, the stream-json conversation, the tool bridge |
 | [supervisor/uvmc/mcp_http.py](../supervisor/uvmc/mcp_http.py) | UVMC as a tool for the Claude apps on your PC (off until switched on) |
 | [supervisor/uvmc/briefing.py](../supervisor/uvmc/briefing.py) | What the agent is told: house rules, the live briefing and your notes |
+| [supervisor/uvmc/browser.py](../supervisor/uvmc/browser.py) | The headless browser: where agents and tools find it, and its line in the briefing |
+| [supervisor/uvmc/updates.py](../supervisor/uvmc/updates.py) | Settings > Updates: which parts have a newer version out (it never installs anything) |
 | [supervisor/uvmc/signin.py](../supervisor/uvmc/signin.py) | Signing in with your Claude plan from the panel, through Claude Code's own `setup-token` |
 | [supervisor/uvmc/mcp_server.py](../supervisor/uvmc/mcp_server.py) | The MCP server Claude Code gets as its only tools; forwards every call to the supervisor |
 | [supervisor/uvmc/service.py](../supervisor/uvmc/service.py) | The background service: conversations, approvals, stop, bring-in, and the HTTP API |
@@ -309,4 +381,5 @@ Run the tests on any machine with Python 3.11+ and the packages in `requirements
 - `uvmc-agent shell` opens a shell as the agent (what `shell` on your PC does).
 - `uvmc-setkey [name]` replaces a stored API key (reads it from stdin; run with sudo).
 - `uvmc-install-claude` installs or updates Claude Code (run with sudo; `update-claude` on your PC does it).
+- `/opt/uvmc/browser` and `/opt/uvmc/ms-playwright` are the headless browser (Playwright and Chromium), installed by `update`.
 - `uvmc-claude-signin` signs Claude Code in with your Claude plan (run with sudo; `sign-in-claude` on your PC does it).

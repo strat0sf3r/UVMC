@@ -12,6 +12,7 @@
 #   /home/agent          a fixed-size disk, so the agent can't fill the VM
 #   /tmp, /var/tmp       size-limited memory disks (after the next restart)
 #   audit rules          every program the agent starts is recorded
+#   /opt/uvmc/browser    a headless browser (Playwright + Chromium) the agents and tools can use
 #   uvmc-brain           the user Claude Code runs as when it's the brain on your Claude plan:
 #                        no tools of its own, its own proxy (Anthropic only), login out of the agent's reach
 set -euo pipefail
@@ -26,7 +27,7 @@ AGENT_GID="$(id -g "$AGENT")"
 
 # --- packages ---------------------------------------------------------------
 need=()
-for pkg in nftables auditd rsync; do
+for pkg in nftables auditd rsync acl python3-venv; do
   dpkg -s "$pkg" >/dev/null 2>&1 || need+=("$pkg")
 done
 if [ "${#need[@]}" -gt 0 ]; then
@@ -43,12 +44,20 @@ find /opt/uvmc/uvmc -name __pycache__ -prune -exec rm -rf {} +
 chmod -R a+rX,go-w /opt/uvmc/uvmc
 [ -x /opt/uvmc/venv/bin/python ] || python3 -m venv /opt/uvmc/venv
 /opt/uvmc/venv/bin/pip install -q --disable-pip-version-check -r "$SRC/requirements.txt"
+# The pins, for the panel's update check (updates.py compares them with the newest releases).
+install -m 644 "$SRC/requirements.txt" "$SRC/browser-requirements.txt" /opt/uvmc/
 
 install -m 644 "$SRC/config.toml" /etc/uvmc/config.toml
 install -m 644 "$SRC/house_rules.md" /etc/uvmc/house_rules.md
 install -m 644 "$SRC/orchestrator_rules.md" /etc/uvmc/orchestrator_rules.md
 install -d -m 750 -o "$OWNER" -g "$OWNER" /var/log/uvmc /var/log/uvmc/runs /var/lib/uvmc
 install -d -m 700 -o "$OWNER" -g "$OWNER" /var/lib/uvmc/checkpoints
+# Multipass is on the PC: update.cmd / update.sh pass its version in, for Settings > Updates.
+# (Until UVMC has a PC-side app that checks it directly: design.md, 7m.)
+if [[ "${UVMC_PC_MULTIPASS:-}" =~ ^[0-9][0-9A-Za-z.+~-]{0,40}$ ]]; then
+  echo "$UVMC_PC_MULTIPASS" > /var/lib/uvmc/pc-multipass-version
+  chown "$OWNER:$OWNER" /var/lib/uvmc/pc-multipass-version
+fi
 
 # Settings the shell part needs, read from config.toml.
 eval "$(/opt/uvmc/venv/bin/python - <<'PY'
@@ -109,8 +118,9 @@ install -d -m 755 /opt/uvmc/brain-cwd
 # --- each conversation's own user: agent1, agent2, ... (workcopies.py) ----------------
 # A conversation runs as its own user, in its own copy of the work folder, through its own
 # proxy, so its files, its programs and every site it contacts are its own. They're in the
-# agent's group: they can read the shared work folder, not change it; the supervisor (also in
-# the group) compares their copies with it when you bring their changes in.
+# agent's group, but the main work folder and the copies aren't (uvmc-files, below): each
+# sees only its own copy; the supervisor compares it with the main folder when you bring its
+# changes in.
 # After the conversations' users come the workers' (a coordinator's jobs, each in its own
 # copy of the coordinator's folder): agent9, agent10, ... with the default settings.
 POOL=$((CONV_MAX + WORKER_MAX))
@@ -188,6 +198,52 @@ if [ ! -x "$CLAUDE_BIN" ] || [ "${UVMC_UPDATE_CLAUDE:-}" = 1 ]; then
   /usr/local/sbin/uvmc-install-claude || true
 fi
 
+# --- headless browser for the agents and their tools (browser.py) ---------------------------
+# Playwright (pinned in browser-requirements.txt) in /opt/uvmc/browser and Chromium's headless
+# shell in /opt/uvmc/ms-playwright, both root's: every agent can use them, none can change them.
+# Chromium's system libraries come from Ubuntu (apt, as root). The browser itself is downloaded
+# from Playwright's servers by uvmc-setup, the same no-rights user that runs Claude Code's
+# installer, so nothing fetched here runs as root. Skipped when that version is already in place.
+BROWSER_VENV=/opt/uvmc/browser
+BROWSERS=/opt/uvmc/ms-playwright
+BROWSER_LOG=/var/log/uvmc/browser-install.log
+BROWSER_WANT="$(grep -v '^[[:space:]]*#' "$SRC/browser-requirements.txt" | tr -d '[:space:]')"
+BROWSER_VER="${BROWSER_WANT#*==}"
+install_browser() {
+  local inst=/var/lib/uvmc-setup
+  [ -x "$BROWSER_VENV/bin/python" ] || python3 -m venv "$BROWSER_VENV" || return 1
+  "$BROWSER_VENV/bin/pip" install -q --disable-pip-version-check -r "$SRC/browser-requirements.txt" || return 1
+  chmod -R a+rX,go-w "$BROWSER_VENV"
+  "$BROWSER_VENV/bin/playwright" install-deps chromium || return 1
+  id uvmc-setup >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin uvmc-setup
+  rm -rf "$inst"
+  install -d -m 700 -o uvmc-setup -g uvmc-setup "$inst"
+  runuser -u uvmc-setup -- env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$inst" LANG=C.UTF-8 \
+    PLAYWRIGHT_BROWSERS_PATH="$inst/ms-playwright" \
+    "$BROWSER_VENV/bin/playwright" install --only-shell chromium || { rm -rf "$inst"; return 1; }
+  rm -rf "$BROWSERS.new" "$BROWSERS.old"
+  cp -r "$inst/ms-playwright" "$BROWSERS.new" && rm -rf "$inst" || { rm -rf "$inst"; return 1; }
+  chown -R root:root "$BROWSERS.new"
+  chmod -R a+rX,go-w "$BROWSERS.new"
+  [ -e "$BROWSERS" ] && mv "$BROWSERS" "$BROWSERS.old"
+  mv "$BROWSERS.new" "$BROWSERS" || return 1
+  rm -rf "$BROWSERS.old"
+  printf '%s\n' "$BROWSER_VER" > "$BROWSER_VENV/READY"
+  chmod 644 "$BROWSER_VENV/READY"
+}
+if [ "$(cat "$BROWSER_VENV/READY" 2>/dev/null)" != "$BROWSER_VER" ] || [ ! -d "$BROWSERS" ]; then
+  say "Installing the headless browser (Playwright $BROWSER_VER with Chromium)..."
+  mkdir -p "$(dirname "$BROWSER_LOG")"
+  rm -f "$BROWSER_VENV/READY"
+  if install_browser >"$BROWSER_LOG" 2>&1; then
+    say "Headless browser ready."
+  else
+    say "Could not install the headless browser now (the rest of UVMC works). What it said:"
+    tail -n 15 "$BROWSER_LOG" | sed 's/^/    /'
+    say "Full log: $BROWSER_LOG. The next update tries again."
+  fi
+fi
+
 # --- secrets -----------------------------------------------------------------
 if [ ! -s /etc/uvmc/panel_token ]; then
   head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40 > /etc/uvmc/panel_token
@@ -239,7 +295,8 @@ cat > /usr/local/bin/uvmc-agent <<EOF
 PROXY=http://127.0.0.1:$PROXY_PORT
 export HTTP_PROXY=\$PROXY HTTPS_PROXY=\$PROXY http_proxy=\$PROXY https_proxy=\$PROXY
 export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1
-keep=HTTP_PROXY,HTTPS_PROXY,http_proxy,https_proxy,NO_PROXY,no_proxy
+export PLAYWRIGHT_BROWSERS_PATH=/opt/uvmc/ms-playwright PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+keep=HTTP_PROXY,HTTPS_PROXY,http_proxy,https_proxy,NO_PROXY,no_proxy,PLAYWRIGHT_BROWSERS_PATH,PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
 if [ "\${1:-shell}" != "shell" ]; then
   echo "Usage: uvmc-agent shell. The agent is driven from the panel."
   exit 1
@@ -505,10 +562,22 @@ if ! mountpoint -q /home/agent; then
   [ -d /run/systemd/system ] && systemctl daemon-reload
   mount /home/agent
 fi
-install -d -m 750 -o "$AGENT" -g "$AGENT" /home/agent/work
+# The main work folder and every copy belong to a group only the supervisor is in (uvmc-files),
+# not the agent's: no conversation or worker can read the main folder or another's copy, so the
+# privacy levels hold (docs/design.md 7k). Each agent gets files only through its own copy.
+getent group uvmc-files >/dev/null || groupadd --system uvmc-files
+usermod -aG uvmc-files "$OWNER"
+install -d -m 750 -o "$AGENT" -g uvmc-files /home/agent/work
+chgrp uvmc-files /home/agent/work && chmod 750 /home/agent/work
 chmod 750 /home/agent && chgrp "$AGENT" /home/agent   # the conversations' users pass through
 install -d -m 750 -o root -g "$AGENT" /home/agent/conv /home/agent/homes
 install -d -m 700 -o "$OWNER" -g "$OWNER" /home/agent/conv/.state
+# Copies made before 0.15 were open to the agent's group: close them too.
+for d in /home/agent/conv/*/; do
+  [ -d "$d" ] || continue
+  chgrp uvmc-files "$d" && chmod 750 "$d"
+  setfacl -b "$d" 2>/dev/null || true
+done
 for i in $(seq 1 "$POOL"); do
   install -d -m 700 -o "$AGENT$i" -g "$AGENT" "/home/agent/homes/$AGENT$i"
   ln -sfn /mnt/shared "/home/agent/homes/$AGENT$i/shared"
@@ -516,46 +585,86 @@ done
 
 # --- folders shared from your computer ---------------------------------------------
 # The share script on your computer mounts each folder at /srv/uvmc-host/<name>, which
-# only the supervisor can reach. uvmc-shares-sync gives the agent a read-only view of
-# each at /mnt/shared/<name> (a read-only copy if the mount can't be viewed directly).
+# only the supervisor can reach. uvmc-shares-sync makes a read-only view of each at
+# /srv/uvmc-views/<name>/files (a read-only copy if the mount can't be viewed directly) and
+# links /mnt/shared/<name> to it. /srv/uvmc-views/<name> is the supervisor's, mode 700: it
+# lets in, by ACL, only the users of the conversations that opened that share at a level
+# that allows it (privacy.py; the supervisor sets the ACL). /mnt/shared can't be listed, so
+# an agent doesn't even learn the names of shares it wasn't given.
 install -d -m 700 -o "$OWNER" -g "$OWNER" /srv/uvmc-host
-install -d -m 755 /mnt/shared
+install -d -m 711 -o root -g root /srv/uvmc-views
+install -d -m 711 -o root -g root /mnt/shared
+chmod 711 /mnt/shared
 cat > /usr/local/sbin/uvmc-shares-sync <<EOF
 #!/bin/bash
-# Refreshes the agent's read-only views of the folders shared from your computer.
+# Refreshes the read-only views of the folders shared from your computer.
 set -u
 RW=/srv/uvmc-host
+HOLD=/srv/uvmc-views
 VIEW=/mnt/shared
 OWNER=$OWNER
 AGENT=$AGENT
-mkdir -p "\$VIEW"
+mkdir -p "\$VIEW" "\$HOLD"
+# Mounts can be stacked on one folder: take them all off.
+unmount_all() {
+  while mountpoint -q "\$1"; do umount "\$1" 2>/dev/null || umount -l "\$1" || return 1; done
+}
+# How many mounts are stacked on a folder, and the top one's options (mountinfo lists them in
+# the order they were made). Share names have no spaces, so the paths match as they are.
+stacked() { awk -v m="\$1" '\$5 == m {n++; o = \$6} END {print n + 0, o}' /proc/self/mountinfo; }
+# Views from before 0.15 were folders in /mnt/shared, open to every agent: take them down.
+for old in "\$VIEW"/*; do
+  [ -d "\$old" ] && [ ! -L "\$old" ] || continue
+  unmount_all "\$old" || continue
+  if [ -f "\$old/.uvmc-copy" ]; then rm -rf --one-file-system "\$old"; else rmdir "\$old" 2>/dev/null; fi
+done
 for src in "\$RW"/*/; do
+  src="\${src%/}"
   [ -d "\$src" ] || continue
   name="\$(basename "\$src")"
   [[ "\$name" =~ ^[a-z0-9][a-z0-9_-]{0,40}\$ ]] || continue
-  view="\$VIEW/\$name"
-  mkdir -p "\$view"
-  mountpoint -q "\$view" && continue
-  if [ ! -f "\$view/.uvmc-copy" ]; then
-    if mount --bind "\$src" "\$view" 2>/dev/null; then
-      if mount -o remount,bind,ro "\$view" 2>/dev/null && runuser -u "\$AGENT" -- ls "\$view" >/dev/null 2>&1; then
-        continue
+  # Until the PC's folder is mounted there is only an empty folder here: viewing it would show
+  # nothing (and a copy would be emptied), so wait for the mount.
+  mountpoint -q "\$src" || continue
+  hold="\$HOLD/\$name"
+  files="\$hold/files"
+  # Made once and never reset: its ACL is what lets conversations in (set by the supervisor).
+  [ -d "\$hold" ] || install -d -m 700 -o "\$OWNER" -g "\$OWNER" "\$hold"
+  mkdir -p "\$files"
+  [ -e "\$VIEW/\$name" ] && [ ! -L "\$VIEW/\$name" ] || ln -sfn "\$files" "\$VIEW/\$name"
+  # A good view is exactly one read-only mount. Anything else (a writable mount that landed on
+  # top, several stacked) is taken down and made again.
+  read -r count opts <<< "\$(stacked "\$files")"
+  if [ "\$count" -eq 1 ] && [[ ",\$opts," == *,ro,* ]]; then continue; fi
+  unmount_all "\$files" || continue
+  if [ ! -f "\$files/.uvmc-copy" ]; then
+    if mount --bind "\$src" "\$files" 2>/dev/null; then
+      # Private: a later mount on the PC's folder must not be copied onto the view.
+      mount --make-private "\$files"
+      # Can the agents' users read the mount itself? Checked as the agent, let in for a moment.
+      ok=no
+      if mount -o remount,bind,ro "\$files" 2>/dev/null; then
+        setfacl -m "u:\$AGENT:--x" "\$hold"
+        runuser -u "\$AGENT" -- ls "\$files" >/dev/null 2>&1 && ok=yes
+        setfacl -x "u:\$AGENT" "\$hold"
       fi
-      umount "\$view"
+      [ "\$ok" = yes ] && continue
+      unmount_all "\$files"
     fi
   fi
   # Copy mode: a read-only copy, refreshed on every run.
-  chown "\$OWNER:\$OWNER" "\$view"
+  chown "\$OWNER:\$OWNER" "\$files"
   runuser -u "\$OWNER" -- rsync -a --delete --exclude _uvmc_backups \\
-    --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r "\$src" "\$view/"
-  runuser -u "\$OWNER" -- touch "\$view/.uvmc-copy"
+    --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r "\$src" "\$files/"
+  runuser -u "\$OWNER" -- touch "\$files/.uvmc-copy"
 done
-# A folder that is no longer shared: drop its view (a leftover copy stays, harmless).
-for view in "\$VIEW"/*/; do
-  [ -d "\$view" ] || continue
-  name="\$(basename "\$view")"
-  if [ ! -d "\$RW/\$name" ] && mountpoint -q "\$view"; then
-    umount "\$view"
+# A folder that is no longer shared: drop its view and link (a leftover copy stays, closed).
+for hold in "\$HOLD"/*/; do
+  [ -d "\$hold" ] || continue
+  name="\$(basename "\$hold")"
+  if [ ! -d "\$RW/\$name" ]; then
+    unmount_all "\$hold/files"
+    [ -L "\$VIEW/\$name" ] && rm -f "\$VIEW/\$name"
   fi
 done
 EOF

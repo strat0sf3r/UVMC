@@ -334,6 +334,10 @@ aside { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: 
 }
 .tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--you); }
 .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -4px; }
+.tabs button.has-update::after { content: ""; display: inline-block; width: 7px; height: 7px; margin-left: 5px; border-radius: 50%; background: var(--signal-strong); vertical-align: middle; }
+.updates .ver { font-family: var(--mono); font-size: 13px; }
+.updates .newer { color: var(--signal); font-weight: 700; }
+.updates .how { margin: 4px 0 0; }
 .pane { overflow-y: auto; padding: 16px; min-height: 0; }
 .pane[hidden] { display: none; }
 .pane h2 { font-size: 17px; margin: 0 0 8px; }
@@ -579,6 +583,32 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
 .you details { margin-top: 6px; }
 .you details summary { cursor: pointer; font-size: 13px; opacity: 0.75; }
 .you details pre { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; font-size: 12px; margin: 6px 0 0; }
+/* Privacy levels (projects) ------------------------------------------------ */
+.lvl { display: inline-block; font-size: 12px; line-height: 1.5; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); font-family: var(--sans); vertical-align: 1px; white-space: nowrap; }
+.lvl[data-level="local"] { color: var(--ok); border-color: currentColor; }
+.lvl[data-level="paid"] { color: var(--you); border-color: currentColor; }
+.lvl[data-level="open"] { color: var(--signal); border-color: currentColor; }
+.files li.hidden-file .fname { opacity: 0.6; }
+.privacy-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 10px; }
+.privacy-row select, .projects select { max-width: 100%; font: inherit; font-size: 13px; }
+.btn.small { padding: 1px 8px; font-size: 13px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 14px; margin: 8px 0; }
+.form-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 14px; }
+.form-grid select { font: inherit; font-size: 14px; }
+.projects-pick { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 8px 0; }
+.projects-pick legend { font-size: 14px; padding: 0 4px; }
+label.check { display: flex; align-items: center; gap: 6px; font-size: 14px; margin: 3px 0; flex-wrap: wrap; }
+label.check.off { color: var(--muted); }
+table.projects { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 14px; }
+table.projects th, table.projects td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 10px; margin: 6px 0; }
+.inline-form h3 { flex: 1 1 100%; margin: 6px 0 0; font-size: 16px; }
+.inline-form label { display: flex; flex-direction: column; gap: 3px; font-size: 14px; }
+.inline-form input, .inline-form select { font: inherit; font-size: 14px; }
+.inline-form .form-msg { flex: 1 1 100%; margin: 0; }
+ul.plain { list-style: none; padding: 0; margin: 4px 0 10px; font-size: 14px; }
+ul.plain li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 3px 0; }
+pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; font-size: 12px; background: var(--code-bg); padding: 6px; margin: 4px 0; }
 .beta { font-size: 0.75em; padding: 0 0.4em; border: 1px solid currentColor; border-radius: 0.6em; opacity: 0.7; margin-left: 0.3em; vertical-align: 0.1em; }
 </style>
 </head>
@@ -626,6 +656,7 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
   <aside aria-label="Machine details">
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected="true" aria-controls="pane-files" id="tab-files">Files</button>
+      <button role="tab" aria-selected="false" aria-controls="pane-projects" id="tab-projects">Projects</button>
       <button role="tab" aria-selected="false" aria-controls="pane-tools" id="tab-tools">Tools</button>
       <button role="tab" aria-selected="false" aria-controls="pane-activity" id="tab-activity">Activity</button>
       <button role="tab" aria-selected="false" aria-controls="pane-runs" id="tab-runs">Runs</button>
@@ -633,6 +664,7 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
       <button role="tab" aria-selected="false" aria-controls="pane-settings" id="tab-settings">Settings</button>
     </div>
     <div class="pane" id="pane-files" role="tabpanel" aria-labelledby="tab-files"></div>
+    <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden></div>
     <div class="pane" id="pane-tools" role="tabpanel" aria-labelledby="tab-tools" hidden></div>
     <div class="pane" id="pane-activity" role="tabpanel" aria-labelledby="tab-activity" hidden></div>
     <div class="pane" id="pane-runs" role="tabpanel" aria-labelledby="tab-runs" hidden></div>
@@ -692,8 +724,23 @@ async function api(path, body) {
   const opts = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
   const r = await fetch(path, opts);
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+  if (!r.ok) {
+    const detail = typeof data.detail === "string" ? data.detail : "";
+    const err = new Error(data.error || detail || `Request failed (${r.status})`);
+    err.status = r.status; err.data = data;   // privacy: data.confirm (ask, then send confirm: true) or data.privacy (refused)
+    throw err;
+  }
   return data;
+}
+// A call that may need your confirmation first (privacy: switching to a less safe model,
+// making a project less private). Asks once, then sends it again with confirm: true.
+async function apiConfirm(path, body) {
+  try { return await api(path, body); }
+  catch (err) {
+    if (!(err.data && err.data.confirm)) throw err;
+    if (!window.confirm(err.message)) return null;
+    return await api(path, { ...body, confirm: true });
+  }
 }
 
 // --- Feed rendering ---------------------------------------------------------
@@ -858,12 +905,14 @@ function apply(ev) {
       n.innerHTML = made ? madeToolCard(ev) : file
         ? `<div class="box"><h3>The agent wants to ${ev.exists ? "replace" : "add"} ${esc(ev.share)}/${esc(ev.path)}</h3>
            <p class="why">On your computer. ${ev.exists ? `Now ${fmtBytes(ev.old_size)}, new version ${fmtBytes(ev.new_size)}. The original is backed up first.` : `New file, ${fmtBytes(ev.new_size)}.`} Its reason: ${esc(ev.reason)}</p>
+           ${ev.warning ? `<p class="why warn">${esc(ev.warning)}</p>` : ""}
            ${ev.diff ? `<pre class="diff">${diffHtml(ev.diff)}</pre>` : `<p class="why">${ev.exists ? "Binary or large file, so no line-by-line comparison." : ""}</p>`}
            <div class="actions"><button type="button" class="btn allow" data-a="allow">${ev.exists ? "Replace it" : "Add it"}</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`
         : site
         ? `<div class="box"><h3>The agent wants to reach ${esc(ev.host)}</h3>
            <p class="why">This site isn't on your allowed list, so the request waits until you decide. It's refused automatically if nobody answers.</p>
-           <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow for this task</button><button type="button" class="btn" data-a="always">Always allow</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`
+           ${ev.always === false ? `<p class="why warn">This conversation has seen ${lvlChip(ev.seen)} files, which could go out through this site. Allow it only if you trust the site with them; you'll be asked again next time.</p>` : ""}
+           <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow for this task</button>${ev.always === false ? "" : '<button type="button" class="btn" data-a="always">Always allow</button>'}<button type="button" class="btn" data-a="deny">Deny</button></div></div>`
         : `<div class="box"><h3>The agent wants to use ${esc(ev.tool)}</h3><pre>${esc(what)}</pre>
            ${ev.tool === "install_system_package" && ev.args?.reason ? `<p class="why">Its reason: ${esc(ev.args.reason)}</p>` : `<p class="why">Your rules ask first: ${esc(ev.reason)}</p>`}
            <div class="actions"><button type="button" class="btn allow" data-a="allow">Allow</button><button type="button" class="btn" data-a="deny">Deny</button></div></div>`;
@@ -871,7 +920,12 @@ function apply(ev) {
       const buttons = [...n.querySelectorAll(".actions button")];
       for (const b of buttons) b.addEventListener("click", async () => {
         buttons.forEach((x) => x.disabled = true);
-        try { await api("/api/approve", { id: ev.id, answer: b.dataset.a }); }
+        const lvSel = n.querySelector("[data-tool-level]");
+        if (lvSel && b.dataset.a === "allow" && rankOf(lvSel.value) < rankOf(ev.level)
+            && !window.confirm(`Approve the tool as ${lvSel.value}? This conversation has seen ${ev.level} files, which its code may carry.`)) {
+          buttons.forEach((x) => x.disabled = false); return;
+        }
+        try { await api("/api/approve", { id: ev.id, answer: b.dataset.a, level: lvSel ? lvSel.value : undefined }); }
         catch (e) { n.querySelector(".why").textContent = e.message; buttons.forEach((x) => x.disabled = false); }
       });
       if (!view.live) n.querySelector(".actions").remove();
@@ -1090,6 +1144,8 @@ function madeToolCard(ev) {
     ${code || `<p class="why">No changes to the code.</p>`}
     ${ev.sample ? `<p class="why">What its report looks like (from the agent's test run):</p><div class="sample"></div>` : ""}
     <p class="why">Once approved, it runs as its own user from a copy the agent can't change, and only the sites above. It starts switched off.</p>
+    ${ev.level ? `<label class="pick">Privacy level <select data-tool-level>${LEVELS.map((l) => `<option value="${l}" ${l === ev.level ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <p class="small">Suggested: ${esc(ev.level)}, the most private files this conversation has seen (its code may carry them). It limits who may work on the tool later; you can change it in the Tools tab.</p>` : ""}
     <div class="actions"><button type="button" class="btn allow" data-a="allow">Approve and install</button><button type="button" class="btn" data-a="deny">Decline</button></div></div>`;
 }
 
@@ -1639,10 +1695,19 @@ async function toolDetails(name) {
       return `<label for="${id}">${esc(st.label)}${st.required ? "" : " (optional)"} ${help}<input id="${id}" name="${esc(st.name)}" ${st.type === "number" ? 'inputmode="decimal"' : ""} value="${esc(st.value)}"></label>`;
     }).join("")}<p class="small form-msg"></p><div class="actions"><button class="btn primary" type="submit">Save settings</button></div></form>` : ""}
     <dl class="facts"><dt>Reaches</dt><dd>${t.sites.length ? t.sites.map(esc).join(", ") : "no sites"}</dd>
-      <dt>Command</dt><dd><code>${esc(t.command)}</code>, at most ${t.timeout_seconds} s</dd></dl>
+      <dt>Command</dt><dd><code>${esc(t.command)}</code>, at most ${t.timeout_seconds} s</dd>
+      <dt>Privacy level</dt><dd data-tool-level></dd></dl>
     <details><summary>Its code (version ${t.version}, read-only)</summary><div class="filelist"></div><pre class="log" hidden></pre></details>
     <details ${t.runs.length ? "" : "hidden"}><summary>Runs (${t.runs.length}; click one to open it in Reports)</summary><div class="runlist"></div></details>
     <div class="row"><button type="button" class="btn stop" data-remove>Remove this tool</button></div>`;
+  // Its level: set when you approved it; who may work on it (lowering asks first).
+  const lvSel = levelSelect(t.level || "open");
+  lvSel.setAttribute("aria-label", `Privacy level of ${t.title}`);
+  lvSel.addEventListener("change", async () => {
+    try { await apiConfirm("/api/made-tools/level", { name: t.name, level: lvSel.value }); } catch (err) { errCard(err); }
+    loadTools();
+  });
+  box.querySelector("[data-tool-level]").append(lvSel, el("span", "small", " only a conversation at this level or higher may work on its code"));
   const form = box.querySelector("form");
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1724,7 +1789,7 @@ function showModels(s) {
   const sel = $("model");
   sel.innerHTML = "";
   for (const m of s.models) {
-    const o = el("option", "", esc(m.label + (m.has_key ? "" : m.plan ? " (not signed in)" : " (no key)")));
+    const o = el("option", "", esc(`${m.label} · ${m.level}` + (m.has_key ? "" : m.plan ? " (not signed in)" : " (no key)")));
     o.value = m.name;
     o.selected = m.name === s.model;
     sel.appendChild(o);
@@ -1743,7 +1808,11 @@ $("worker").addEventListener("change", async (e) => {
   catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); showModels(await api(stateUrl())); }
 });
 $("model").addEventListener("change", async (e) => {
-  try { showModels(await api("/api/model", withConv({ name: e.target.value }))); refreshConvs(); }
+  try {
+    const s = await apiConfirm("/api/model", withConv({ name: e.target.value }));
+    showModels(s || await api(stateUrl()));   // null: you kept the current model
+    refreshConvs();
+  }
   catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); showModels(await api(stateUrl())); }
 });
 
@@ -1769,8 +1838,10 @@ function renderConvs() {
     tab.setAttribute("aria-selected", String(selected));
     const words = { idle: "", running: ", working", waiting: ", waiting for you", stopping: ", stopping" };
     const title = c.title || "New conversation";
+    const where = (c.projects || []).map((p) => p.label).join(", ");
+    const privacyText = where ? `, on ${where}, ${c.level}` : "";   // its projects and privacy level
     tab.innerHTML = `<button type="button" class="pick" role="tab" data-conv="${esc(c.id)}" aria-selected="${selected}"
-        title="${esc(title)} (${esc(c.model_label)})${words[state] || ""}"><span class="dot" aria-hidden="true"></span>
+        title="${esc(title)} (${esc(c.model_label)}${esc(privacyText)})${words[state] || ""}"><span class="dot" aria-hidden="true"></span>
         <span class="title">${esc(title)}</span>${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
         <span class="visually-hidden">${words[state] || ""}</span></button>
       <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="Close this conversation (it stays under Runs)" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
@@ -1859,7 +1930,17 @@ async function refreshFolder() {
   try { ch = await api(`/api/conversations/${encodeURIComponent(id)}/changes`); } catch (e) { bar.hidden = true; return; }
   if (id !== view.conv) return;
   bar.hidden = false;
-  if (!ch.ready) { bar.innerHTML = `<span>This conversation gets its own copy of the main work folder at its first task.</span>`; return; }
+  if (!ch.ready) {
+    const here = convs.find((c) => c.id === id);
+    const where = here ? here.projects.map((p) => esc(p.label)).join(", ") : "";
+    bar.innerHTML = `<span>${where ? `On ${where}, ${esc(here.level)}. ` : ""}This conversation gets its own copy of these at its first task.</span>`;
+    if (here && current === "idle") {
+      const ap = el("button", "btn", "Add a project"); ap.type = "button";
+      ap.addEventListener("click", () => addProjectCard().catch(errCard));
+      bar.appendChild(ap);
+    }
+    return;
+  }
   const mine = ch.mine.length + ch.merged.length, theirs = ch.theirs.length, both = ch.conflicts.length;
   const resolving = (ch.resolving || []).length;
   const parts = [];
@@ -1870,14 +1951,24 @@ async function refreshFolder() {
   if (mine) parts.push(`<span class="count">${mine} change${mine > 1 ? "s" : ""}</span> here, not in the main folder yet`);
   if (theirs) parts.push(`the main folder has <span class="count">${theirs}</span> newer file${theirs > 1 ? "s" : ""}`);
   if (both) parts.push(`<span class="warn">${both} file${both > 1 ? "s" : ""} changed on both sides</span>`);
-  bar.innerHTML = `<span>${parts.length ? "Its own copy: " + parts.join("; ") + "." : "Its own copy is in step with the main work folder."}</span>`;
+  const held = (ch.held || []).length, blocked = (ch.blocked || []).length;
+  if (held) parts.push(`<span class="warn">${held} held for your review</span> (they'd put ${esc(ch.seen)} files somewhere less private)`);
+  if (blocked) parts.push(`${blocked} that can't be brought in (outside what this conversation may change)`);
+  const where = (ch.projects || []).map((p) => esc(p.label)).join(", ");
+  bar.innerHTML = `<span>${where ? `On ${where}, ${esc(ch.level)}. ` : ""}${parts.length ? "Its own copy: " + parts.join("; ") + "." : "Its own copy is in step with the main work folder."}</span>`;
   if (resolving && current === "idle") {
     const r = el("button", "btn primary", "Review the agent's resolution"); r.type = "button";
     r.addEventListener("click", reviewResolution);
     bar.appendChild(r);
   }
-  if (mine || theirs || both) {
-    const b = el("button", "btn", mine || both ? "Bring into the main folder" : "Get them");
+  if (current === "idle") {
+    const ap = el("button", "btn", "Add a project"); ap.type = "button";
+    ap.title = "Open another project in this conversation";
+    ap.addEventListener("click", () => addProjectCard().catch(errCard));
+    bar.appendChild(ap);
+  }
+  if (mine || theirs || both || held) {
+    const b = el("button", "btn", mine || both || held ? "Bring into the main folder" : "Get them");
     b.type = "button";
     b.disabled = current !== "idle";
     b.title = current !== "idle" ? "When this conversation's task ends" : "Shows what would change first";
@@ -1897,11 +1988,27 @@ function reviewSync(ch) {
     ${fileList(ch.merged, "Changed on both sides in different places: merged line by line")}
     ${ch.conflicts.length ? `<h4>Changed on both sides</h4><ul>${ch.conflicts.map((x) => `<li><code>${esc(x.path)}</code> (${esc(x.kind)})</li>`).join("")}</ul>
       <p class="small">This conversation's agent works out a resolution for these, like a merge conflict: what each side was doing, keeping both sides' work. You see its proposal and decide before anything of them goes into the main folder.</p>` : ""}
+    ${(ch.held || []).length ? `<h4>Held for your review</h4>
+      <p class="small">This conversation has seen ${esc(ch.seen)} files; these go somewhere less private. Look at each change; tick the ones that may go in. The rest stay here, held.</p>
+      <ul>${ch.held.map((x) => `<li><label><input type="checkbox" data-release="${esc(x.path)}"> <code>${esc(x.path)}</code> (${esc(x.change)}, into a ${esc(x.level)} place)</label>
+        <button type="button" class="btn small" data-show="${esc(x.path)}">Show the change</button><pre class="diff" hidden></pre></li>`).join("")}</ul>` : ""}
+    ${(ch.blocked || []).length ? `<h4>Not brought in</h4><ul>${ch.blocked.map((x) => `<li><code>${esc(x.path)}</code> (${esc(x.reason)})</li>`).join("")}</ul>
+      <p class="small">This conversation may not change these. They stay in its copy; closing it drops them.</p>` : ""}
     <p class="small form-msg"></p>
     <div class="actions"><button type="button" class="btn primary" data-apply>Apply</button><button type="button" class="btn" data-cancel>Cancel</button></div></div>`;
   n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
+  n.querySelectorAll("[data-show]").forEach((b) => b.addEventListener("click", async () => {
+    const pre = b.nextElementSibling;
+    if (!pre.hidden) { pre.hidden = true; return; }
+    try {
+      const d = await api(`/api/conversations/${encodeURIComponent(view.conv)}/held?path=${encodeURIComponent(b.dataset.show)}`);
+      pre.textContent = d.removed ? "(removed in this conversation)" : d.binary ? `(not text, ${d.size} bytes)` : (d.diff || "(no difference)");
+    } catch (err) { pre.textContent = err.message; }
+    pre.hidden = false;
+  }));
   n.querySelector("[data-apply]").addEventListener("click", async (e) => {
     const choices = {};   // conflicts: the agent proposes first
+    n.querySelectorAll("[data-release]:checked").forEach((c) => { choices[c.dataset.release] = "release"; });
     e.target.disabled = true;
     const msg = n.querySelector(".form-msg");
     try {
@@ -1983,12 +2090,15 @@ function connect() {
     if (!view.live) { renderConvs(); return; }    // looking at a past run: stay there
     selectConv(mine, { focus: mine !== s.conv });
     refreshReportCounts();
+    refreshUpdatesDot();
   });
   source.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.kind === "conversations") { refreshConvsSoon(); return; }
+    if (ev.kind === "projects") { if (!$("pane-projects").hidden) loadProjects(); refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); refreshReportsSoon(); return; }
     if (ev.kind === "tool_run") { toolRunEnded(ev); return; }
+    if (ev.kind === "updates") { updatesNotice(ev); return; }
     if (ev.kind === "shared_folder") { refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "plan_usage") { planUsage = ev; showTokens(); }
     if (ev.kind === "memory_full") memoryAlert(ev);
@@ -2022,14 +2132,219 @@ $("form").addEventListener("submit", async (e) => {
   catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); }
 });
 $("stopBtn").addEventListener("click", () => api("/api/stop", withConv()).catch(() => {}));
-$("newBtn").addEventListener("click", async () => {
-  try {
-    const s = await api("/api/conversations", {});
-    convs = s.conversations;
-    await selectConv(s.conv, { focus: false });
-    box.focus();
-  } catch (err) { add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`)); }
-});
+$("newBtn").addEventListener("click", () => newConvCard().catch((err) => add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`))));
+
+// --- Privacy: levels, projects (privacy.py) ----------------------------------------
+// local > paid > open. A model may see files at its level or below; a conversation sees its
+// projects' files at its level (its model's, or lower).
+const LEVELS = ["open", "paid", "local"];
+const rankOf = (l) => Math.max(0, LEVELS.indexOf(l));
+const LEVEL_HELP = { local: "stays on your PC", paid: "a provider trusted by contract", open: "no privacy expected" };
+const lvlChip = (l, extra = "") => `<span class="lvl" data-level="${esc(l)}" title="${esc(l)}: ${esc(LEVEL_HELP[l] || "")}">${esc(l)}${extra}</span>`;
+function levelSelect(value, { max = "local", blank = "" } = {}) {
+  const s = el("select");
+  if (blank) { const o = el("option", "", esc(blank)); o.value = ""; s.appendChild(o); }
+  for (const l of LEVELS) {
+    if (rankOf(l) > rankOf(max)) continue;
+    const o = el("option", "", l); o.value = l; o.selected = l === value; o.title = LEVEL_HELP[l]; s.appendChild(o);
+  }
+  if (blank && !value) s.value = "";
+  return s;
+}
+const errCard = (err) => add(el("div", "item err", `<div class="box">${esc(err.message)}</div>`));
+
+// Projects and folders shared from the PC, in one list (a share is a project named "share:<name>").
+const pickable = (p) => [...p.projects, ...(p.shares || []).map((x) => ({ ...x, label: `${x.share} (shared from your PC)` }))];
+
+// "New conversation": its model, its level and the projects it opens, picked before it starts.
+async function newConvCard() {
+  $("newConv")?.remove();
+  const [p, s] = await Promise.all([api("/api/projects"), api(stateUrl())]);
+  const here = convs.find((c) => c.id === view.conv);
+  const n = el("div", "item sync");
+  n.id = "newConv";
+  n.innerHTML = `<div class="box"><h3>New conversation</h3>
+    <div class="form-grid">
+      <label>Model <select data-model></select></label>
+      <label>Privacy level <select data-level></select></label>
+    </div>
+    <fieldset class="projects-pick"><legend>Projects it works on</legend><div data-projects></div>
+      <p class="small">None ticked: it gets an empty scratch project of its own.</p></fieldset>
+    ${here ? `<label class="check"><input type="checkbox" data-transcript> Start with this conversation's whole transcript ("${esc(here.title || "New conversation")}")</label>` : ""}
+    <p class="small form-msg"></p>
+    <div class="actions"><button type="button" class="btn primary" data-create>Start</button><button type="button" class="btn" data-cancel>Cancel</button></div></div>`;
+  const msel = n.querySelector("[data-model]");
+  for (const m of s.models) {
+    const o = el("option", "", esc(`${m.label} · ${m.level}`)); o.value = m.name; o.selected = m.name === s.model; msel.appendChild(o);
+  }
+  const ticked = new Set(here ? here.projects.map((x) => x.name) : []);
+  let level = null;
+  const draw = () => {
+    const m = s.models.find((x) => x.name === msel.value) || {};
+    const lsel = levelSelect(level && rankOf(level) <= rankOf(m.level) ? level : m.level, { max: m.level || "open" });
+    lsel.dataset.level = "";
+    n.querySelector("[data-level]").replaceWith(lsel);
+    lsel.addEventListener("change", () => { level = lsel.value; draw(); });
+    const lv = lsel.value;
+    const box = n.querySelector("[data-projects]");
+    box.innerHTML = "";
+    for (const pr of pickable(p)) {
+      const ok = rankOf(pr.lowest) <= rankOf(lv);
+      const lab = el("label", "check" + (ok ? "" : " off"));
+      lab.innerHTML = `<input type="checkbox" value="${esc(pr.name)}" ${ok && ticked.has(pr.name) ? "checked" : ""} ${ok ? "" : "disabled"}>
+        ${esc(pr.label)} ${lvlChip(pr.level)}${ok ? "" : ` <span class="small">needs a ${esc(pr.lowest)} model</span>`}`;
+      lab.querySelector("input").addEventListener("change", (e) => { e.target.checked ? ticked.add(pr.name) : ticked.delete(pr.name); });
+      box.appendChild(lab);
+    }
+    const tr = n.querySelector("[data-transcript]");
+    if (tr && here) {
+      const ok = rankOf(lv) >= rankOf(here.seen);
+      tr.disabled = !ok;
+      if (!ok) tr.checked = false;
+      tr.parentElement.title = ok ? "" : `That conversation has seen ${here.seen} files: only a ${here.seen} conversation may read its transcript.`;
+    }
+  };
+  msel.addEventListener("change", draw);
+  draw();
+  n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
+  n.querySelector("[data-create]").addEventListener("click", async (e) => {
+    const msg = n.querySelector(".form-msg");
+    const projects = [...n.querySelectorAll("[data-projects] input:checked")].map((i) => i.value);
+    const body = { model: msel.value, level: n.querySelector("[data-level]").value, projects: projects.length ? projects : null };
+    const tr = n.querySelector("[data-transcript]");
+    if (tr && tr.checked) { body.like = view.conv; body.transcript = true; }
+    e.target.disabled = true;
+    try {
+      const r = await api("/api/conversations", body);
+      n.remove();
+      convs = r.conversations;
+      await selectConv(r.conv, { focus: false });
+      box.focus();
+    } catch (err) { msg.classList.add("bad"); msg.textContent = err.message; e.target.disabled = false; }
+  });
+  add(n);
+  n.scrollIntoView({ block: "nearest" });
+  msel.focus();
+}
+
+// The Projects tab: each project's level, folders and files with their own, new projects.
+async function loadProjects() {
+  const pane = $("pane-projects");
+  let p;
+  try { p = await api("/api/projects"); } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `<h2>Projects</h2>
+    <p class="small">Which model may see which files. <strong>local</strong>: stays on your PC; <strong>paid</strong>: a provider trusted by contract (UVMC can't check it); <strong>open</strong>: no privacy expected. A model sees files at its level or below; a conversation sees only the projects it opened.</p>`;
+  const general = p.projects.find((x) => x.name === "");
+  if (general && !general.asked) {
+    const b = el("div", "banner");
+    b.innerHTML = `<span><strong>General</strong> (everything at the top of the main folder that isn't a project) is <strong>local</strong> until you choose: paid and open models can't see it yet.</span>`;
+    pane.appendChild(b);
+  }
+  const table = el("table", "projects");
+  table.innerHTML = `<thead><tr><th>Project</th><th>Level</th><th>Open in</th></tr></thead>`;
+  const tb = el("tbody");
+  for (const pr of p.projects) {
+    const tr = el("tr");
+    const name = el("td", "", `<strong>${esc(pr.label)}</strong>${pr.scratch ? ' <span class="small">(scratch)</span>' : ""}${pr.name === "" ? '<div class="small">the top level, outside projects</div>' : ""}`);
+    const lv = el("td");
+    const sel = levelSelect(pr.level);
+    sel.setAttribute("aria-label", `Level of ${pr.label}`);
+    sel.addEventListener("change", async () => {
+      try { await apiConfirm("/api/projects/level", { name: pr.name, level: sel.value }); } catch (err) { errCard(err); }
+      loadProjects();
+    });
+    lv.appendChild(sel);
+    const used = el("td", "small", pr.conversations.map((c) => esc(c.title)).join(", ") || "none");
+    tr.append(name, lv, used);
+    tb.appendChild(tr);
+  }
+  table.appendChild(tb);
+  pane.appendChild(table);
+  // Folders shared from the PC: one level each, opened per conversation like projects.
+  const shares = p.shares || [];
+  pane.appendChild(el("h3", "", "Folders shared from your PC"));
+  if (!shares.length) pane.appendChild(el("p", "small", "None right now. You list them in shares.txt on your PC and run the share script (see the guide)."));
+  else {
+    if (shares.some((x) => !x.asked)) pane.appendChild(el("div", "banner", "<span>A shared folder is <strong>local</strong> until you choose its level: paid and open models can't open it yet.</span>"));
+    const st = el("table", "projects");
+    st.innerHTML = `<thead><tr><th>Shared folder</th><th>Level</th><th>Open in</th></tr></thead>`;
+    const sb = el("tbody");
+    for (const sh of shares) {
+      const tr = el("tr");
+      const sel = levelSelect(sh.level);
+      sel.setAttribute("aria-label", `Level of the shared folder ${sh.share}`);
+      sel.addEventListener("change", async () => {
+        try { await apiConfirm("/api/projects/level", { name: sh.name, level: sel.value }); } catch (err) { errCard(err); }
+        loadProjects();
+      });
+      const lv = el("td"); lv.appendChild(sel);
+      tr.append(el("td", "", `<strong>${esc(sh.share)}</strong><div class="small">/mnt/shared/${esc(sh.share)}</div>`), lv,
+        el("td", "small", sh.conversations.map((c) => esc(c.title)).join(", ") || "none"));
+      sb.appendChild(tr);
+    }
+    st.appendChild(sb);
+    pane.appendChild(st);
+    pane.appendChild(el("p", "small", "One level for the whole folder (it stays live, so nothing inside is filtered: share a stricter subfolder on its own). A conversation reads only the shared folders it opened, and opening one counts as having seen its level."));
+  }
+  // New project
+  const here = convs.find((c) => c.id === view.conv);
+  const model = modelList.find((m) => here && m.name === here.model);
+  const form = el("form", "inline-form");
+  form.innerHTML = `<h3>New project</h3><label>Name <input data-name required maxlength="100" placeholder="e.g. Taxes"></label>`;
+  const nsel = levelSelect(model ? model.level : "local");
+  const lab = el("label", "", "Level "); lab.appendChild(nsel); form.appendChild(lab);
+  const add_ = el("button", "btn", "Make it"); add_.type = "submit"; form.appendChild(add_);
+  form.appendChild(el("p", "small form-msg"));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { await api("/api/projects", { name: form.querySelector("[data-name]").value.trim(), level: nsel.value, conv: view.conv }); loadProjects(); }
+    catch (err) { const m = form.querySelector(".form-msg"); m.classList.add("bad"); m.textContent = err.message; }
+  });
+  pane.appendChild(form);
+  pane.appendChild(el("p", "small", "A project starts at the level of the model in use unless you choose. Folders and single files get their own level in the Files tab (open a folder or a file)."));
+  // Folders and files with their own level
+  const own = (title, items, kind) => {
+    const keys = Object.keys(items);
+    if (!keys.length) return;
+    pane.appendChild(el("h3", "", title));
+    const ul = el("ul", "plain");
+    for (const path of keys) {
+      const li = el("li", "", `<code>${esc(path)}</code> ${lvlChip(items[path])} `);
+      const b = el("button", "btn small", kind === "zone" ? "Back to its project's level" : "Remove the mark"); b.type = "button";
+      b.addEventListener("click", async () => {
+        try { await apiConfirm(`/api/projects/${kind}`, { path, level: null }); } catch (err) { errCard(err); }
+        loadProjects();
+      });
+      li.appendChild(b); ul.appendChild(li);
+    }
+    pane.appendChild(ul);
+  };
+  own("Folders with their own level", p.zones, "zone");
+  own("Files marked", p.marks, "mark");
+  pane.appendChild(el("h3", "", "Models"));
+  pane.appendChild(el("p", "small", p.models.map((m) => `${esc(m.label)} ${lvlChip(m.level)}`).join(" · ") + "<br>Change a model's level in Settings (its profile's privacy)."));
+}
+
+// Adds a project to the conversation on screen (from its folder bar).
+async function addProjectCard() {
+  const here = convs.find((c) => c.id === view.conv);
+  if (!here) return;
+  const p = await api("/api/projects");
+  const have = new Set(here.projects.map((x) => x.name));
+  const free = pickable(p).filter((x) => !have.has(x.name) && rankOf(x.lowest) <= rankOf(here.level));
+  $("addProject")?.remove();
+  const n = el("div", "item sync"); n.id = "addProject";
+  n.innerHTML = `<div class="box"><h3>Add a project to this conversation</h3>${free.length
+    ? `<p class="small">A project's files come into this conversation's copy; a shared folder can be read at /mnt/shared. Only what a ${esc(here.level)} conversation may open is listed.</p><select data-p>${free.map((x) => `<option value="${esc(x.name)}">${esc(x.label)} (${esc(x.level)})</option>`).join("")}</select>`
+    : `<p class="small">No other project can be opened at this conversation's level (${esc(here.level)}).</p>`}
+    <p class="small form-msg"></p><div class="actions">${free.length ? '<button type="button" class="btn primary" data-ok>Add it</button>' : ""}<button type="button" class="btn" data-cancel>Cancel</button></div></div>`;
+  n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
+  n.querySelector("[data-ok]")?.addEventListener("click", async () => {
+    try { await api("/api/conversations/project", withConv({ name: n.querySelector("[data-p]").value })); n.remove(); refreshConvs(); refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); }
+    catch (err) { const m = n.querySelector(".form-msg"); m.classList.add("bad"); m.textContent = err.message; }
+  });
+  add(n); n.scrollIntoView({ block: "nearest" });
+}
 
 // --- Past runs ---------------------------------------------------------------
 async function openRun(run) {
@@ -2100,7 +2415,7 @@ async function loadFiles(path) {
     }
     pane.appendChild(quick);
     if (fileWhere === "copy" && data.where === "shared") pane.appendChild(el("p", "small", "This conversation gets its own copy at its first task; until then this is the main work folder."));
-    else if (fileWhere === "shared") pane.appendChild(el("p", "small", "Read-only for the agent. It changes when you bring a conversation's work in."));
+    else if (fileWhere === "shared") pane.appendChild(el("p", "small", "No agent can open it: each conversation gets its projects, at its level, in its own copy. It changes when you bring a conversation's work in."));
     const crumbs = el("nav", "crumbs"); crumbs.setAttribute("aria-label", "Folder path");
     const parts = data.path.split("/").filter(Boolean);
     const root = el("button", "", "/"); root.type = "button"; root.addEventListener("click", () => loadFiles("/")); crumbs.appendChild(root);
@@ -2111,13 +2426,17 @@ async function loadFiles(path) {
       if (i < parts.length - 1) crumbs.appendChild(document.createTextNode("/"));
     });
     pane.appendChild(crumbs);
+    if (data.privacy) pane.appendChild(folderPrivacy(data.privacy));
     if (!data.entries.length) { pane.appendChild(el("p", "small", "This folder is empty. Files the agent creates show up here.")); return; }
     const list = el("ul", "files");
     for (const f of data.entries) {
       const li = el("li", f.dir ? "dir" : "");
       if (Date.now() / 1000 - f.mtime < 120) li.classList.add("fresh");
+      if (f.hidden) li.classList.add("hidden-file");
       const b = el("button"); b.type = "button";
-      b.innerHTML = `<span class="fname">${esc(f.name)}</span><span class="fmeta">${f.dir ? "" : fmtBytes(f.size) + ", "}${ago(f.mtime)}</span>`;
+      const lvl = f.level ? " " + lvlChip(f.level, f.mark ? " (marked)" : f.zone ? " (own)" : "") : "";
+      const note = f.hidden ? ` <span class="small">hidden from this conversation</span>` : f.given ? ` <span class="small">given</span>` : "";
+      b.innerHTML = `<span class="fname">${esc(f.name)}${lvl}${note}</span><span class="fmeta">${f.dir ? "" : fmtBytes(f.size) + ", "}${ago(f.mtime)}</span>`;
       b.addEventListener("click", () => f.dir ? loadFiles(`${data.path}/${f.name}`) : showFile(`${data.path}/${f.name}`));
       li.appendChild(b); list.appendChild(li);
     }
@@ -2126,6 +2445,60 @@ async function loadFiles(path) {
     pane.innerHTML = `<p class="small">${esc(e.message)}</p>`;
     const b = el("button", "btn", "Go to the work folder"); b.type = "button"; b.addEventListener("click", () => loadFiles(".")); pane.appendChild(b);
   }
+}
+// A folder's level, and changing it: its own level (a zone), or a General folder made a project.
+function folderPrivacy(pv) {
+  const row = el("div", "privacy-row small");
+  if (!pv.rel) { row.innerHTML = `Top of the work folder: each folder here is a project, or part of General.`; return row; }
+  const topLevel = !pv.rel.includes("/");
+  if (topLevel && pv.project !== "") {
+    row.innerHTML = `Project <strong>${esc(pv.project_label)}</strong>: ${lvlChip(pv.level)}. Change its level in the Projects tab.`;
+    return row;
+  }
+  row.innerHTML = `This folder: ${lvlChip(pv.level)} ${pv.zone ? "(its own level)" : `(from ${esc(pv.project_label)})`}. `;
+  const sel = levelSelect(pv.zone || "", { blank: `Same as ${pv.project_label} (${pv.project_level})` });
+  sel.setAttribute("aria-label", "This folder's level");
+  sel.addEventListener("change", async () => {
+    try { await apiConfirm("/api/projects/zone", { path: pv.rel, level: sel.value || null }); } catch (err) { errCard(err); }
+    loadFiles(filePath);
+  });
+  row.appendChild(sel);
+  if (topLevel && pv.project === "") {   // a General folder can become a project of its own
+    const mk = el("button", "btn small", "Make it a project"); mk.type = "button";
+    mk.addEventListener("click", async () => {
+      try { await apiConfirm("/api/projects/claim", { name: pv.rel, level: sel.value || pv.level }); } catch (err) { errCard(err); }
+      loadFiles(filePath);
+    });
+    row.appendChild(mk);
+  }
+  return row;
+}
+// A file's level: mark it sensitive, remove the mark, or give it to the conversation on screen.
+function filePrivacy(f, path) {
+  const row = el("div", "privacy-row small");
+  row.innerHTML = `Level: ${lvlChip(f.level)}${f.mark ? " (marked)" : ""}${f.hidden ? ". Hidden from this conversation." : f.given ? ". Given to this conversation." : "."} `;
+  const redo = () => showFile(path);
+  if (!f.mark && f.level !== "local") {
+    const b = el("button", "btn small", "Mark sensitive (local only)"); b.type = "button";
+    b.addEventListener("click", async () => { try { await apiConfirm("/api/projects/mark", { path: f.rel, level: "local" }); } catch (err) { errCard(err); } redo(); });
+    row.appendChild(b);
+  }
+  if (f.mark) {
+    const b = el("button", "btn small", "Remove the mark"); b.type = "button";
+    b.addEventListener("click", async () => { try { await apiConfirm("/api/projects/mark", { path: f.rel, level: null }); } catch (err) { errCard(err); } redo(); });
+    row.appendChild(b);
+  }
+  if (f.hidden && view.conv && f.where === "shared") {
+    const b = el("button", "btn small", "Give it to this conversation"); b.type = "button";
+    b.title = "A one-off: the file keeps its level";
+    b.addEventListener("click", async () => {
+      try { if (await apiConfirm("/api/conversations/give", withConv({ path: f.rel }))) { refreshFolderSoon(); refreshConvs(); } }
+      catch (err) { errCard(err); }
+      redo();
+    });
+    row.appendChild(b);
+  }
+  return row;
 }
 async function showFile(path) {
   const pane = $("pane-files");
@@ -2139,6 +2512,7 @@ async function showFile(path) {
     head.appendChild(el("strong", "", esc(path.split("/").pop())));
     head.appendChild(el("span", "small", fmtBytes(f.size)));
     pane.appendChild(head);
+    if (f.level) pane.appendChild(filePrivacy(f, path));
     if (f.binary) pane.appendChild(el("p", "small", "This is a binary file, so it can't be shown as text."));
     else {
       const pre = el("pre", "viewer"); pre.textContent = f.text || "(empty file)"; pane.appendChild(pre);
@@ -2197,13 +2571,47 @@ async function loadMachine() {
 // --- Rules -------------------------------------------------------------------
 const PRESETS = {
   "": { label: "", base_url: "" },
-  openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: "openai", max_tokens_param: "max_completion_tokens" },
-  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com", key: "deepseek" },
-  gemini: { label: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", key: "gemini" },
-  "on-pc": { label: "Model on my PC (llama.cpp)", base_url: "http://{pc}:8091/v1", model: "local", key: "local" },
-  "claude-plan": { label: "Claude (my plan)", provider: "claude-code", model: "sonnet", base_url: "", key: "claude-subscription" },
+  openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: "openai", max_tokens_param: "max_completion_tokens", privacy: "paid" },
+  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com", key: "deepseek", privacy: "open" },
+  gemini: { label: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", key: "gemini", privacy: "open" },
+  "on-pc": { label: "Model on my PC (llama.cpp)", base_url: "http://{pc}:8091/v1", model: "local", key: "local", privacy: "local" },
+  "claude-plan": { label: "Claude (my plan)", provider: "claude-code", model: "sonnet", base_url: "", key: "claude-subscription", privacy: "paid" },
 };
 const PROVIDER_TEXT = { anthropic: "Anthropic API", "claude-code": "Claude Code on your plan" };
+
+// --- Updates (updates.py): which parts have a newer version out -------------------------
+function showUpdatesDot(u) {
+  const tab = $("tab-settings");
+  tab.classList.toggle("has-update", !!u.behind);
+  tab.title = u.behind ? `${u.behind} update${u.behind > 1 ? "s" : ""} available: see Updates` : "";
+}
+function refreshUpdatesDot() { api("/api/updates").then(showUpdatesDot).catch(() => {}); }
+function updatesNotice(ev) {
+  refreshUpdatesDot();
+  if (!$("pane-settings").hidden) loadUpdates();
+  if ("Notification" in window && Notification.permission === "granted" && ev.new?.length)
+    new Notification("UVMC: a newer version is out", { body: ev.new.map((i) => `${i.name}: ${i.latest}`).join("\n"), tag: "uvmc-updates" });
+}
+async function loadUpdates(check = false) {
+  const box = $("updatesBox");
+  if (!box) return;
+  try { renderUpdates(box, await api(check ? "/api/updates/check" : "/api/updates", check ? {} : undefined)); }
+  catch (e) { box.innerHTML = `<p class="small bad">${esc(e.message)}</p>`; }
+}
+function renderUpdates(box, u) {
+  showUpdatesDot(u);
+  const when = u.checked ? `Last checked ${ago(u.checked)}.` : "Not checked yet.";
+  const off = u.enabled ? "" : " Daily checks are off ([updates] in config.toml); Check now still works.";
+  const head = u.behind ? `<p class="small"><strong>${u.behind} update${u.behind > 1 ? "s" : ""} available.</strong> ${when}${off}</p>`
+    : `<p class="small">${u.items.length ? "Everything is up to date. " : ""}${when}${off} Nothing is installed by itself: you choose when (docs/guide.md, "Keeping UVMC up to date").</p>`;
+  const rows = u.items.map((i) => `<li><div><strong>${esc(i.name)}</strong></div>
+    <div class="sub"><span class="ver">${esc(i.installed || "?")}</span>${i.behind && i.latest ? ` &rarr; <span class="ver newer">${esc(i.latest)}</span>` : i.latest ? " (newest)" : ""}${i.restart ? ' <span class="newer">restart needed</span>' : ""}</div>
+    ${i.error ? `<p class="small bad how">${esc(i.error)}</p>` : ""}
+    ${i.behind ? `<p class="small how">${esc(i.how)}</p>` : ""}</li>`).join("");
+  box.innerHTML = `${head}${rows ? `<ul class="alist updates">${rows}</ul>` : ""}
+    <button class="btn" type="button" id="updatesCheck" ${u.checking ? "disabled" : ""}>${u.checking ? "Checking..." : "Check now"}</button>`;
+  $("updatesCheck").addEventListener("click", (e) => { e.target.disabled = true; e.target.textContent = "Checking..."; loadUpdates(true); });
+}
 
 async function loadSettings() {
   const pane = $("pane-settings");
@@ -2236,6 +2644,8 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
     : !p.key ? "no key needed" : p.has_key ? "key set" : "no key yet";
   const planKey = (set.keys || []).find((k) => k.name === "claude-subscription");
   pane.innerHTML = `<h2>Settings</h2>
+    <h3>Updates</h3>
+    <div id="updatesBox"><p class="small">Loading...</p></div>
     <h3>Your Claude plan</h3>
     ${planKey?.set
       ? `<p class="plan-ok">&#10003; Signed in with your Claude plan (token ${esc(planKey.hint)}).</p>
@@ -2285,6 +2695,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
       : "No Claude app on your PC has connected yet. If you ran connect-claude-apps (the installer offers it), open a new Claude Code session or quit and reopen Claude Desktop: they connect when they start. Otherwise run connect-claude-apps from the UVMC folder on your PC once.";
   }).catch(() => {});
   loadLocalModel();
+  loadUpdates();
   api("/api/briefing").then(renderBriefing).catch((e) => { $("briefingBox").innerHTML = `<p class="small bad">${esc(e.message)}</p>`; });
   $("ccUpdate").addEventListener("click", async (e) => {
     const line = $("ccLine");
@@ -2303,7 +2714,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
   const list = $("profiles");
   for (const p of set.profiles) {
     const li = el("li", "profile", `<div><strong>${esc(p.label)}</strong>${p.name === set.default ? ` <span class="tag">default</span>` : ""}
-      <div class="sub"><span class="cmdish">${esc(p.model)}</span>, ${PROVIDER_TEXT[p.provider] || esc(p.base_url)}</div>
+      <div class="sub"><span class="cmdish">${esc(p.model)}</span>, ${PROVIDER_TEXT[p.provider] || esc(p.base_url)} ${lvlChip(p.level)}${p.privacy ? "" : " (not set: counts as open)"}</div>
       <div class="sub">${keyText(p)}${p.source !== "config.toml" ? `, ${esc(p.source)}` : ""}</div></div>`);
     const acts = el("div", "acts2");
     const edit = el("button", "btn", "Edit"); edit.type = "button";
@@ -2503,22 +2914,37 @@ function profileForm(p) {
     <label>Address (base URL) <input name="base_url" value="${esc(p.base_url)}" placeholder="https://..."></label>
     <label>Model name <input name="model" value="${esc(p.model)}" required placeholder="as the provider names it"></label>
     <label>Key name <input name="key" value="${esc(p.key)}" placeholder="empty if no key is needed"></label>
+    <label>Privacy: the most private files it may see <select name="privacy">
+      <option value="local">local: it runs on my PC</option>
+      <option value="paid">paid: I trust this provider by contract</option>
+      <option value="open">open: it may log or train on what it gets</option></select></label>
+    <p class="small">Read the provider's terms before choosing paid. Suggested from the address and kind: <span data-suggest></span>.</p>
     <details><summary>Advanced</summary><label>Length setting the API expects <input name="max_tokens_param" value="${esc(p.max_tokens_param)}"></label></details>
     <p class="small form-msg"></p>
     <div class="actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-cancel>Cancel</button></div></form>`;
   const f = box.querySelector("form");
   f.provider.value = p.provider;
+  // The same suggestion as the supervisor's (privacy.suggest)
+  const suggest = () => /\{pc\}|^http:\/\/(localhost|127\.0\.0\.1)/.test(f.base_url.value) ? "local"
+    : ["anthropic", "claude-code"].includes(f.provider.value) ? "paid" : "open";
+  const showSuggest = () => { f.querySelector("[data-suggest]").textContent = suggest(); };
+  f.privacy.value = p.privacy || suggest();
+  showSuggest();
+  f.base_url.addEventListener("input", showSuggest);
+  f.provider.addEventListener("change", showSuggest);
   f.querySelector("[data-cancel]").addEventListener("click", () => { box.innerHTML = ""; });
   f.preset?.addEventListener("change", () => {
     const v = PRESETS[f.preset.value]; if (!v) return;
     f.provider.value = v.provider || "openai"; f.label.value = v.label; f.base_url.value = v.base_url;
     if (v.model) f.model.value = v.model;
     f.key.value = v.key ?? ""; f.max_tokens_param.value = v.max_tokens_param || "max_tokens";
+    f.privacy.value = v.privacy || suggest();
+    showSuggest();
     if (!f.name.value) f.name.value = f.preset.value;
   });
   f.addEventListener("submit", (e) => {
     e.preventDefault();
-    const body = Object.fromEntries(["name", "label", "provider", "base_url", "model", "key", "max_tokens_param"].map((k) => [k, f[k].value]));
+    const body = Object.fromEntries(["name", "label", "provider", "base_url", "model", "key", "max_tokens_param", "privacy"].map((k) => [k, f[k].value]));
     settingsPost("/api/settings/profile", body, box);
   });
   f.scrollIntoView({ block: "nearest" });
@@ -2552,7 +2978,7 @@ async function loadActivity() {
 }
 
 // --- Tabs --------------------------------------------------------------------
-const loaders = { files: () => loadFiles(filePath), tools: () => loadTools(), activity: loadActivity, runs: () => loadRuns(), machine: loadMachine, settings: loadSettings };
+const loaders = { files: () => loadFiles(filePath), projects: () => loadProjects(), tools: () => loadTools(), activity: loadActivity, runs: () => loadRuns(), machine: loadMachine, settings: loadSettings };
 const tabs = [...document.querySelectorAll('.tabs [role="tab"]')];
 function selectTab(tab) {
   for (const t of tabs) {

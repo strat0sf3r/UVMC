@@ -9,9 +9,21 @@ you in the panel. The PC's assistant can't approve anything.
 
 from __future__ import annotations
 
+import posixpath
 import time
 
+from . import privacy
+
 PROTOCOL = "2025-06-18"
+APPS_LEVEL = "paid"   # the Claude apps on your PC: what they get back is what a paid model may see
+
+
+def _private(c) -> str | None:
+    """A conversation that has seen files the Claude apps may not: they get no reply from it."""
+    if privacy.rank(c.seen) > privacy.rank(APPS_LEVEL):
+        return (f"That conversation has seen {c.seen} files, so its replies stay in the UVMC panel: "
+                f"the Claude apps on your PC are {APPS_LEVEL}. State: {c.state}.")
+    return None
 
 TOOLS = [
     {"name": "run_task",
@@ -94,7 +106,11 @@ def call(ctl, name: str, args: dict) -> dict:
             return _text("The task is empty.", True)
         try:
             if args.get("new_conversation", True) and not args.get("conversation"):
-                c = ctl.new_conversation(origin="claude-app", focus=False)
+                # At most paid: what it finds and says comes back to the Claude app.
+                base = ctl.convs.get(ctl.current)   # the model a new conversation gets
+                model = ctl.cfg.profile(base.model if base else None)
+                level = privacy.lower(model.level, APPS_LEVEL)
+                c = ctl.new_conversation(origin="claude-app", focus=False, level=level)
             else:
                 c = _conv(ctl, args)
                 if c is None:
@@ -111,6 +127,8 @@ def call(ctl, name: str, args: dict) -> dict:
         time.sleep(0.3)
         while c.busy and time.time() < end:
             time.sleep(0.5)
+        if _private(c):
+            return _text(_private(c))
         if c.busy:
             return _text(f"The task is still running after {wait} s.\n\n{_status(ctl, c)}\n\nCall task_status later.")
         return _text(_summary(ctl, c, after))
@@ -119,19 +137,34 @@ def call(ctl, name: str, args: dict) -> dict:
         if c is None:
             return _text("That conversation is closed.", True)
         if name == "task_status":
-            return _text(_status(ctl, c))
+            return _text(_private(c) or _status(ctl, c))
         was = c.busy
         ctl.stop(c.id)
         return _text("Stopped." if was else "Nothing was running.")
     if name in ("list_files", "read_file"):
         c = _conv(ctl, args)
+        if c is not None and not ctl.copies.exists(c.id):
+            c = None   # no copy yet: the files come from the main folder
         conv = c.id if c is not None else None
+        # The Claude apps on your PC are Claude: they see what a paid model may (privacy.py).
+        if c is not None and privacy.rank(c.seen) > privacy.rank(APPS_LEVEL):
+            return _text(f"That conversation has {c.seen} files: the Claude apps on your PC may not read its folder.", True)
+        rel = posixpath.normpath(str(args.get("path") or ".").replace("\\", "/")).lstrip("/")
+        if rel.startswith(".."):
+            return _text("That path is outside the work folder.", True)
+        if c is None:
+            scope = privacy.Scope(ctl.projects, [privacy.GENERAL, *ctl.projects.names()], APPS_LEVEL)
+            if rel not in ("", ".") and not scope.visible(rel):
+                return _text(f"{rel} is hidden from the Claude apps by its privacy level.", True)
     if name == "list_files":
         try:
-            d = ctl.list_files(str(args.get("path") or "."), conv)
+            d = ctl.list_files(rel or ".", conv)
         except FileNotFoundError as e:
             return _text(str(e), True)
-        names = [e["name"] + ("/" if e["dir"] else f" ({e['size']} bytes)") for e in d["entries"]]
+        entries = d["entries"]
+        if c is None:   # the main folder: only what a paid model may see
+            entries = [e for e in entries if scope.visible(posixpath.normpath(posixpath.join(rel, e["name"])))]
+        names = [e["name"] + ("/" if e["dir"] else f" ({e['size']} bytes)") for e in entries]
         return _text(f"{d['path']}:\n" + ("\n".join(names) if names else "(empty)"))
     if name == "read_file":
         try:

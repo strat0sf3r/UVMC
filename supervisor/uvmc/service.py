@@ -27,7 +27,8 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse, Response,
                                RedirectResponse, StreamingResponse)
 
-from . import __version__, config
+from . import __version__, config, privacy
+from .privacy import GENERAL, NeedsConfirm, PrivacyError, Projects, Scope, is_share, share_of
 from .agent import Session
 from . import briefing as briefing_mod
 from . import mcp_http
@@ -39,7 +40,7 @@ from .executor import (agent_users, conversation_slice, kill_all_agent_processes
 from .executor import SLICE as SLICE_AGENT
 from .log import ChildLog, RunLog, read_log
 from .made_tools import GET_CODE_SPEC, PROPOSE_SPEC, ToolBox, ToolError
-from .workcopies import MERGE_DIR, SyncError, WorkCopies
+from .workcopies import CONTEXT_DIR, MERGE_DIR, SyncError, WorkCopies
 from .transcript import transcript
 from .netproxy import Proxy, SiteList
 from .providers import Profile, ProviderError, ToolCall, make as make_provider
@@ -47,6 +48,7 @@ from .settings import Settings, SettingsError
 from .signin import KEY_NAME as PLAN_KEY, SignIn, SignInError
 from .shares import SPEC as SHARE_SPEC, ShareError, Shares
 from .tools import Tools
+from .updates import Updates
 
 STATIC = Path(__file__).parent / "static"
 INSTALL_CLAUDE = Path("/usr/local/sbin/uvmc-install-claude")
@@ -128,6 +130,13 @@ class Conversation:
         self.key = secrets.token_hex(16)        # Claude Code's tool calls name their conversation with this
         self.origin = origin                    # panel | api | claude-app
         self.model = model
+        self.projects: list[str] = []           # the projects it opened (privacy.py; "" = General)
+        self.level = "open"                     # what it may see: its model's level, or lower
+        self.seen = "open"                      # the most private file it has had in its copy
+        self.chosen = False                     # projects or level chosen by you (else they follow the model)
+        self.given: set[str] = set()            # files you gave it one by one, above its level
+        self.context_from: dict | None = None   # another conversation whose transcript it starts with
+        self.context_file: str | None = None    # where that transcript is in its copy
         self.worker_model: str | None = None    # set: the model coordinates and this profile works
         self.jobs: dict[str, Worker] = {}       # its workers' jobs: running, or done and not brought in yet
         self.job_seq = 0
@@ -206,7 +215,9 @@ class Controller:
         self.checkpoints = Checkpoints(cfg)
         self.checkpoint_lock = threading.Lock()
         # folders from your computer
-        self.shares = Shares(agent_home=os.path.dirname(cfg.workdir.rstrip("/")) or "/home/agent")
+        self.shares = Shares(agent_home=os.path.dirname(cfg.workdir.rstrip("/")) or "/home/agent",
+                             rw_root=Path(cfg.shares_rw), view_root=Path(cfg.shares_view),
+                             hold_root=Path(cfg.shares_hold))
         self.proxy: Proxy | None = None
         self.brain_proxy: Proxy | None = None     # Claude Code's own way online: Anthropic only
         self.bridge: Bridge | None = None         # where Claude Code's tool calls come in
@@ -218,8 +229,13 @@ class Controller:
         self.made = ToolBox(cfg, notify=lambda: self._broadcast({"kind": "made_tools"}),   # tools the agent built
                             on_run=lambda name, record: self._broadcast(
                                 {"kind": "tool_run", **self.made.result(name, record["id"])}))
+        # newer versions of UVMC's parts, for Settings > Updates (a notice the first time one is seen)
+        self.updates = Updates(cfg.state_dir, claude_version=self.claude_version,
+                               notify=lambda items: self._broadcast({"kind": "updates", "new": items}))
         self.copies = WorkCopies(cfg)             # each conversation's own copy of the work folder
         self.copy_lock = threading.Lock()
+        # Projects and their privacy levels: which conversation may see which files
+        self.projects = Projects(cfg.state_dir / "projects.json", cfg.privacy_general)
         self.pool_missing = self._pool_missing()  # setup makes the conversations' users
         first = cfg.conv_max_open + 1               # the workers' users come after them
         self.job_slots = list(range(first, first + cfg.delegate_slots))   # free ones
@@ -303,6 +319,13 @@ class Controller:
                 self.made.start()
             except Exception as e:  # the tools must never keep the supervisor from starting
                 print(f"Warning: the agent's tools could not start: {e}")
+        # Who may read each shared folder: set now (closing what an earlier run left open), and
+        # again every half minute, for a folder shared meanwhile (set_access skips unchanged ones).
+        def share_loop():
+            while True:
+                self._share_access()
+                time.sleep(30)
+        threading.Thread(target=share_loop, daemon=True, name="share-access").start()
         if proxy:
             # The agent user's proxy: nothing works as "agent" any more but the panel's file views,
             # so it refuses new sites. Each conversation has its own (see _start_proxy).
@@ -317,6 +340,9 @@ class Controller:
             self.start_brain_support()
         if audit:   # outside the VM (tests) there are no boxes to watch
             threading.Thread(target=self._memory_watch, name="uvmc-memory", daemon=True).start()
+        if audit and self.cfg.updates_check:   # and no version checks from the tests
+            threading.Thread(target=self.updates.loop, args=(self.cfg.updates_every_hours,),
+                             name="uvmc-updates", daemon=True).start()
 
     def start_brain_support(self) -> None:
         """For Claude Code on your plan. Failures only disable that mode."""
@@ -494,11 +520,29 @@ class Controller:
 
     # --- conversations and events ----------------------------------------------------
 
-    def new_conversation(self, model: str | None = None, origin: str = "panel", focus: bool = True) -> Conversation:
+    def new_conversation(self, model: str | None = None, origin: str = "panel", focus: bool = True,
+                         projects: list[str] | None = None, level: str | None = None,
+                         transcript_from: str | None = None) -> Conversation:
         """Opens a conversation. Over the limit, the oldest idle one with nothing left to bring
-        into the main folder (not the current one) closes."""
+        into the main folder (not the current one) closes. projects: the ones it opens (none
+        given: General if its level allows, else a scratch project of its own); level: what it
+        may see, its model's level or lower; transcript_from: another conversation whose whole
+        transcript it starts with (only if it may see everything that one has seen)."""
         if model is not None:
             self.cfg.profile(model)  # KeyError if unknown
+        base_conv = self.convs.get(self.current)
+        profile = self.cfg.profile(model or (base_conv.model if base_conv else self.cfg.model))
+        chosen_level = bool(level)
+        level = self._check_level(profile, level)
+        if projects is not None:
+            self._check_projects(projects, level, profile.label)
+        context = None
+        if transcript_from:
+            other = self.conv(transcript_from)
+            if privacy.rank(level) < privacy.rank(other.seen):
+                raise PrivacyError(f"\"{other.title or 'That conversation'}\" has seen {other.seen} files; a {level} "
+                                   "conversation can't start with its transcript.")
+            context = self._about(other)
         with self.lock:
             if len(self.convs) >= self.cfg.conv_max_open:
                 idle = [c for c in self.convs.values() if not c.busy and c.id != self.current
@@ -511,10 +555,15 @@ class Controller:
             used = {c.slot for c in self.convs.values()}
             slot = next(i for i in range(1, self.cfg.conv_max_open + 1) if i not in used)
             cid = uuid.uuid4().hex[:8]
-            c = Conversation(self.cfg, model or (base.model if base else self.cfg.model), origin, slot,
-                             str(self.copies.copy_dir(cid)), cid)
+            c = Conversation(self.cfg, profile.name, origin, slot, str(self.copies.copy_dir(cid)), cid)
             if base is not None and model is None:
                 c.worker_model = base.worker_model
+            c.level = level
+            c.chosen = projects is not None or chosen_level or context is not None
+            c.context_from = context
+            if context is not None:
+                c.seen = privacy.higher(c.seen, context.get("seen") or "open")   # its history comes along
+            c.projects = list(dict.fromkeys(projects)) if projects is not None else self._default_projects(cid, level)
             self._new_log(c)
             self.convs[c.id] = c
             if focus or not self.current:
@@ -523,6 +572,268 @@ class Controller:
             self._start_proxy(c)
         self._broadcast({"kind": "conversations", "conv": c.id})
         return c
+
+    # --- privacy: projects and levels (privacy.py) ---------------------------------------------
+
+    def _check_level(self, profile: Profile, level: str | None) -> str:
+        """A conversation's level: its model's (the ceiling) unless you choose a lower one."""
+        if level is None or level == "":
+            return profile.level
+        privacy.check(level)
+        if privacy.rank(level) > privacy.rank(profile.level):
+            raise PrivacyError(f"{profile.label} is {profile.level}: a conversation with it can't be {level}.")
+        return level
+
+    def _check_projects(self, names: list[str], level: str, who: str) -> None:
+        if not names:
+            raise ValueError("Choose at least one project.")
+        for n in names:
+            if not self.projects.has(n):
+                raise KeyError(f"There's no project called '{n}'.")
+            if is_share(n) and share_of(n) not in self.shares.names():
+                raise KeyError(f"No folder called '{share_of(n)}' is shared from your PC right now.")
+            lowest = self.projects.lowest(n)
+            if privacy.rank(lowest) > privacy.rank(level):
+                raise PrivacyError(f"{self._project_label(n)} is {self.projects.project_level(n)}: "
+                                   f"{who} ({level}) may not open it.")
+
+    def _default_projects(self, cid: str, level: str) -> list[str]:
+        """No projects chosen: General if the level allows, else a scratch project of its own
+        (made at its first task)."""
+        if privacy.rank(self.projects.lowest(GENERAL)) <= privacy.rank(level):
+            return [GENERAL]
+        return [f"scratch-{cid}"]
+
+    def _project_label(self, name: str) -> str:
+        return self.projects.label(name)
+
+    @staticmethod
+    def _folders(names: list[str]) -> tuple[str, ...]:
+        """The projects that are folders of the main folder (not General, not shares)."""
+        return tuple(n for n in names if n != GENERAL and not is_share(n))
+
+    def scope(self, c: Conversation | Worker) -> Scope:
+        """What a conversation may see: the one check for its copy, its bring-in, its briefing."""
+        conv = c.conv if isinstance(c, Worker) else c
+        level = privacy.lower(conv.level, c.profile.level) if isinstance(c, Worker) else conv.level
+        return Scope(self.projects, conv.projects, level, conv.seen, conv.given)
+
+    def _note_seen(self, c: Conversation) -> None:
+        """Its "seen" level only goes up: the history keeps what it read, even once deleted."""
+        try:
+            levels = self.copies.visible_levels(c.id, self.scope(c))
+        except (OSError, SyncError):
+            return
+        for lvl in levels:
+            c.seen = privacy.higher(c.seen, lvl)
+        for share in self.scope(c).shares(self.shares.names()):   # opening one counts as seeing it
+            c.seen = privacy.higher(c.seen, self.projects.share_level(share))
+
+    def share_access(self) -> dict[str, set[str]]:
+        """Which Linux users may read which shared folder now: each conversation's user for the
+        shares it opened (level allowing), and its running workers' users (at their level)."""
+        names = self.shares.names()
+        access: dict[str, set[str]] = {n: set() for n in names}
+        for c in list(self.convs.values()):
+            for share in self.scope(c).shares(names):
+                access[share].add(c.user)
+            for w in list(c.jobs.values()):
+                if w.session is not None:
+                    for share in self.scope(w).shares(names):
+                        access[share].add(w.user)
+        return access
+
+    def _share_access(self) -> None:
+        """Puts share_access() into the VM (each share's folder lets in only those users)."""
+        try:
+            self.shares.set_access(self.share_access())
+        except Exception as e:   # never stops the work; the folder stays closed to whoever isn't listed
+            print(f"Warning: could not set access to the shared folders: {e}")
+
+    def _claim_new_projects(self, c: Conversation) -> list[str]:
+        """A top-level folder the agent made, outside General, becomes a project at the
+        conversation's level (General, when it's open, claims it as usual)."""
+        if GENERAL in c.projects or not self.copies.exists(c.id):
+            return []
+        made = []
+        try:
+            entries = list(Path(c.copy_dir).iterdir())
+        except OSError:
+            return []
+        for e in entries:
+            name = e.name
+            if not e.is_dir() or name == MERGE_DIR or name in c.projects or self.projects.has(name):
+                continue
+            if (Path(self.cfg.workdir) / name).exists() or not privacy.NAME.match(name):
+                continue   # something of General's, which it can't see: stays blocked
+            self.projects.add(name, c.level, by=c.id)
+            c.projects.append(name)
+            made.append(name)
+        if made:
+            self._save_meta(c)
+            c.log.event("notice", text=f"New project{'s' if len(made) > 1 else ''} made by this conversation: "
+                                       f"{', '.join(made)} ({c.level}). Change the level in the panel if needed.")
+            self._broadcast({"kind": "projects"})
+        return made
+
+    def projects_view(self) -> dict:
+        d = self.projects.describe()
+        users = {}
+        for c in self.convs.values():
+            for n in c.projects:
+                users.setdefault(n, []).append({"id": c.id, "title": c.title or "untitled"})
+        for p in d["projects"]:
+            p["conversations"] = users.get(p["name"], [])
+            p["exists"] = p["name"] == GENERAL or (Path(self.cfg.workdir) / p["name"]).is_dir()
+        d["models"] = [{"name": m.name, "label": m.label, "level": m.level} for m in self.cfg.models.values()]
+        known = d.pop("shares")
+        d["shares"] = [{"name": f"share:{n}", "share": n, "label": n, "level": self.projects.share_level(n),
+                        "asked": bool((known.get(n) or {}).get("asked")), "lowest": self.projects.share_level(n),
+                        "conversations": users.get(f"share:{n}", []), "exists": True}
+                       for n in self.shares.names()]
+        return d
+
+    def add_project(self, name: str, level: str, cid: str | None = None) -> dict:
+        """A new, empty project; its level is the conversation's model's unless you choose."""
+        name = name.strip()
+        if not level:
+            level = self.cfg.profile(self.conv(cid).model if (cid or self.current) in self.convs else None).level
+        if self.projects.has(name):
+            raise ValueError(f"There's already a project called '{name}'.")
+        if (Path(self.cfg.workdir) / name).exists():
+            raise ValueError(f"'{name}' is already in the main folder (in General). Choose another name.")
+        self.projects.add(name, level)
+        with self.copy_lock:
+            self.copies.make_folder(name)
+        self._broadcast({"kind": "projects"})
+        return self.projects_view()
+
+    def claim_project(self, name: str, level: str, confirm: bool = False) -> dict:
+        """A folder already in General becomes a project of its own, with its level. Conversations
+        on General that may not see it any more keep what they have, and bring nothing back there."""
+        if self.projects.has(name) and name != GENERAL:
+            raise ValueError(f"'{name}' is already a project.")
+        if not (Path(self.cfg.workdir) / name).is_dir():
+            raise KeyError(f"There's no folder called '{name}' in the main folder.")
+        privacy.check(level)
+        current = self.projects.level(name)
+        if privacy.rank(level) < privacy.rank(current) and not confirm:
+            raise NeedsConfirm(self._loosen_text(name, current, level))
+        self.projects.add(name, level)
+        self._broadcast({"kind": "projects"})
+        return self.projects_view()
+
+    def _loosen_text(self, what: str, current: str, level: str) -> str:
+        """What making something less private means: which of your models gain access."""
+        gain = [m.label for m in self.cfg.models.values()
+                if privacy.rank(level) <= privacy.rank(m.level) < privacy.rank(current)]
+        return (f"Make {what} {level} (now {current})? "
+                + (f"These models will be able to see it: {', '.join(gain)}." if gain else
+                   "None of your models gains access."))
+
+    def set_project_level(self, name: str, level: str, confirm: bool = False) -> dict:
+        privacy.check(level)
+        if not self.projects.has(name) or (is_share(name) and share_of(name) not in self.shares.names()):
+            raise KeyError(f"There's no project called '{name}'.")
+        if self.projects.loosening(name, level) and not confirm:
+            raise NeedsConfirm(self._loosen_text(self._project_label(name), self.projects.project_level(name), level))
+        self.projects.set_level(name, level)
+        self._after_level_change()
+        return self.projects_view()
+
+    def set_zone(self, path: str, level: str | None, confirm: bool = False) -> dict:
+        """A folder with its own level (None: back to its project's)."""
+        current = self.projects.level(path)
+        if level is not None:
+            privacy.check(level)
+        new = level or self.projects.project_level(self.projects.project_of(path))
+        if privacy.rank(new) < privacy.rank(current) and not confirm:
+            raise NeedsConfirm(self._loosen_text(f"the folder {path}", current, new))
+        self.projects.set_zone(path, level)
+        self._after_level_change()
+        return self.projects_view()
+
+    def set_mark(self, path: str, level: str | None, confirm: bool = False) -> dict:
+        """A single file marked stricter than where it is ("sensitive": local)."""
+        current, around = self.projects.level(path), self.projects.level(path, with_mark=False)
+        new = privacy.higher(around, level) if level else around
+        if privacy.rank(new) < privacy.rank(current) and not confirm:
+            raise NeedsConfirm(self._loosen_text(path, current, new))
+        self.projects.set_mark(path, level)
+        self._after_level_change()
+        return self.projects_view()
+
+    def _after_level_change(self) -> None:
+        """Raising a level: conversations whose model may no longer see something they have keep
+        their copy, but a running one is told; nothing more private reaches them from now on.
+        A shared folder is live: who may read it changes at once."""
+        self._share_access()
+        self._broadcast({"kind": "projects"})
+
+    def open_project(self, cid: str, name: str) -> dict:
+        """Adds a project to a conversation that isn't working: its files come into the copy."""
+        c = self.conv(cid)
+        self._check_projects([name], c.level, self.cfg.profile(c.model).label)
+        with self.lock:
+            if c.busy:
+                raise Busy("Add a project when this conversation isn't working.")
+            if name in c.projects:
+                return {"projects": c.projects}
+            c.projects.append(name)
+        if is_share(name):
+            self._note_seen(c)
+            self._share_access()
+            c.session.briefing = None
+            c.log.event("notice", text=f"The shared folder {share_of(name)} added to this conversation "
+                                       f"(/mnt/shared/{share_of(name)}, read-only).")
+        elif self.copies.exists(c.id):
+            with self.copy_lock:
+                added = self.copies.add_visible(c.id, c.user, self.scope(c), self._folders([name]))
+            self._note_seen(c)
+            c.session.briefing = None   # told afresh at the next task (Claude Code restarts with it)
+            c.log.event("notice", text=f"Project {self._project_label(name)} added to this conversation "
+                                       f"({len(added)} file{'s' if len(added) != 1 else ''}).")
+        self._save_meta(c)
+        self._broadcast({"kind": "conversations", "conv": c.id})
+        return {"projects": c.projects}
+
+    def give_file(self, cid: str, path: str, confirm: bool = False) -> dict:
+        """One file it may not see, given to this conversation as a one-off: the file keeps its
+        level. The conversation has then seen that level, so its changes into less private places
+        are held for your review, and only models allowed that level may take over from it."""
+        c = self.conv(cid)
+        rel = privacy._clean(path)
+        if not (Path(self.cfg.workdir) / rel).is_file():
+            raise KeyError(f"There's no file {rel} in the main folder.")
+        if self.scope(c).visible(rel):
+            raise ValueError(f"This conversation can already see {rel}.")
+        level = self.projects.level(rel)
+        profile = self.cfg.profile(c.model)
+        if not confirm:
+            raise NeedsConfirm(
+                f"Give {rel} ({level}) to \"{c.title or 'this conversation'}\"? {profile.label} ({profile.level}) will read "
+                f"it. The file stays {level}; this conversation's changes into less private places will wait for your "
+                "review.")
+        with self.lock:
+            if c.busy:
+                raise Busy("Give it a file when this conversation isn't working.")
+        self.ensure_copy(c)
+        with self.copy_lock:
+            self.copies.give(c.id, c.user, rel)
+        c.given.add(rel)
+        c.seen = privacy.higher(c.seen, level)
+        self._save_meta(c)
+        c.log.event("notice", text=f"You gave this conversation {rel} ({level}). It is in its copy now; the file "
+                                   "keeps its level in the main folder.")
+        self._broadcast({"kind": "conversations", "conv": c.id})
+        return {"given": sorted(c.given), "seen": c.seen}
+
+    def held_diff(self, cid: str, path: str) -> dict:
+        c = self.conv(cid)
+        held = {x["path"] for x in self.copies.plan(c.id, self.scope(c))["held"]}
+        if path not in held:
+            raise KeyError("That change isn't waiting for your review.")
+        return self.copies.held_diff(c.id, path)
 
     def _start_proxy(self, c: Conversation) -> None:
         """A conversation's own proxy: every connection it makes is known to be its own."""
@@ -553,7 +864,10 @@ class Controller:
             d = self.copies.state / c.id
             d.mkdir(parents=True, exist_ok=True)
             (d / "meta.json").write_text(json.dumps({"title": c.title, "slot": c.slot, "origin": c.origin,
-                                                     "model": c.model, "created": c.created}), encoding="utf-8")
+                                                     "model": c.model, "created": c.created,
+                                                     "projects": c.projects, "level": c.level,
+                                                     "seen": c.seen, "given": sorted(c.given)}),
+                                         encoding="utf-8")
         except OSError:
             pass
 
@@ -583,6 +897,15 @@ class Controller:
                              str(self.copies.copy_dir(cid)), cid)
             c.title = m.get("title", "")
             c.created = m.get("created", time.time())
+            # From before projects (0.14 and older): its copy holds the whole main folder, so it
+            # counts as General, at the most private level, and its model must be allowed that far.
+            c.projects = [p for p in m.get("projects", [GENERAL]) if isinstance(p, str)] or [GENERAL]
+            ceiling = self.cfg.profile(model).level
+            c.level = m.get("level") if m.get("level") in privacy.RANK else ceiling
+            c.level = privacy.lower(c.level, ceiling)
+            c.seen = m.get("seen") if m.get("seen") in privacy.RANK else "local"
+            c.given = {p for p in m.get("given", []) if isinstance(p, str)}
+            c.chosen = True
             self._new_log(c)
             c.log.event("notice", text="UVMC restarted. This conversation's copy of the work folder is kept, "
                                        "so you can still bring its changes in; the agent starts afresh.")
@@ -605,20 +928,36 @@ class Controller:
         return self.new_conversation()
 
     def ensure_copy(self, c: Conversation) -> None:
-        """A conversation's copy of the main work folder, made at its first task."""
+        """A conversation's copy of the main work folder (what it may see of it), made at its
+        first task. Its scratch project, if it has one, is made now."""
         if not self.copies.exists(c.id):
+            for name in c.projects:
+                if name != GENERAL and not self.projects.has(name) and name == f"scratch-{c.id}":
+                    self.projects.add(name, c.level, scratch=True, by=c.id)
+                    self._broadcast({"kind": "projects"})
+            # A project removed meanwhile (or never made) is dropped rather than left dangling.
+            c.projects = [n for n in c.projects if self.projects.has(n)] or c.projects
             with self.copy_lock:
-                self.copies.create(c.id, c.user)
-            c.log.event("workcopy", path=c.copy_dir, shared=self.cfg.workdir)
+                for name in self._folders(c.projects):
+                    self.copies.make_folder(name)
+                self.copies.create(c.id, c.user, self.scope(c), self._folders(c.projects))
+            self._note_seen(c)
+            self._share_access()
+            c.log.event("workcopy", path=c.copy_dir, shared=self.cfg.workdir,
+                        projects=[self._project_label(n) for n in c.projects], level=c.level)
+            if c.context_from is not None:   # the transcript you started it with
+                c.context_file = self._hand_transcript(c, c.context_from, CONTEXT_DIR)
         self._save_meta(c)
 
     def unsaved(self, c: Conversation) -> int:
-        """How many of its changes aren't in the main folder yet."""
+        """How many of its changes aren't in the main folder yet (held and blocked ones too:
+        closing drops them)."""
         try:
-            plan = self.copies.plan(c.id)
+            plan = self.copies.plan(c.id, self.scope(c))
         except OSError:
             return 0
-        return len(plan["mine"]) + len(plan["merged"]) + len(plan["conflicts"]) + len(plan.get("resolving", []))
+        return (len(plan["mine"]) + len(plan["merged"]) + len(plan["conflicts"]) + len(plan.get("resolving", []))
+                + len(plan["held"]) + len(plan["blocked"]))
 
     def close_conversation(self, cid: str, discard: bool = False) -> None:
         with self.lock:
@@ -646,7 +985,15 @@ class Controller:
             self.copies.remove(c.id)
         except (SyncError, OSError) as e:
             print(f"Warning: could not remove the copy of conversation {c.id}: {e}")
+        scratch = f"scratch-{c.id}"
+        if scratch in c.projects and self.projects.has(scratch):
+            try:   # an unused scratch project goes with its conversation; one with files stays
+                if self.copies.remove_empty_folder(scratch) or not (Path(self.cfg.workdir) / scratch).exists():
+                    self.projects.remove(scratch)
+            except (SyncError, OSError):
+                pass
         self.convs.pop(c.id, None)
+        self._share_access()
         if self.mcp_conv == c.id:
             self.mcp_conv = None
         if self.current == c.id:
@@ -664,7 +1011,10 @@ class Controller:
             out.append({"id": c.id, "title": c.title, "origin": c.origin, "model": c.model,
                         "model_label": self.cfg.models[c.model].label if c.model in self.cfg.models else c.model,
                         "state": c.state, "waiting": waiting, "session": c.log.name, "slot": c.slot,
-                        "created": c.created, "last_active": c.last_active, "current": c.id == self.current})
+                        "created": c.created, "last_active": c.last_active, "current": c.id == self.current,
+                        "projects": [{"name": n, "label": self._project_label(n)} for n in c.projects],
+                        "level": c.level, "seen": c.seen,
+                        "ceiling": self.cfg.models[c.model].level if c.model in self.cfg.models else "open"})
         return out
 
     def _load_plan_usage(self) -> dict | None:
@@ -724,7 +1074,7 @@ class Controller:
     def models(self) -> list[dict]:
         return [{"name": p.name, "label": p.label, "provider": p.provider, "model": p.model,
                  "has_key": config.has_key(p), "key": p.key, "plan": p.provider == "claude-code",
-                 "on_pc": "{pc}" in p.base_url}
+                 "on_pc": "{pc}" in p.base_url, "level": p.level}
                 for p in self.cfg.models.values()]
 
     def local_model(self) -> dict:
@@ -758,15 +1108,48 @@ class Controller:
                    context=int((d.get("default_generation_settings") or {}).get("n_ctx") or 0))
         return out
 
-    def set_model(self, name: str, cid: str | None = None) -> None:
+    def set_model(self, name: str, cid: str | None = None, confirm: bool = False) -> None:
+        """Switching model. To one at least as safe as the current: done. To a less safe one
+        that may see everything this conversation has seen: only once you confirm. To one that
+        may not: refused (the history holds those files); start a new conversation instead."""
         profile = self.cfg.profile(name)  # KeyError if unknown
         c = self.conv(cid)
+        old = self.cfg.profile(c.model) if c.model in self.cfg.models else None
+        started = self.copies.exists(c.id) or bool(c.session.messages)
+        new_level = profile.level
+        if privacy.rank(new_level) < privacy.rank(c.level):
+            if started and privacy.rank(new_level) < privacy.rank(c.seen):
+                raise PrivacyError(
+                    f"This conversation has seen {c.seen} files, and {profile.label} is {new_level}: it would get them "
+                    f"with the conversation's history. Start a new conversation with {profile.label} instead "
+                    "(on the projects it may open).")
+            if started and not confirm:
+                names = ", ".join(self._project_label(n) for n in c.projects)
+                raise NeedsConfirm(
+                    f"Switch from {old.label if old else c.model} to {profile.label} ({new_level})? It will get this "
+                    f"conversation's history and the files of: {names}" + (
+                        f", and this conversation will be {new_level} from now on." if c.level != new_level else "."))
+        elif old is not None and privacy.rank(new_level) < privacy.rank(old.level) and started and not confirm:
+            raise NeedsConfirm(f"Switch from {old.label} ({old.level}) to {profile.label} ({new_level})? "
+                               "It will get this conversation's history and its files.")
         with self.lock:
             if c.busy:
                 raise Busy("Change the model when this conversation isn't working.")
             c.model = profile.name
+            if not started and not c.chosen:
+                # Nothing seen yet and nothing chosen: it follows the model, as if opened with it.
+                c.level = new_level
+                c.projects = self._default_projects(c.id, new_level)
+            elif privacy.rank(new_level) < privacy.rank(c.level):
+                c.level = new_level
+                if not started:   # nothing seen yet: its projects must still allow the new level
+                    c.projects = [n for n in c.projects
+                                  if privacy.rank(self.projects.lowest(n)) <= privacy.rank(new_level)
+                                  or n == f"scratch-{c.id}"] or [f"scratch-{c.id}"]
             c.session.close()  # a Claude Code process belongs to the model it was started with
-        c.log.event("model", model=profile.name, label=profile.label)
+        self._save_meta(c) if self.copies.exists(c.id) else None
+        self._share_access()
+        c.log.event("model", model=profile.name, label=profile.label, level=c.level)
 
     # --- delegation ------------------------------------------------------------
 
@@ -783,6 +1166,10 @@ class Controller:
             if name not in self.allowed_workers():
                 raise KeyError(f"'{name}' is not allowed as a worker (see [delegation] in config.toml).")
         c = self.conv(cid)
+        if name is not None and privacy.rank(self.cfg.profile(name).level) < privacy.rank(c.seen):
+            p = self.cfg.profile(name)
+            raise PrivacyError(f"{p.label} is {p.level}, and this conversation has {c.seen} files it would hand on. "
+                               f"Choose a worker at least {c.seen}.")
         with self.lock:
             if c.busy:
                 raise Busy("Change the worker when this conversation isn't working.")
@@ -857,8 +1244,36 @@ class Controller:
                                shares=self.shares, sites=self.sites, made=self.made,
                                workdir=(job.copy_dir if job else c.copy_dir) or self.cfg.workdir,
                                shared_workdir=self.cfg.workdir, coordinator_workdir=c.copy_dir,
-                               user=job.user if job else c.user)
+                               user=job.user if job else c.user, privacy_note=self._privacy_note(c),
+                               share_names=self.scope(job or c).shares(self.shares.names()), seen=c.seen)
         return briefing_mod.live(view, b["parts"], work_names, worker=worker)
+
+    def _privacy_note(self, c: Conversation) -> str:
+        """Its projects, its level, and how many files it may not see (never which ones)."""
+        names = list(self._folders(c.projects))
+        parts = []
+        if names:
+            parts.append(f"your project folder{'s' if len(names) > 1 else ''} {', '.join(n + '/' for n in names)}")
+        if GENERAL in c.projects:
+            parts.append("the top level of the work folder (the General project)")
+        text = (f"- This conversation works on {' and '.join(parts)}, at privacy level {c.level}. Changes elsewhere "
+                "can't be brought into the main folder.")
+        if GENERAL not in c.projects:
+            text += " A new folder you make at the top level becomes a new project."
+        try:
+            hidden = self.copies.hidden_count(self.scope(c))
+        except (OSError, SyncError):
+            hidden = 0
+        if hidden:
+            text += (f" {hidden} file{'s are' if hidden > 1 else ' is'} hidden from you by its privacy level; don't "
+                     "look for them.")
+        if c.given:
+            text += f" The user also gave you: {', '.join(sorted(c.given)[:20])}."
+        if c.context_file:
+            text += (f"\n- The user started this conversation with another one's whole transcript, in {c.context_file} "
+                     f"(\"{(c.context_from or {}).get('title') or 'untitled'}\"): read it first, it's where this work "
+                     "comes from.")
+        return text
 
     def briefing_view(self) -> dict:
         b = self.settings.briefing()
@@ -876,7 +1291,7 @@ class Controller:
         if self.made.registry:
             specs.append(GET_CODE_SPEC)
             handlers["get_tool_code"] = lambda args, call_id, c=c: self._get_tool_code(c, args, job)
-        if self.shares.names():
+        if self.scope(job or c).shares(self.shares.names()):
             specs.append(SHARE_SPEC)
             handlers["update_shared_file"] = lambda args, call_id, c=c: self._update_shared(c, args, call_id, job)
         return specs, handlers
@@ -886,8 +1301,13 @@ class Controller:
         tools/<name>, or tools/<name>-v<version> if that folder is already there, so nothing of
         the agent's is lost."""
         version, files = self.made.code(name)
+        level = self.made.level(name)
+        allowed = privacy.lower(c.level, job.profile.level) if job is not None else c.level
+        if privacy.rank(level) > privacy.rank(allowed):
+            raise PrivacyError(f"The tool {name} is {level}: a {allowed} conversation may not have its code.")
         if job is None:
             self.ensure_copy(c)
+        c.seen = privacy.higher(c.seen, level)   # its code may carry what its conversation saw
         at = job or c
         folder = f"tools/{name}"
         if (Path(at.copy_dir) / folder).exists():
@@ -904,6 +1324,8 @@ class Controller:
         except KeyError as e:
             known = ", ".join(sorted(self.made.registry)) or "none"
             return f"{e.args[0]} The approved tools: {known}.", True
+        except PrivacyError as e:
+            return str(e), True
         except (OSError, SyncError) as e:
             return f"Could not copy it: {e}", True
         return (f"Version {version} of {name} is now in {folder} in your work folder: {', '.join(files[:40])}. "
@@ -913,12 +1335,28 @@ class Controller:
     def work_on_tool(self, name: str) -> dict:
         """A fresh conversation for working on one tool: its code is already in its folder."""
         self.made.get(name)  # KeyError if unknown
+        level = self.made.level(name)
+        base = self.convs.get(self.current)
+        model = self.cfg.profile(base.model if base else self.cfg.model)
+        if privacy.rank(model.level) < privacy.rank(level):
+            raise PrivacyError(f"This tool is {level} and {model.label} is {model.level}: switch to a model that is at "
+                               f"least {level}, then try again.")
         c = self.new_conversation()
         folder, version, _ = self.copy_tool_code(c, name)
+        self._save_meta(c)
         title = self.made.registry[name]["manifest"]["title"]
         c.log.event("notice", text=f"UVMC copied version {version} of the tool {title} ({name}) into {folder} "
                                    "in this conversation's folder, for you and the agent to work on.")
         return {"conv": c.id, "folder": folder, "version": version, "name": name, "title": title}
+
+    def set_tool_level(self, name: str, level: str, confirm: bool = False) -> dict:
+        """A tool's level, changed later (Tools tab): lowering it asks, like a project's."""
+        privacy.check(level)
+        current = self.made.level(name)   # KeyError if unknown
+        if privacy.rank(level) < privacy.rank(current) and not confirm:
+            raise NeedsConfirm(self._loosen_text(f"the tool {name}", current, level))
+        self.made.set_level(name, level)
+        return self.made.view(name)
 
     def _propose_tool(self, c: Conversation, args: dict, call_id: str, job: Worker | None = None) -> tuple[str, bool]:
         """A tool the agent built: shown to you in full; installed only if you approve."""
@@ -928,16 +1366,24 @@ class Controller:
             info = self.made.preview(manifest, files)
         except ToolError as e:
             return str(e), True
+        # Its level: its code may carry what this conversation has seen (and what an earlier
+        # version had); you can change it on the card, and later in the Tools tab.
+        suggested = c.seen
+        if manifest["name"] in self.made.registry:
+            suggested = privacy.higher(suggested, self.made.level(manifest["name"]))
+        choice: dict = {}
         answer = self._ask("made_tool", {**info, "folder": folder, "reason": str(args.get("reason", ""))[:2000],
-                                         "call": call_id}, [c])
+                                         "call": call_id, "level": suggested, "seen": c.seen}, [c], choice=choice)
         if answer == "deny":
             return ("The user declined this tool, so nothing was installed. Ask them what to change "
                     "before proposing it again."), True
+        level = choice.get("level") or suggested
         try:
-            version = self.made.install(manifest, files)
+            version = self.made.install(manifest, files, level)
         except (ToolError, OSError) as e:
             return f"Installing it failed, so it isn't installed: {e}", True
-        c.log.event("made_tool", name=manifest["name"], title=manifest["title"], version=version, call=call_id)
+        c.log.event("made_tool", name=manifest["name"], title=manifest["title"], version=version, call=call_id,
+                    level=level)
         todo = self.made.missing(manifest["name"])
         nxt = (f"The user still has to fill in: {', '.join(todo)}. " if todo else "") + \
               "It starts switched off; the user turns it on in the Tools tab."
@@ -947,13 +1393,21 @@ class Controller:
 
     def _update_shared(self, c: Conversation, args: dict, call_id: str, job: Worker | None = None) -> tuple[str, bool]:
         share, rel = str(args.get("share", "")), str(args.get("path", ""))
+        visible = self.scope(job or c).shares(self.shares.names())
+        if share not in visible:
+            return (f"'{share}' is not one of this conversation's shared folders"
+                    + (f" (yours: {', '.join(visible)})." if visible else "."), True)
+        level = self.projects.share_level(share)
         try:
             target = self.shares.target(share, rel)
             src = self.shares.source((job or c).tools._as_agent, str(args.get("source", "")))
             info = self.shares.preview(src, target)
         except ShareError as e:
             return str(e), True
-        answer = self._ask("file", {"share": share, "path": rel, "source": str(src),
+        down = privacy.rank(level) < privacy.rank(c.seen)   # data could flow to a less private place
+        answer = self._ask("file", {"share": share, "path": rel, "source": str(src), "level": level, "seen": c.seen,
+                                    "warning": (f"This conversation has seen {c.seen} files and {share} is {level}: "
+                                                "check that nothing private goes into it.") if down else "",
                                     "reason": str(args.get("reason", "")), "call": call_id, **info}, [c])
         if answer == "deny":
             return "The user declined this change. Nothing was written.", True
@@ -983,6 +1437,11 @@ class Controller:
         if name not in self.allowed_workers():
             return f"'{name}' is not an allowed worker. Choose one of: {', '.join(self.allowed_workers())}.", True
         profile = self.cfg.profile(name)
+        if privacy.rank(profile.level) < privacy.rank(c.seen):
+            # The instructions and the folder carry what this conversation has seen.
+            fit = [n for n in self.allowed_workers() if privacy.rank(self.cfg.profile(n).level) >= privacy.rank(c.seen)]
+            return (f"{profile.label} is {profile.level}, and this conversation has {c.seen} files: it can't be given "
+                    f"this job. " + (f"Workers that may: {', '.join(fit)}." if fit else "No allowed worker may.")), True
         try:
             provider = self.provider_factory(profile)
         except ProviderError as e:
@@ -1028,6 +1487,7 @@ class Controller:
             # Claude Code on your plan as the worker: its own process, whose tool calls name this job.
             worker.bridge_key = w.key
             w.session = worker
+            self._share_access()
             failed = None
             try:
                 w.reason = worker.run_task(instructions)
@@ -1036,6 +1496,7 @@ class Controller:
                 w.reason = "failed"
             finally:
                 w.session = None
+                self._share_access()
                 worker.close()   # each job starts fresh, so a Claude Code worker doesn't linger
                 self._end_job(c, w, log)
             w.report = worker.last_text or "(it gave no final report)"
@@ -1081,7 +1542,7 @@ class Controller:
             w.proxy = None
         w.task_sites.clear()
         try:
-            self.copies.freeze_job(w.id)
+            self.copies.freeze_job(w.id, reader=c.user)
         except (SyncError, OSError) as e:
             log.event("notice", text=f"The job's folder could not be locked: {e}")
 
@@ -1159,10 +1620,27 @@ class Controller:
             parts.append(f"kept your version: {', '.join(r['kept'])}")
         text = (f"Job {jid}: " + "; ".join(parts) + ".") if parts else f"Job {jid}: nothing to bring in."
         if r["open_conflicts"]:
+            # Its versions go next to yours (.uvmc-merge/), where a new worker finds them too:
+            # no agent can open another's folder.
+            placed = []
+            for rel in r["open_conflicts"]:
+                src = Path(w.copy_dir) / rel
+                try:
+                    data = src.read_bytes() if src.is_file() else None
+                except OSError:
+                    data = None
+                if data is not None:
+                    try:
+                        self.copies._write(Path(c.copy_dir) / MERGE_DIR / (rel + ".worker"), data, c.user)
+                        placed.append(f"{MERGE_DIR}/{rel}.worker")
+                    except (SyncError, OSError):
+                        pass
+            where = (f"Its versions are in your folder: {', '.join(placed)}." if placed
+                     else f"Its versions are in {w.copy_dir}.")
             text += (f" Still open, changed both in its folder and in yours: {', '.join(r['open_conflicts'])}. "
-                     f"Its versions are in {w.copy_dir}. Call bring_in_worker again with choices for each of "
-                     'these files ("worker" or "mine"); or delegate combining them (a worker can read both '
-                     "folders), bring that job in, and then call discard_worker for this one.")
+                     f"{where} Call bring_in_worker again with choices for each of "
+                     'these files ("worker" or "mine"); or delegate combining them (a new worker gets the '
+                     f"{MERGE_DIR} folder too), bring that job in, and then call discard_worker for this one.")
             return text, False
         self._drop_job(c, jid)
         return text + " Its folder is removed.", False
@@ -1291,11 +1769,12 @@ class Controller:
 
     def run_and_wait(self, text: str, model: str | None = None, new: bool = False,
                      timeout: float = 1800, no_ask: bool = False, cid: str | None = None,
-                     origin: str = "api") -> dict:
+                     origin: str = "api", projects: list[str] | None = None, level: str | None = None) -> dict:
         """Runs one task and returns when it ends: for scripts (POST /api/run). With new, in a
-        conversation of its own, next to the ones in the panel."""
+        conversation of its own, next to the ones in the panel (projects, level: as for a new
+        conversation)."""
         if new:
-            c = self.new_conversation(model, origin=origin)
+            c = self.new_conversation(model, origin=origin, projects=projects, level=level)
         else:
             c = self.conv(cid)
             if c.busy:
@@ -1374,18 +1853,20 @@ class Controller:
 
     def changes(self, conv: str | None = None) -> dict:
         c = self.conv(conv)
-        plan = self.copies.plan(c.id)
+        self._claim_new_projects(c)
+        plan = self.copies.plan(c.id, self.scope(c))
         origins = self._load_json("main_origins.json") or {}
         for x in plan["conflicts"]:
             # The conversation whose version is in the main folder, if it's open: it can resolve it instead.
             o = self.convs.get((origins.get(x["path"]) or {}).get("conv", ""))
-            if o is not None and o is not c and self.copies.exists(o.id):
+            if o is not None and o is not c and self.copies.exists(o.id) and self._may_hand(c, o, x["path"]):
                 x["other"] = {"id": o.id, "title": o.title or "untitled",
                               "model_label": self.cfg.models[o.model].label if o.model in self.cfg.models else o.model}
         for x in plan.get("handed", []):
             o = self.convs.get(x["conv"])
             x["title"] = (o.title or "untitled") if o else "another conversation"
-        return {**plan, "conv": c.id, "copy": c.copy_dir, "main": self.cfg.workdir}
+        return {**plan, "conv": c.id, "copy": c.copy_dir, "main": self.cfg.workdir, "level": c.level,
+                "seen": c.seen, "projects": [{"name": n, "label": self._project_label(n)} for n in c.projects]}
 
     def sync(self, conv: str | None, choices: dict | None = None) -> dict:
         """Brings a conversation's work into the main folder and the main folder's into its copy.
@@ -1394,13 +1875,18 @@ class Controller:
         folders), the way Claude Code resolves a git conflict; you bring its result in like any
         other change. choices: path -> "agent" (this conversation's agent: the default),
         "agent:<id>" (another open conversation's agent, e.g. the one whose version is in the
-        main folder), "mine", "main" or "later"."""
+        main folder), "mine", "main" or "later". For a held change (it would put what this
+        conversation has seen somewhere less private): "release" brings it in; without it, it
+        stays held."""
         choices = dict(choices or {})
         c = self.conv(conv)
+        release = {p for p, v in choices.items() if v == "release"}
         with self.lock:
             if c.busy:
                 raise Busy("Wait until this conversation's task ends.")
-            plan = self.copies.plan(c.id)
+            self._claim_new_projects(c)
+            scope = self.scope(c)
+            plan = self.copies.plan(c.id, scope, release)
             conflicts = [x["path"] for x in plan["conflicts"]]
             own = [p for p in conflicts if choices.get(p, "agent") == "agent"]
             others: dict[str, list[str]] = {}
@@ -1413,12 +1899,15 @@ class Controller:
                     raise ValueError(f"The conversation chosen to resolve {p} isn't open any more.")
                 if o.busy:
                     raise Busy(f"\"{o.title or o.id}\" is working. Let this conversation resolve {p}, or wait.")
+                self._check_handover(c, o, p)
                 others.setdefault(o.id, []).append(p)
             fixed = {p: v for p, v in choices.items() if v in ("mine", "main")}
             with self.copy_lock:
-                r = self.copies.sync(c.id, c.user, fixed)
+                r = self.copies.sync(c.id, c.user, fixed, scope=scope, release=release)
                 handed = {oid: self.copies.prepare_other_merge(c.id, oid, self.convs[oid].user, paths)
                           for oid, paths in others.items()}
+            self._note_seen(c)
+            self._save_meta(c)
         n_in = len(r["brought_in"]) + len(r["merged"])
         r["agent_merging"] = own
         r["other_merging"] = [{"conv": oid, "title": self.convs[oid].title, "paths": paths}
@@ -1447,6 +1936,22 @@ class Controller:
                 c.log.event("notice", text=f"The other conversation couldn't start resolving: {e}")
         return r
 
+    def _may_hand(self, c: Conversation, o: Conversation, path: str) -> bool:
+        try:
+            self._check_handover(c, o, path)
+            return True
+        except PrivacyError:
+            return False
+
+    def _check_handover(self, c: Conversation, o: Conversation, path: str) -> None:
+        """Another conversation resolving c's conflict gets c's version and c's whole transcript:
+        only if it may see everything c has seen, and the file itself."""
+        if privacy.rank(o.level) < privacy.rank(c.seen):
+            raise PrivacyError(f"\"{o.title or o.id}\" is {o.level}, and this conversation has seen {c.seen} files: "
+                               "it can't resolve this conflict (it would get them with the transcript).")
+        if not self.scope(o).visible(path):
+            raise PrivacyError(f"\"{o.title or o.id}\" may not see {path}.")
+
     def resolution(self, conv: str | None = None) -> dict:
         """An agent's proposed resolution, file by file, for you to accept or replace."""
         c = self.conv(conv)
@@ -1457,7 +1962,8 @@ class Controller:
             f["other_title"] = (o.title or "untitled") if o else None
             # Another conversation could resolve it instead: the one whose version is in the main folder.
             src = self.convs.get((origins.get(f["path"]) or {}).get("conv", ""))
-            if src is not None and src is not c and not f.get("other_conv") and self.copies.exists(src.id):
+            if (src is not None and src is not c and not f.get("other_conv") and self.copies.exists(src.id)
+                    and self._may_hand(c, src, f["path"])):
                 f["reassign"] = {"id": src.id, "title": src.title or "untitled",
                                  "model_label": self.cfg.models[src.model].label if src.model in self.cfg.models else src.model}
         return {"conv": c.id, "files": files, "explanation": c.session.last_text, "state": c.state}
@@ -1472,7 +1978,7 @@ class Controller:
         reassign = {p: v for p, v in choices.items() if str(v).startswith("agent:")}
         plain = {p: ("later" if p in reassign else v) for p, v in choices.items()}
         with self.copy_lock:
-            r = self.copies.resolve(c.id, c.user, plain)
+            r = self.copies.resolve(c.id, c.user, plain, self.scope(c))
         if r.get("brought_in"):
             origins = self._load_json("main_origins.json") or {}
             for path in r["brought_in"]:
@@ -1482,7 +1988,7 @@ class Controller:
                     reopened=[p for p in r.get("reopened", []) if p not in reassign])
         self._broadcast({"kind": "shared_folder", "conv": c.id})
         if reassign:   # the reopened conflicts go to the conversation you chose
-            open_ = [x["path"] for x in self.copies.plan(c.id)["conflicts"]]
+            open_ = [x["path"] for x in self.copies.plan(c.id, self.scope(c))["conflicts"]]
             self.sync(c.id, {p: reassign.get(p, "later") for p in open_})
         return r
 
@@ -1490,12 +1996,13 @@ class Controller:
         """What a conversation was doing, for an agent resolving a conflict with its work."""
         tasks = [x.get("text", "") for x in c.log.read() if x.get("kind") == "task" and not x.get("parent")]
         return {"conv": c.id, "title": c.title, "tasks": [t[:300] for t in tasks[-5:]],
-                "last_reply": (c.session.last_text or "")[:600], "log": c.log.name, "at": time.time()}
+                "last_reply": (c.session.last_text or "")[:600], "log": c.log.name, "at": time.time(),
+                "seen": c.seen}
 
-    def _hand_transcript(self, to: Conversation, about: dict) -> str | None:
+    def _hand_transcript(self, to: Conversation, about: dict, folder: str = MERGE_DIR) -> str | None:
         """Writes the other conversation's log, as a readable transcript, into the resolving
-        conversation's .uvmc-merge/ (from the log UVMC keeps, so it works after a close too).
-        Returns its path relative to the conversation's folder."""
+        conversation's .uvmc-merge/ (from the log UVMC keeps, so it works after a close too), or
+        another folder of its copy. Returns its path relative to the conversation's folder."""
         name = about.get("log")
         if not name:
             return None
@@ -1505,7 +2012,7 @@ class Controller:
             return None
         title = about.get("title") or "untitled"
         slug = "-".join("".join(ch if ch.isalnum() else " " for ch in title.lower()).split())[:40] or name
-        rel = f"{MERGE_DIR}/conversation-{slug}.md"
+        rel = f"{folder}/conversation-{slug}.md"
         try:
             self.copies._write(Path(to.copy_dir) / rel, transcript(records, title).encode(), to.user)
         except (SyncError, OSError):
@@ -1533,8 +2040,8 @@ class Controller:
         task = ("The user asked you to resolve conflicts with another conversation's work, since you know your "
                 f"side best. It is {self._describe(self._about(c))} "
                 + (f"Its whole conversation (what it was asked, its answers and steps) is in {log}. " if log else "")
-                + f"Its folder, which you can read, is "
-                f"{c.copy_dir}; the main work folder is {self.cfg.workdir}.\n\nFor each file, work out what both "
+                + "Its version and the common one are in .uvmc-merge/ (you can't open its folder or the main "
+                "folder directly).\n\nFor each file, work out what both "
                 "sides were doing, then make your file contain both sides' work. If a file isn't text, inspect it with "
                 "your tools and decide what to keep. When done, delete the .uvmc-merge folder. If two changes really "
                 "contradict each other, don't guess: say what each side wanted, suggest the resolution you think is "
@@ -1548,7 +2055,7 @@ class Controller:
         c = self.conv(conv)
         if c.busy:
             raise Busy("Wait until this conversation's task ends.")
-        open_ = {x["path"] for x in self.copies.plan(c.id)["conflicts"]}
+        open_ = {x["path"] for x in self.copies.plan(c.id, self.scope(c))["conflicts"]}
         paths = [p for p in paths if p in open_]
         if not paths:
             raise ValueError("None of these files is in conflict any more.")
@@ -1567,20 +2074,22 @@ class Controller:
                 line += f"; the version both started from is in {f['before']}"
             line += "."
             o = origins.get(f["path"])
+            if o and privacy.rank(c.level) < privacy.rank(o.get("seen") or "local"):
+                o = None   # it saw more private files than this conversation may: nothing of it is told
+                line += " The main folder's version came from another conversation."
             if o:   # what the other side was for
                 line += " The main folder's version came from " + self._describe(o)
+                # Its whole log only if this conversation may see everything that one could.
                 if o.get("log") not in written:
-                    written[o.get("log")] = self._hand_transcript(c, o)
+                    written[o.get("log")] = (self._hand_transcript(c, o) if privacy.rank(c.level)
+                                             >= privacy.rank(o.get("seen") or "local") else None)
                 if written.get(o.get("log")):
                     line += f" Its whole conversation (what it was asked, its answers and steps) is in {written[o.get('log')]}."
-                other = self.convs.get(o.get("conv"))
-                if other is not None and other is not c and self.copies.exists(other.id):
-                    line += f" That conversation's folder, which you can read, is {other.copy_dir}."
             lines.append(line)
         task = ("These files were changed both here and in the main work folder, by another conversation. "
                 "Resolve each one like a merge conflict: first work out what each side was doing (your own tasks "
-                "in this conversation, the other conversation's below, and the files around them; you can read the "
-                f"main work folder, {self.cfg.workdir}, and the other conversations' folders), then make your file "
+                "in this conversation, the other conversation's below, and the files around them; the other "
+                "versions are in .uvmc-merge/), then make your file "
                 "contain both sides' work. If a file isn't text, inspect it with your tools and decide what to keep. "
                 "To end up without the file, delete yours. When done, delete the .uvmc-merge folder. If two changes "
                 "really contradict each other, don't guess: say what each side wanted, suggest the resolution you "
@@ -1597,7 +2106,7 @@ class Controller:
             c = self.conv(conv) if (conv or self.current) in self.convs else None
             if c is not None and self.copies.exists(c.id):
                 # Its changes count as not brought in again (the copy keeps them).
-                self.copies._snapshot_base(c.id)
+                self.copies._snapshot_base(c.id, scope=self.scope(c))
         self._broadcast({"kind": "shared_folder", "conv": conv})
         if c is not None:
             c.log.event("notice", text="The main folder is back to how it was before that bring-in. "
@@ -1605,9 +2114,11 @@ class Controller:
 
     # --- approvals -----------------------------------------------------------
 
-    def _ask(self, kind: str, info: dict, convs: list[Conversation], timeout: float | None = None) -> str:
+    def _ask(self, kind: str, info: dict, convs: list[Conversation], timeout: float | None = None,
+             choice: dict | None = None) -> str:
         """Shows an approval in the conversations it concerns and waits. Returns "allow",
-        "always" or "deny"."""
+        "always" or "deny". choice: filled with what you chose on the card besides the answer
+        (a tool's level)."""
         pid = uuid.uuid4().hex[:12]
         if all(c.no_ask for c in convs):  # started by a script that can't answer: refuse instead of waiting
             for c in convs:
@@ -1632,6 +2143,8 @@ class Controller:
         self.pending.pop(pid, None)
         stopped = all(c.cancel.is_set() for c in convs)
         answer = entry["answer"] if entry["event"].is_set() and not stopped else "deny"
+        if choice is not None:
+            choice.update(entry.get("choice") or {})
         for c in convs:
             c.log.event("approval_done", id=pid, type=kind, call=info.get("call"), answer=answer,
                         allow=answer != "deny", timed_out=timed_out)
@@ -1642,14 +2155,17 @@ class Controller:
     def _approve(self, c: Conversation, tool: str, args: dict, reason: str, call_id: str = "") -> bool:
         return self._ask("tool", {"tool": tool, "args": args, "reason": reason, "call": call_id}, [c]) != "deny"
 
-    def decide(self, pid: str, answer: str) -> None:
+    def decide(self, pid: str, answer: str, level: str | None = None) -> None:
+        """level: for a tool the agent built, the privacy level you approve it at."""
         entry = self.pending.get(pid)
         if entry is None:
             raise KeyError("That request is no longer waiting.")
         if answer not in ("allow", "always", "deny"):
             raise ValueError("Answer must be allow, always or deny.")
-        if answer == "always" and entry["type"] != "site":
-            answer = "allow"
+        if level and entry["type"] == "made_tool":
+            entry["choice"] = {"level": privacy.check(level)}
+        if answer == "always" and (entry["type"] != "site" or entry.get("always") is False):
+            answer = "allow"   # a conversation that has seen private files: asked again next time
         entry["answer"] = answer
         entry["event"].set()
 
@@ -1677,8 +2193,15 @@ class Controller:
         result = False
         try:
             if self.cfg.net_ask_unknown:
+                # A conversation that has seen paid or local files could send them out through the
+                # site: you're asked each time (no "always"), and told what it has seen.
+                private = privacy.rank(c.seen) > privacy.rank("open")
+                reason = "This site is not on your allowed list."
+                if private:
+                    reason += (f" This conversation has seen {c.seen} files, which could go out through it: "
+                               "allow it only if you trust the site with them.")
                 answer = self._ask("site", {"host": host, "port": port, "call": self._active_call(c, w),
-                                            "reason": "This site is not on your allowed list."},
+                                            "reason": reason, "seen": c.seen, "always": not private},
                                    [c], timeout=self.cfg.net_approval_timeout_s)
                 if answer == "always":
                     self.sites.add(host)
@@ -1816,7 +2339,42 @@ class Controller:
             entries.append({"name": name, "dir": kind == "d", "size": int(size or 0),
                             "mtime": float(mtime or 0)})
         entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
-        return {"path": lines[0] if lines else path, "entries": entries, "where": self._where(conv, where)}
+        out = {"path": lines[0] if lines else path, "entries": entries, "where": self._where(conv, where)}
+        self._add_levels(out, conv)
+        return out
+
+    def _add_levels(self, out: dict, conv: str | None) -> None:
+        """Each entry's privacy level, and whether this conversation may see it, when the listing
+        is inside the main folder or a conversation's copy (the same paths in both)."""
+        c = self.convs.get(conv or "") if conv else None
+        top = c.copy_dir if (c is not None and out["where"] == "copy") else self.cfg.workdir
+        here = os.path.normpath(out["path"])
+        top = os.path.normpath(top)
+        if here != top and not here.startswith(top + os.sep):
+            return
+        rel_dir = os.path.relpath(here, top).replace(os.sep, "/")
+        rel_dir = "" if rel_dir == "." else rel_dir
+        if rel_dir.split("/", 1)[0] in (MERGE_DIR, CONTEXT_DIR):
+            return
+        scope = self.scope(c) if c is not None else None
+        zones, marks = self.projects.data["zones"], self.projects.data["marks"]
+        for e in out["entries"]:
+            rel = f"{rel_dir}/{e['name']}" if rel_dir else e["name"]
+            if e["name"] in (MERGE_DIR, CONTEXT_DIR) and not rel_dir:
+                continue
+            e["rel"] = rel
+            e["level"] = self.projects.level(rel)
+            e["zone"] = zones.get(rel)
+            e["mark"] = marks.get(rel)
+            if scope is not None:
+                e["hidden"] = not scope.visible(rel)
+                e["given"] = rel in c.given
+        info = {"rel": rel_dir, "project": self.projects.project_of(rel_dir) if rel_dir else None}
+        if rel_dir:
+            info.update(level=self.projects.level(rel_dir), zone=zones.get(rel_dir),
+                        project_label=self._project_label(info["project"]),
+                        project_level=self.projects.project_level(info["project"]))
+        out["privacy"] = info
 
     def read_file(self, path: str, limit: int = 200_000, conv: str | None = None, where: str = "copy") -> dict:
         p = self._files_as(conv, where)._as_agent(': uvmc-panel; wc -c < "$1" && head -c "$2" -- "$1"', path, str(limit), timeout=15)
@@ -1824,10 +2382,30 @@ class Controller:
             raise FileNotFoundError(p.stderr.decode(errors="replace").strip() or f"Cannot read {path}")
         size_line, _, data = p.stdout.partition(b"\n")
         size = int(size_line.strip() or 0)
+        info = self._file_level(path, conv, where)
         if b"\x00" in data[:8000]:
-            return {"path": path, "size": size, "binary": True, "text": ""}
+            return {"path": path, "size": size, "binary": True, "text": "", **info}
         return {"path": path, "size": size, "binary": False, "truncated": size > limit,
-                "text": data.decode("utf-8", errors="replace")}
+                "text": data.decode("utf-8", errors="replace"), **info}
+
+    def _file_level(self, path: str, conv: str | None, where: str) -> dict:
+        """A file's level, mark, and whether the conversation may see it (inside the main folder
+        or its copy only)."""
+        c = self.convs.get(conv or "") if conv else None
+        where_now = self._where(conv, where)
+        top = os.path.normpath(c.copy_dir if (c is not None and where_now == "copy") else self.cfg.workdir)
+        full = os.path.normpath(path if os.path.isabs(path) else os.path.join(top, path))
+        if not full.startswith(top + os.sep):
+            return {}
+        rel = os.path.relpath(full, top).replace(os.sep, "/")
+        if rel.split("/", 1)[0] in (MERGE_DIR, CONTEXT_DIR):
+            return {}
+        out = {"rel": rel, "level": self.projects.level(rel), "mark": self.projects.data["marks"].get(rel),
+               "around": self.projects.level(rel, with_mark=False), "where": where_now}
+        if c is not None:
+            out["hidden"] = not self.scope(c).visible(rel)
+            out["given"] = rel in c.given
+        return out
 
     def config_text(self) -> dict:
         try:
@@ -1936,6 +2514,15 @@ def create_app(ctl: Controller, token: str | None):
     def fail(status: int, message: str):
         raise HTTPException(status, message)
 
+    # Privacy (privacy.py): refused outright, or allowed once you confirm (send "confirm": true).
+    @app.exception_handler(PrivacyError)
+    async def privacy_refused(request: Request, exc: PrivacyError):
+        return JSONResponse({"detail": str(exc), "privacy": True}, 403)
+
+    @app.exception_handler(NeedsConfirm)
+    async def privacy_confirm(request: Request, exc: NeedsConfirm):
+        return JSONResponse({"detail": str(exc), "confirm": True}, 409)
+
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
@@ -1958,15 +2545,135 @@ def create_app(ctl: Controller, token: str | None):
 
     @app.post("/api/conversations")
     async def conversation_new(request: Request):
-        """Opens a conversation (body: optional model) and makes it the current one."""
+        """Opens a conversation and makes it the current one. Body, all optional: model;
+        projects (names, "" for General; default: General if allowed, else a scratch project);
+        level (local, paid or open: its model's or lower); like (a conversation id: the same
+        projects and level as that one, "New conversation on the same projects"); transcript
+        (with like: it starts with that conversation's whole transcript)."""
         body = await request.json()
+        projects = body.get("projects")
+        level = body.get("level") or None
         try:
-            c = ctl.new_conversation(body.get("model") or None)
+            if body.get("like"):
+                other = ctl.conv(str(body["like"]))
+                projects = list(other.projects) if projects is None else projects
+                level = level or other.level
+            if projects is not None and not (isinstance(projects, list) and all(isinstance(p, str) for p in projects)):
+                fail(400, "projects is a list of project names.")
+            transcript_from = str(body["like"]) if body.get("like") and body.get("transcript") else None
+            c = ctl.new_conversation(body.get("model") or None, projects=projects, level=level,
+                                     transcript_from=transcript_from)
         except Busy as e:
             fail(409, str(e))
         except KeyError as e:
             fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
         return ctl.snapshot(c.id)
+
+    @app.post("/api/conversations/project")
+    async def conversation_project(request: Request):
+        """Adds a project to a conversation (body: conv, name)."""
+        body = await request.json()
+        c = conv_or_404(body.get("conv"))
+        try:
+            return await run_in_threadpool(ctl.open_project, c.id, str(body.get("name", "")))
+        except Busy as e:
+            fail(409, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
+
+    @app.post("/api/conversations/give")
+    async def conversation_give(request: Request):
+        """Gives a conversation one file it may not see (body: conv, path in the main folder,
+        confirm). The file keeps its level."""
+        body = await request.json()
+        c = conv_or_404(body.get("conv"))
+        try:
+            return await run_in_threadpool(ctl.give_file, c.id, str(body.get("path", "")), bool(body.get("confirm")))
+        except Busy as e:
+            fail(409, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
+        except SyncError as e:
+            fail(500, str(e))
+
+    @app.get("/api/conversations/{cid}/held")
+    async def conversation_held(cid: str, path: str):
+        """A change held for your review (it would move what the conversation has seen to a less
+        private place), against the main folder's version."""
+        conv_or_404(cid)
+        try:
+            return await run_in_threadpool(ctl.held_diff, cid, path)
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+
+    # --- projects and privacy levels -----------------------------------------------------------
+    @app.get("/api/projects")
+    def projects_view():
+        """The projects, their levels, zones and marks, and each model's level."""
+        return ctl.projects_view()
+
+    def _level_arg(body: dict, allow_none: bool = False):
+        lvl = body.get("level")
+        if lvl in (None, "") and allow_none:
+            return None
+        if lvl not in privacy.RANK:
+            fail(400, f"level must be one of: {', '.join(privacy.LEVELS)}.")
+        return lvl
+
+    @app.post("/api/projects")
+    async def project_add(request: Request):
+        """A new, empty project (body: name; level, default the current conversation's model's)."""
+        body = await request.json()
+        try:
+            return ctl.add_project(str(body.get("name", "")), _level_arg(body, True) or "", body.get("conv") or None)
+        except (ValueError, KeyError) as e:
+            fail(400, str(e.args[0] if e.args else e))
+        except SyncError as e:
+            fail(500, str(e))
+
+    @app.post("/api/projects/claim")
+    async def project_claim(request: Request):
+        """A folder in General becomes a project of its own (body: name, level, confirm)."""
+        body = await request.json()
+        try:
+            return ctl.claim_project(str(body.get("name", "")), _level_arg(body), bool(body.get("confirm")))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
+
+    @app.post("/api/projects/level")
+    async def project_level(request: Request):
+        """A project's level (body: name, "" for General; level; confirm, needed to lower it)."""
+        body = await request.json()
+        try:
+            return ctl.set_project_level(str(body.get("name", "")), _level_arg(body), bool(body.get("confirm")))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+
+    @app.post("/api/projects/zone")
+    async def project_zone(request: Request):
+        """A folder with its own level (body: path in the main folder; level, or null to drop it; confirm)."""
+        body = await request.json()
+        try:
+            return ctl.set_zone(str(body.get("path", "")), _level_arg(body, True), bool(body.get("confirm")))
+        except ValueError as e:
+            fail(400, str(e))
+
+    @app.post("/api/projects/mark")
+    async def project_mark(request: Request):
+        """A file marked stricter than where it is (body: path; level, "local" for sensitive, or null; confirm)."""
+        body = await request.json()
+        try:
+            return ctl.set_mark(str(body.get("path", "")), _level_arg(body, True), bool(body.get("confirm")))
+        except ValueError as e:
+            fail(400, str(e))
 
     @app.post("/api/conversations/close")
     async def conversation_close(request: Request):
@@ -2117,8 +2824,9 @@ def create_app(ctl: Controller, token: str | None):
         Body: text; optional model (a profile name), new (in a new conversation of its own,
         next to the ones in the panel), conv (a conversation to continue; default the current
         one), timeout in seconds (default 1800, at most 7200), no_ask (refuse anything that would
-        need approval instead of waiting for you in the panel). Returns the final reply, how it
-        ended, every tool step, approvals, errors and files changed in shared folders."""
+        need approval instead of waiting for you in the panel); with new, projects and level (as
+        for POST /api/conversations). Returns the final reply, how it ended, every tool step,
+        approvals, errors and files changed in shared folders."""
         body = await request.json()
         text = str(body.get("text", "")).strip()
         if not text:
@@ -2128,9 +2836,12 @@ def create_app(ctl: Controller, token: str | None):
         except (TypeError, ValueError):
             fail(400, "timeout must be a number of seconds.")
         try:
+            projects = body.get("projects")
+            if projects is not None and not (isinstance(projects, list) and all(isinstance(p, str) for p in projects)):
+                fail(400, "projects is a list of project names.")
             return await run_in_threadpool(ctl.run_and_wait, text, body.get("model") or None,
                                            bool(body.get("new")), timeout, bool(body.get("no_ask")),
-                                           body.get("conv") or None)
+                                           body.get("conv") or None, "api", projects, body.get("level") or None)
         except Busy as e:
             fail(409, str(e))
         except KeyError as e:
@@ -2156,7 +2867,7 @@ def create_app(ctl: Controller, token: str | None):
         body = await request.json()
         answer = body.get("answer") or ("allow" if body.get("allow") else "deny")
         try:
-            ctl.decide(str(body.get("id", "")), str(answer))
+            ctl.decide(str(body.get("id", "")), str(answer), str(body.get("level") or "") or None)
         except KeyError as e:
             fail(404, str(e.args[0]))
         except ValueError as e:
@@ -2192,8 +2903,8 @@ def create_app(ctl: Controller, token: str | None):
     async def model(request: Request):
         body = await request.json()
         c = conv_or_404(body.get("conv"))
-        try:
-            ctl.set_model(str(body.get("name", "")), c.id)
+        try:   # to a less safe model: 409 with "confirm" until you send confirm: true (or 403)
+            ctl.set_model(str(body.get("name", "")), c.id, bool(body.get("confirm")))
         except Busy as e:
             fail(409, str(e))
         except KeyError as e:
@@ -2337,6 +3048,14 @@ def create_app(ctl: Controller, token: str | None):
         version = await run_in_threadpool(ctl.claude_version)
         return {"version": version, "installed": bool(version), "updating": ctl.claude_updating}
 
+    @app.get("/api/updates")
+    async def updates_info():
+        return {**ctl.updates.snapshot(), "enabled": ctl.cfg.updates_check}
+
+    @app.post("/api/updates/check")
+    async def updates_check():
+        return {**(await run_in_threadpool(ctl.updates.check)), "enabled": ctl.cfg.updates_check}
+
     @app.post("/api/claude/update")
     async def claude_update():
         try:
@@ -2394,6 +3113,15 @@ def create_app(ctl: Controller, token: str | None):
         body = await request.json()
         made_call(ctl.made.set_notify, str(body.get("name", "")), str(body.get("mode", "")))
         return {"ok": True}
+
+    @app.post("/api/made-tools/level")
+    async def made_tool_level(request: Request):
+        body = await request.json()
+        try:
+            return made_call(ctl.set_tool_level, str(body.get("name", "")), str(body.get("level", "")),
+                             bool(body.get("confirm")))
+        except ValueError as e:
+            fail(400, str(e))
 
     @app.post("/api/made-tools/seen")
     async def made_tools_seen(request: Request):

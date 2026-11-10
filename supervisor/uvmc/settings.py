@@ -16,13 +16,18 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import briefing as briefing_mod
-from . import config
+from . import config, privacy
 from .executor import root
 from .providers import ADAPTERS, Profile
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
 SETKEY = Path("/usr/local/bin/uvmc-setkey")
-FIELDS = ("label", "provider", "model", "key", "base_url", "max_tokens_param")
+FIELDS = ("label", "provider", "model", "key", "base_url", "max_tokens_param", "privacy")
+
+
+def setkey_path(name: str) -> Path:
+    """Where uvmc-setkey (setup.sh) stores a key."""
+    return Path("/etc/uvmc/api_key") if name == "anthropic" else Path("/etc/uvmc/keys") / name
 
 
 class SettingsError(Exception):
@@ -77,7 +82,8 @@ class Settings:
         profiles = []
         for name, p in self.cfg.models.items():
             source = ("panel" if name not in self.base else "changed in panel") if name in panel else "config.toml"
-            profiles.append({**asdict(p), "source": source, "has_key": config.has_key(p)})
+            profiles.append({**asdict(p), "source": source, "has_key": config.has_key(p), "level": p.level,
+                             "suggested_privacy": privacy.suggest(p.provider, p.base_url)})
         return {"profiles": profiles, "default": self.cfg.model, "keys": self.keys(),
                 "mcp_enabled": self.mcp_enabled(),
                 "providers": list(ADAPTERS)}
@@ -99,6 +105,8 @@ class Settings:
         if p["key"] and not NAME.match(p["key"]):
             raise SettingsError("Key names use lowercase letters, digits, - and _.")
         p["max_tokens_param"] = p["max_tokens_param"] or "max_tokens"
+        if p["privacy"] and p["privacy"] not in privacy.LEVELS:
+            raise SettingsError(f"Privacy must be one of: {', '.join(privacy.LEVELS)}.")
         self.data.setdefault("models", {})[name] = p
         self._save()
         self._apply()
@@ -211,12 +219,14 @@ class Settings:
         value = "".join(value.split())
         if value and len(value) < 8:
             raise SettingsError("That doesn't look like an API key.")
-        if SETKEY.exists():
+        path = config.KEY_FILE if name == "anthropic" else config.KEY_DIR / name
+        if SETKEY.exists() and path == setkey_path(name):
+            # The helper (root) writes only there: used when that is where keys are kept, so a
+            # key never lands somewhere api_key() won't look (or a test's key in the real store).
             p = root([str(SETKEY), name], stdin=(value + "\n").encode(), timeout=15)
             if p.returncode != 0:
                 raise SettingsError(p.stderr.decode(errors="replace").strip() or "Saving the key failed.")
             return
-        path = config.KEY_FILE if name == "anthropic" else config.KEY_DIR / name  # outside the VM (tests)
         if not value:
             if path.exists():
                 path.unlink()

@@ -36,11 +36,14 @@ class SharesBase(ServiceBase):
         (self.folder / "config" / "settings.json").write_text('{\n  "max_statues": 8\n}\n')
         (self.folder / "models").mkdir()
         (self.folder / "models" / "statue.bin").write_bytes(os.urandom(4096))
+        self.cfg.shares_rw = str(self.host)
 
-    def ctl(self, boss, worker=None):
+    def ctl(self, boss, worker=None, open_share=True, level="paid"):
         clients = {"claude": FakeClient(boss), "deepseek": FakeClient(worker or [])}
         ctl = Controller(self.cfg, lambda prof: clients[prof.name])
-        ctl.shares = Shares(agent_home=self.tmp.name, rw_root=self.host)
+        if open_share:   # a share is local until you set it; Claude (paid) may open it at paid
+            ctl.set_project_level("share:testdata", level, confirm=True)
+            ctl.open_project(ctl.current, "share:testdata")
         q = ctl.subscribe()
         threading.Thread(target=lambda: [self.events.append(q.get()) for _ in iter(int, 1)], daemon=True).start()
         return ctl
@@ -114,7 +117,7 @@ class SharedFileTest(SharesBase):
         results = {e["id"]: e for e in self.events if e["kind"] == "result"}
         self.assertIn("not a valid path", results["u1"]["text"])
         self.assertIn("home or work folder", results["u2"]["text"])
-        self.assertIn("no shared folder called 'other'", results["u3"]["text"])
+        self.assertIn("'other' is not one of this conversation's shared folders", results["u3"]["text"])
         card = ctl.snapshot()["pending"][0]
         self.assertFalse(card["exists"])
         ctl.decide(card["id"], "allow")
@@ -127,7 +130,8 @@ class SharedFileTest(SharesBase):
         self.assertFalse((self.folder / "textures" / "marble.csv").exists())
 
     def test_who_gets_the_tool(self):
-        ctl = self.ctl([reply(TextBlock(type="text", text="hi"), stop="end_turn")])
+        # An open share: an open worker (DeepSeek) may take over (a paid one would be refused).
+        ctl = self.ctl([reply(TextBlock(type="text", text="hi"), stop="end_turn")], level="open")
         ctl.start_task("hi")
         self.assertTrue(self.done(ctl))
         self.assertIn("update_shared_file", ctl.session.handlers)
@@ -136,10 +140,52 @@ class SharedFileTest(SharesBase):
         self.assertNotIn("update_shared_file", ctl.session.handlers)  # the coordinator can't write
         self.assertEqual(ctl.snapshot()["shares"][0]["name"], "testdata")
 
+        self.cfg.shares_rw = str(Path(self.tmp.name) / "nothing")
         empty = Controller(self.cfg, lambda prof: None)
-        empty.shares = Shares(agent_home=self.tmp.name, rw_root=Path(self.tmp.name) / "nothing")
         empty._prepare_session()
         self.assertEqual(list(empty.session.handlers), ["propose_tool"])  # nothing shared, no file tool
+
+    def test_only_opened_shares_at_their_level(self):
+        ctl = self.ctl([reply(TextBlock(type="text", text="hi"), stop="end_turn")], open_share=False)
+        c = ctl.conv()
+        ctl._prepare_session()
+        self.assertNotIn("update_shared_file", ctl.session.handlers)        # not opened: no tool, not told
+        self.assertIn("No folders are shared", ctl._live_briefing(ctl.settings.briefing(), c=c))
+        self.assertEqual(ctl.share_access(), {"testdata": set()})            # and its folder is closed
+        with self.assertRaisesRegex(Exception, "local"):                     # local until you set it
+            ctl.open_project(c.id, "share:testdata")
+        with self.assertRaises(KeyError):
+            ctl.open_project(c.id, "share:nothing")                          # not shared from the PC
+        ctl.set_project_level("share:testdata", "paid", confirm=True)
+        ctl.open_project(c.id, "share:testdata")
+        self.assertEqual(c.seen, "paid")                                     # opening it counts as seeing it
+        self.assertEqual(ctl.share_access(), {"testdata": {c.user}})
+        self.assertIn("/mnt/shared/testdata", ctl._live_briefing(ctl.settings.briefing(), c=c))
+        self.assertEqual(ctl.projects_view()["shares"][0]["conversations"][0]["id"], c.id)
+        # Raising it above the model closes it at once (it stays in the list, unseen).
+        ctl.set_project_level("share:testdata", "local")
+        self.assertEqual(ctl.share_access(), {"testdata": set()})
+        ctl._prepare_session()
+        self.assertNotIn("update_shared_file", ctl.session.handlers)
+
+    def test_write_into_a_less_private_share_warns(self):
+        ctl = self.ctl([
+            reply(tool("w1", "write_file", path="a.txt", content="x\n")),
+            reply(tool("u1", "update_shared_file", share="testdata", path="a.txt", source="a.txt", reason="x")),
+            reply(TextBlock(type="text", text="ok"), stop="end_turn"),
+        ])
+        ctl.set_project_level("share:testdata", "open", confirm=True)
+        ctl.conv().seen = "paid"
+        ctl.start_task("write")
+        self.assertTrue(wait_for(lambda: ctl.state == "waiting"))
+        card = ctl.snapshot()["pending"][0]
+        self.assertIn("has seen paid files", card["warning"])
+        ctl.decide(card["id"], "deny")
+        self.assertTrue(self.done(ctl))
+
+    def test_set_access_skips_missing_folders(self):
+        sh = Shares(agent_home=self.tmp.name, rw_root=self.host, hold_root=Path(self.tmp.name) / "hold")
+        self.assertEqual(sh.set_access({"testdata": {"agent1"}}), [])        # no closed folder here: nothing to do
 
     def test_target_checks(self):
         sh = Shares(agent_home=self.tmp.name, rw_root=self.host)

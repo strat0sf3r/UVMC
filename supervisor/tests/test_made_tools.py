@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from test_service import ServiceBase, wait_for  # noqa: E402
 from test_supervisor import FakeClient, reply  # noqa: E402
 from uvmc.made_tools import ToolError, next_run, schedule_text, validate  # noqa: E402
+from uvmc.privacy import NeedsConfirm, PrivacyError  # noqa: E402
 from uvmc.service import Controller, create_app  # noqa: E402
 
 H = {"Authorization": "Bearer t"}
@@ -251,6 +252,8 @@ class MadeToolsTest(ServiceBase):
         self.assertIn("UVMC_SETTING_TOKEN", next(a for a in cmd if a.startswith("--preserve-env=")))
         self.assertIn("uvmc-t-greeter", " ".join(cmd))                 # as its own user (systemd or plain sudo)
         self.assertIn(f"HOME={ctl.made.home('greeter')}", cmd)
+        self.assertEqual(env["PLAYWRIGHT_BROWSERS_PATH"], "/opt/uvmc/ms-playwright")   # the shared browser
+        self.assertIn("PLAYWRIGHT_BROWSERS_PATH", next(a for a in cmd if a.startswith("--preserve-env=")))
         for p in ctl.made.proxies.values():
             p.stop()
 
@@ -391,6 +394,36 @@ class WorkOnToolTest(MadeToolsTest):
         self.assertTrue((copy / "tools/greeter-v1/main.py").exists())
         self.assertIn("tools/greeter-v1", results[1]["text"])            # asked again: still there
         self.assertIn("get_tool_code", json.dumps(ctl._share_tools(ctl.conv())[0]))
+        for p in ctl.made.proxies.values():
+            p.stop()
+
+    def test_a_tool_has_a_privacy_level(self):
+        ctl = self.ctl([propose(), reply(TextBlock(type="text", text="Proposed."), stop="end_turn")])
+        ctl.conv().seen = "paid"   # this conversation has seen paid files: its code may carry them
+        ctl.start_task("make me a greeter")
+        self.assertTrue(wait_for(lambda: ctl.state == "waiting"))
+        card = ctl.snapshot()["pending"][0]
+        self.assertEqual(card["level"], "paid")                           # suggested on the card
+        ctl.decide(card["id"], "allow", "local")                          # you may choose another
+        self.assertTrue(wait_for(lambda: ctl.state == "idle"))
+        self.assertEqual(ctl.made.view("greeter")["level"], "local")
+        # Changing it later: raising is done, lowering asks first.
+        with self.assertRaises(NeedsConfirm):
+            ctl.set_tool_level("greeter", "open")
+        self.assertEqual(ctl.set_tool_level("greeter", "open", confirm=True)["level"], "open")
+        ctl.set_tool_level("greeter", "local")
+        # Its code goes only to a conversation at its level: Claude (paid) may not work on it.
+        with self.assertRaises(PrivacyError):
+            ctl.work_on_tool("greeter")
+        text, err = ctl._get_tool_code(ctl.conv(), {"name": "greeter"})
+        self.assertTrue(err)
+        self.assertIn("local", text)
+        ctl.set_tool_level("greeter", "paid", confirm=True)
+        w = ctl.work_on_tool("greeter")
+        self.assertEqual(ctl.convs[w["conv"]].seen, "paid")              # having its code counts as seeing it
+        c = TestClient(create_app(ctl, "t"))
+        r = c.post("/api/made-tools/level", headers=H, json={"name": "greeter", "level": "open"})
+        self.assertEqual((r.status_code, r.json()["confirm"]), (409, True))
         for p in ctl.made.proxies.values():
             p.stop()
 

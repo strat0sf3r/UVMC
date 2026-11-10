@@ -18,24 +18,30 @@ house_rules = "house_rules.md"    # system prompt, next to this file
 # ("set-key deepseek"); keys are stored in the VM where the agent can't read them.
 # A profile without a model name is not offered. Tool use quality varies a lot
 # between models: try a new one on small tasks first.
+# privacy: the most private files the model may see (local > paid > open; docs/design.md 7k).
+# local = runs on your PC; paid = a provider you trust by contract; open = may log or train.
+# A profile without it counts as open. Read a provider's terms before raising it.
 
 [models.claude]
 label = "Claude Sonnet"
 provider = "anthropic"
 model = "claude-sonnet-5-5"
 key = "anthropic"
+privacy = "paid"
 
 [models.claude-opus]
 label = "Claude Opus"
 provider = "anthropic"
 model = "claude-opus-5-5"
 key = "anthropic"
+privacy = "paid"
 
 [models.claude-haiku]
 label = "Claude Haiku"
 provider = "anthropic"
 model = "claude-haiku-5-5"
 key = "anthropic"
+privacy = "paid"
 
 # Claude on your Claude plan (Pro/Max) instead of the API: Claude Code is the brain,
 # signed in once with sign-in-claude on your PC. It has no tools of its own: it acts only
@@ -46,18 +52,21 @@ label = "Claude Sonnet (my plan)"
 provider = "claude-code"
 model = "sonnet"
 key = "claude-subscription"
+privacy = "paid"
 
 [models.claude-plan-opus]
 label = "Claude Opus (my plan)"
 provider = "claude-code"
 model = "opus"
 key = "claude-subscription"
+privacy = "paid"
 
 [models.claude-plan-haiku]
 label = "Claude Haiku (my plan)"
 provider = "claude-code"
 model = "haiku"
 key = "claude-subscription"
+privacy = "paid"
 
 [models.deepseek]
 label = "DeepSeek V4 Pro"
@@ -65,6 +74,7 @@ provider = "openai"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-pro"
 key = "deepseek"
+privacy = "open"                  # raise it only once you've read and accepted its terms
 
 [models.gpt]
 label = "OpenAI"
@@ -73,6 +83,7 @@ base_url = "https://api.openai.com/v1"
 model = ""                        # fill in a model name from platform.openai.com/docs/models
 key = "openai"
 max_tokens_param = "max_completion_tokens"
+privacy = "paid"                  # the API doesn't train on your data by default
 
 [models.gemini]
 label = "Gemini"
@@ -80,6 +91,7 @@ provider = "openai"               # through Google's OpenAI-compatible endpoint 
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 model = ""                        # fill in a model name from ai.google.dev/gemini-api/docs/models
 key = "gemini"
+privacy = "open"                  # the free tier may use what it gets; paid tier: raise it
 
 [models.local]
 label = "Local model on my PC"
@@ -87,6 +99,7 @@ provider = "openai"               # llama.cpp's server, set up by windows\local-
 base_url = "http://{pc}:8091/v1"  # {pc} = your PC as this machine sees it (looked up each time)
 model = "local"                   # the server runs one model; local-model.cmd picks it
 key = "local"                     # local-model.cmd stores it, like set-key
+privacy = "local"
 
 # --- Delegation ------------------------------------------------------------------
 # In the panel you can give a conversation a worker: the model you talk to then
@@ -118,6 +131,12 @@ idle_minutes = 15                 # close it after this long unused, to free its
 # machine: the agent user, its work folder (Undo puts back the whole folder) and its limits.
 max_open = 8        # the oldest idle one closes when a new one would go over
 max_running = 3     # working at the same moment (each "my plan" one runs its own Claude Code)
+
+[privacy]
+# Projects (the main folder's top-level folders) and their levels are set in the panel. Everything
+# at the top level that no project claims is the General project; until you choose its level it
+# is this one, so nothing there reaches a paid or open model without your say.
+general = "local"
 
 [made_tools]
 # Tools the agent builds and you approve (Tools tab). Each runs as its own user, from a copy the
@@ -174,6 +193,13 @@ cpu_percent = 150                 # 100 = one full core
 max_processes = 256
 home_size = "6G"                  # the agent's home is a disk of this size
 tmp_size = "512M"                 # /tmp and /var/tmp are memory disks of this size
+
+[updates]
+# The panel's Settings > Updates: once a day the supervisor (never an agent) reads the newest
+# version numbers from pypi.org, registry.npmjs.org, api.github.com and changelogs.ubuntu.com
+# and shows what is behind. Nothing is installed by it.
+check = true
+every_hours = 24
 
 [checkpoints]
 keep = 20                         # copies of the work folder, one before each task

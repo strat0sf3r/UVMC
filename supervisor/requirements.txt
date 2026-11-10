@@ -1,4 +1,7 @@
-anthropic>=0.40
-fastapi>=0.110
-uvicorn>=0.29
-httpx>=0.27
+# The supervisor's Python packages, pinned to the versions that were tested. `update` installs
+# exactly these. To update one: see "Keeping UVMC up to date" in docs/guide.md (the panel's
+# Settings > Updates shows when a newer version is out).
+anthropic==2.6.0
+fastapi==0.162.2
+uvicorn==0.54.0
+httpx==0.28.1

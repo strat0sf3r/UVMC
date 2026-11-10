@@ -15,6 +15,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from . import browser
 from .config import Config
 
 SLICE = "uvmc-agent.slice"
@@ -49,7 +50,8 @@ class Executor:
 
     def inner(self, script: str, args: tuple[str, ...], timeout: int) -> list[str]:
         body = f'cd "{self.workdir}" && {script}'
-        return ["env", *proxy_env(self.cfg, self.proxy_port), "timeout", "-k", "5", str(timeout),
+        return ["env", *proxy_env(self.cfg, self.proxy_port),
+                *(f"{k}={v}" for k, v in browser.env().items()), "timeout", "-k", "5", str(timeout),
                 "bash", "-c", body, "uvmc", *args]
 
     def command(self, script: str, args: tuple[str, ...], timeout: int) -> list[str]:

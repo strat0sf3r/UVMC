@@ -18,6 +18,11 @@ three versions of every file: the base, the conversation's copy and the main fol
 Afterwards the base is the main folder as it is now (except for conflicts left open). Undo
 works on the conversation's copy only; the main folder gets its own undo point before every
 bring-in.
+
+With a scope (privacy.py), the copy and the base hold only what the conversation may see, and
+the comparison ignores everything else. A change to a path it may not see is "blocked" (never
+brought in); a change to a place less private than what it has seen is "held" until you
+release it.
 """
 
 from __future__ import annotations
@@ -35,7 +40,8 @@ from .checkpoints import Checkpoints
 from .executor import no_sudo, root
 
 MERGE_DIR = ".uvmc-merge"
-SKIP_DIRS = {MERGE_DIR}
+CONTEXT_DIR = ".uvmc-context"     # what UVMC hands a conversation to read (another's transcript)
+SKIP_DIRS = {MERGE_DIR, CONTEXT_DIR}
 
 
 class SyncError(Exception):
@@ -91,6 +97,18 @@ def _files(top: Path) -> dict[str, Path]:
                 if rel and rel.split("/", 1)[0] not in SKIP_DIRS}
 
 
+def _dirs(top: Path) -> list[str]:
+    """Every folder under top (not .uvmc-merge), relative to it."""
+    out = []
+    for dirpath, dirnames, _ in os.walk(top):
+        rel_dir = os.path.relpath(dirpath, top)
+        if rel_dir == ".":
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for d in dirnames:
+            out.append(os.path.normpath(os.path.join(rel_dir, d)))
+    return out
+
+
 class WorkCopies:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -121,27 +139,110 @@ class WorkCopies:
             return []
         return ["-o", user, "-g", self.cfg.user]
 
+    def _close_top(self, top: Path) -> None:
+        """A copy's own folder belongs to the supervisor's group, not the agents': no other
+        conversation or worker can look inside (its files keep the agent's group)."""
+        if not no_sudo():
+            self._run(["chgrp", self.cfg.files_group, str(top)])
+            self._run(["chmod", "750", str(top)])
+
+    def _rsync_visible(self, dst: Path, scope, what: str, link: bool = False) -> None:
+        """Copies the main folder's files that scope may see (all of them without a scope)."""
+        link_opt = [f"--link-dest={self.main}"] if link else []
+        if scope is None:
+            self._run(["rsync", "-a", *(["--delete"] if not link else []), *link_opt,
+                       f"{self.main}/", f"{dst}/"], what)
+            return
+        names = [rel for rel in _files(self.main) if scope.visible(rel)]
+        names += [rel for rel in _dirs(self.main) if scope.visible(rel)]   # empty folders too, as before
+        if not names:
+            return
+        with tempfile.NamedTemporaryFile("wb", delete=False, dir=str(self.state) if self.state.exists() else None) as f:
+            f.write(b"\0".join(n.encode(errors="surrogateescape") for n in names) + b"\0")
+        try:
+            os.chmod(f.name, 0o644)
+            self._run(["rsync", "-a", "--from0", f"--files-from={f.name}", *link_opt,
+                       f"{self.main}/", f"{dst}/"], what)
+        finally:
+            os.unlink(f.name)
+
     # --- a conversation's copy ----------------------------------------------------------------
 
-    def create(self, cid: str, user: str) -> None:
-        """Copies the main folder for a conversation, and remembers it as the base."""
+    def create(self, cid: str, user: str, scope=None, folders: tuple[str, ...] = ()) -> None:
+        """Copies the main folder (what scope may see of it) for a conversation, and remembers it
+        as the base. folders: its projects' folders, made even when empty."""
         copy, base = self.copy_dir(cid), self.base_dir(cid)
         base.parent.mkdir(parents=True, exist_ok=True)
         self._run(["install", "-d", "-m", "750", *self._owner(user), str(copy)])
-        self._run(["rsync", "-a", "--delete", f"{self.main}/", f"{copy}/"], "copying the work folder")
+        self._rsync_visible(copy, scope, "copying the work folder")
+        for name in folders:
+            if not (copy / name).exists():
+                self._run(["install", "-d", "-m", "755", *self._owner(user), str(copy / name)])
         if not no_sudo():
             self._run(["chown", "-R", f"{user}:{self.cfg.user}", str(copy)])
-        self._snapshot_base(cid)
+        self._close_top(copy)
+        self._snapshot_base(cid, scope=scope)
 
-    def _snapshot_base(self, cid: str, keep: dict[str, bytes | None] | None = None) -> None:
+    def make_folder(self, name: str) -> None:
+        """A project's folder in the main folder (a new project starts empty)."""
+        d = self.main / name
+        if not d.exists():
+            self._run(["install", "-d", "-m", "755", *self._owner(self.cfg.user), str(d)])
+
+    def remove_empty_folder(self, name: str) -> bool:
+        d = self.main / name
+        try:
+            if d.is_dir() and not any(d.iterdir()):
+                self._run(["rmdir", "--", str(d)])
+                return True
+        except OSError:
+            pass
+        return False
+
+    def add_visible(self, cid: str, user: str, scope, folders: tuple[str, ...] = ()) -> list[str]:
+        """Files that became visible to a conversation (a project added): copied into its copy
+        and its base, so they count as in step. Files already in the copy are left alone."""
+        copy, base = self.copy_dir(cid), self.base_dir(cid)
+        C = _files(copy)
+        added = []
+        for rel, p in _files(self.main).items():
+            if rel in C or not scope.visible(rel):
+                continue
+            self._put(p, copy / rel, user)
+            self._put(p, base / rel, self.cfg.user)
+            added.append(rel)
+        for name in folders:
+            if not (copy / name).exists():
+                self._run(["install", "-d", "-m", "755", *self._owner(user), str(copy / name)])
+        return added
+
+    def give(self, cid: str, user: str, rel: str) -> None:
+        """One file from the main folder into a conversation's copy and base (you gave it)."""
+        src = self.main / rel
+        if not src.is_file():
+            raise SyncError(f"There's no file {rel} in the main folder.")
+        self._put(src, self.copy_dir(cid) / rel, user)
+        self._put(src, self.base_dir(cid) / rel, self.cfg.user)
+
+    def visible_levels(self, cid: str, scope) -> set[str]:
+        """The levels of the files in a conversation's copy that it may see."""
+        return {scope.level_of(rel) for rel in _files(self.copy_dir(cid)) if scope.visible(rel)}
+
+    def hidden_count(self, scope) -> int:
+        """How many files of the conversation's projects it may not see (it's told the number)."""
+        return sum(1 for rel in _files(self.main)
+                   if scope.projects.project_of(rel) in scope.opened and not scope.visible(rel))
+
+    def _snapshot_base(self, cid: str, keep: dict[str, bytes | None] | None = None, scope=None) -> None:
         """The base is the main folder now (hard links: cheap, and the main folder's files
-        are only ever replaced, never edited in place). keep: base versions to leave as they were
-        (open conflicts)."""
+        are only ever replaced, never edited in place), what scope may see of it. keep: base
+        versions to leave as they were (open conflicts, held changes)."""
         base = self.base_dir(cid)
         tmp = base.with_name("base.new")
         if tmp.exists():
             self._run(["rm", "-rf", "--", str(tmp)])
-        self._run(["rsync", "-a", f"--link-dest={self.main}", f"{self.main}/", f"{tmp}/"], "saving the base")
+        self._run(["install", "-d", "-m", "750", *self._owner(self.cfg.user), str(tmp)])   # as rsync would
+        self._rsync_visible(tmp, scope, "saving the base", link=True)
         for rel, data in (keep or {}).items():
             target = tmp / rel
             if data is None:
@@ -179,13 +280,31 @@ class WorkCopies:
                 self._hash_cache.clear()
         return h
 
-    def plan(self, cid: str) -> dict:
-        """What bringing in would do, without doing it."""
+    def plan(self, cid: str, scope=None, release=()) -> dict:
+        """What bringing in would do, without doing it. scope: what the conversation may see
+        (privacy.py); release: held paths you let through."""
         if not self.exists(cid):
             return {"mine": [], "theirs": [], "merged": [], "conflicts": [], "same": [], "resolving": [],
-                    "handed": [], "ready": False}
+                    "handed": [], "held": [], "blocked": [], "ready": False}
         B, C, M = _files(self.base_dir(cid)), _files(self.copy_dir(cid)), _files(self.main)
-        mine, theirs, merged, conflicts, same = [], [], [], [], []
+        blocked = []
+        if scope is not None:
+            # Changes where it may not look are never brought in; the rest compares as usual.
+            for rel in sorted(set(B) | set(C)):
+                if scope.visible(rel):
+                    continue
+                b = self._hash(B[rel]) if rel in B else None
+                c = self._hash(C[rel]) if rel in C else None
+                if b != c:
+                    reason = ("outside its projects" if scope.projects.project_of(rel) not in scope.opened
+                              else f"{scope.level_of(rel)}: more private than this conversation")
+                    blocked.append({"path": rel, "change": "added" if b is None else "removed" if c is None
+                                    else "changed", "reason": reason})
+            B = {r: p for r, p in B.items() if scope.visible(r)}
+            C = {r: p for r, p in C.items() if scope.visible(r)}
+            M = {r: p for r, p in M.items() if scope.visible(r)}
+        release = set(release)
+        mine, theirs, merged, conflicts, same, held = [], [], [], [], [], []
         waiting = self.resolving(cid)          # an agent's resolution you haven't reviewed: not brought in
         handed = self._live_handed(cid)        # another conversation is resolving these: left alone here
         for rel in sorted(set(B) | set(C) | set(M)):
@@ -197,7 +316,12 @@ class WorkCopies:
             if c == b and m == b:
                 continue
             change = lambda new: "added" if b is None else "removed" if new is None else "changed"  # noqa: E731
-            if m == b:
+            hold = scope is not None and scope.held(rel) and rel not in release and c != b
+            if hold and c != m:
+                # It would carry what the conversation has seen somewhere less private: you decide.
+                held.append({"path": rel, "change": change(c), "level": scope.level_of(rel), "seen": scope.seen,
+                             "conflict": m != b})
+            elif m == b:
                 mine.append({"path": rel, "change": change(c)})
             elif c == b:
                 theirs.append({"path": rel, "change": change(m)})
@@ -215,7 +339,22 @@ class WorkCopies:
         return {"mine": mine, "theirs": theirs, "merged": merged, "conflicts": conflicts, "same": same,
                 "resolving": sorted(waiting),
                 "handed": [{"path": rel, "conv": e.get("conv", "")} for rel, e in sorted(handed.items())],
-                "ready": True}
+                "held": held, "blocked": blocked, "ready": True}
+
+    def held_diff(self, cid: str, rel: str) -> dict:
+        """A held change, against the main folder's version, for your review."""
+        C = self.copy_dir(cid) / rel
+        M = self.main / rel
+        now = _read(C) if C.is_file() else None
+        main = _read(M) if M.is_file() else None
+        out = {"path": rel, "removed": now is None}
+        if now is not None and _is_text(now) and (main is None or _is_text(main)):
+            diff = "".join(difflib.unified_diff((main or b"").decode().splitlines(True), now.decode().splitlines(True),
+                                                "main folder", "this conversation", n=3))
+            out["diff"] = diff[:60000] + ("\n... (cut off)" if len(diff) > 60000 else "")
+        elif now is not None:
+            out["binary"], out["size"] = True, len(now)
+        return out
 
     def _merge(self, b: Path | None, c: Path | None, m: Path | None) -> bytes | None:
         """A line-by-line merge of two text versions, or None when they really conflict."""
@@ -236,12 +375,14 @@ class WorkCopies:
 
     # --- bringing in ----------------------------------------------------------------------
 
-    def sync(self, cid: str, user: str, choices: dict[str, str] | None = None, only: set | None = None) -> dict:
+    def sync(self, cid: str, user: str, choices: dict[str, str] | None = None, only: set | None = None,
+             scope=None, release=()) -> dict:
         """Brings the conversation's changes into the main folder and the main folder's into
         the copy. choices: for conflicts, path -> "mine" (the conversation's version) or "main".
-        Other conflicts stay open (an agent resolves them, or you decide later)."""
+        Other conflicts stay open (an agent resolves them, or you decide later). scope and
+        release: see plan(); held and blocked changes stay in the copy, not brought in."""
         choices = choices or {}
-        plan = self.plan(cid)
+        plan = self.plan(cid, scope, release)
         if not plan["ready"]:
             raise SyncError("This conversation has no copy of the work folder yet.")
         if only is not None:   # just these files (an accepted resolution): the rest stays as it is
@@ -274,12 +415,14 @@ class WorkCopies:
             for rel in only:
                 self._put_bytes(_read(M[rel]) if rel in M else None, self.base_dir(cid) / rel, self.cfg.user)
         else:
-            # Open conflicts, and files another conversation is resolving, keep their base.
-            keep = {rel: (_read(B[rel]) if rel in B else None) for rel in open_conflicts + list(self.handed(cid))}
-            self._snapshot_base(cid, keep)
+            # Open conflicts, held changes, and files another conversation is resolving, keep their base.
+            kept = open_conflicts + list(self.handed(cid)) + [x["path"] for x in plan["held"]]
+            keep = {rel: (_read(B[rel]) if rel in B else None) for rel in kept}
+            self._snapshot_base(cid, keep, scope)
         return {"brought_in": to_main, "got": to_copy,
                 "merged": [x["path"] for x in plan["merged"] if x["path"] not in open_conflicts],
-                "open_conflicts": open_conflicts, "undo": undo}
+                "open_conflicts": open_conflicts, "undo": undo,
+                "held": [x["path"] for x in plan["held"]], "blocked": [x["path"] for x in plan["blocked"]]}
 
     def prepare_agent_merge(self, cid: str, user: str, paths: list[str]) -> list[dict]:
         """For conflicts the agent should merge: the main folder's version (and the common one) next to
@@ -446,7 +589,7 @@ class WorkCopies:
             out.append(item)
         return out
 
-    def resolve(self, cid: str, user: str, choices: dict[str, str]) -> dict:
+    def resolve(self, cid: str, user: str, choices: dict[str, str], scope=None) -> dict:
         """Your answer to a proposal: path -> "accept" (bring the agent's result in), "yours" (this
         conversation's version from before), "main" (keep the main folder's), "other" (the other
         conversation's version, when another conversation resolved it), or "later" (back to an
@@ -490,7 +633,9 @@ class WorkCopies:
         merge = self.copy_dir(cid) / MERGE_DIR
         if not index and merge.exists():
             self._run(["rm", "-rf", "--", str(merge)])
-        result = self.sync(cid, user, {}, only=set(bring)) if bring else {"brought_in": [], "undo": None}
+        # What you accept here is your own review: it isn't held again.
+        result = (self.sync(cid, user, {}, only=set(bring), scope=scope, release=bring) if bring
+                  else {"brought_in": [], "undo": None})
         result["reopened"] = reopen
         return result
 
@@ -522,15 +667,20 @@ class WorkCopies:
         self._run(["rsync", "-a", "--delete", f"{copy}/", f"{base}/"], "saving the base")
         if not no_sudo():
             self._run(["chown", "-R", f"{user}:{self.cfg.user}", str(copy)])
+        self._close_top(copy)
 
-    def freeze_job(self, jid: str) -> None:
-        """A finished job's folder: nobody can change it any more (its user does other jobs);
-        the conversations can still read it."""
+    def freeze_job(self, jid: str, reader: str | None = None) -> None:
+        """A finished job's folder: nobody can change it any more (its user does other jobs),
+        and no agent but its coordinator (reader) can look inside: the job holds nothing the
+        coordinator may not see."""
         if no_sudo() or not self.exists(jid):
             return
         copy = str(self.copy_dir(jid))
         self._run(["chown", "-R", f"{self.cfg.user}:{self.cfg.user}", copy])
         self._run(["chmod", "-R", "go-w", copy])
+        self._close_top(Path(copy))
+        if reader:
+            self._run(["setfacl", "-m", f"u:{reader}:rx", copy], "letting the coordinator read the job")
 
     def job_plan(self, jid: str, target: str) -> dict:
         """What bringing a job in would do to the coordinator's folder (target)."""

@@ -72,11 +72,21 @@ class Config:
     conv_root: str = "/home/agent/conv"              # each conversation's own copy of the work folder
     conv_user_prefix: str = "agent"                  # its user: agent1, agent2, ... (made by setup)
     conv_proxy_port: int = 3300                      # its proxy: this port + its slot
+    files_group: str = "uvmc-files"                  # the main folder and the copies: only the supervisor's group
+    privacy_general: str = "local"                   # the General project's level until you choose one
+    # folders shared from the PC (shares.py): writable mounts, the agents' read-only views, and the
+    # closed folder each view sits in
+    shares_rw: str = os.environ.get("UVMC_SHARES_RW", "/srv/uvmc-host")
+    shares_view: str = os.environ.get("UVMC_SHARES_VIEW", "/mnt/shared")
+    shares_hold: str = os.environ.get("UVMC_SHARES_HOLD", "/srv/uvmc-views")
     # tools the agent builds (see made_tools.py)
     made_tools_dir: str = "/var/lib/uvmc-tools"
     made_tools_group: str = "uvmc-tools"
     made_tools_port: int = 3200                       # each tool's proxy: this port and up
     made_tools_keep_runs: int = 30
+    # checking for newer versions of UVMC's parts (updates.py)
+    updates_check: bool = True
+    updates_every_hours: float = 24
     brain_dir: str = "/opt/uvmc/brain-cwd"          # where it starts: empty, root-owned
     bridge_socket: str = "/run/uvmc/bridge.sock"     # its tools reach the supervisor here
     mcp_python: str = "/opt/uvmc/venv/bin/python"
@@ -158,6 +168,10 @@ def load(path: Path = DEFAULT_PATH) -> Config:
         made_tools_dir=str(raw.get("made_tools", {}).get("dir", "/var/lib/uvmc-tools")),
         made_tools_port=int(raw.get("made_tools", {}).get("proxy_port", 3200)),
         made_tools_keep_runs=max(1, int(raw.get("made_tools", {}).get("keep_runs", 30))),
+        updates_check=bool(raw.get("updates", {}).get("check", True)),
+        updates_every_hours=max(1.0, float(raw.get("updates", {}).get("every_hours", 24))),
+        files_group=str(raw.get("privacy", {}).get("files_group", "uvmc-files")),
+        privacy_general=str(raw.get("privacy", {}).get("general", "local")),
     )
 
 
@@ -177,7 +191,10 @@ def _load_models(section: dict, agent: dict) -> dict[str, Profile]:
             base_url=str(m.get("base_url", "")),
             max_tokens_param=str(m.get("max_tokens_param", "max_tokens")),
             label=str(m.get("label", name)),
+            privacy=str(m.get("privacy", "")),
         )
+        if models[name].privacy and models[name].privacy not in ("local", "paid", "open"):
+            raise ValueError(f"[models.{name}] privacy must be local, paid or open.")
     if not models:  # older config: [agent] model = "<Claude model id>"
         models["claude"] = Profile("claude", "anthropic", str(agent.get("model", "claude-sonnet-5-5")),
                                    key="anthropic", label="Claude")

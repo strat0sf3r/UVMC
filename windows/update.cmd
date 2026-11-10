@@ -8,7 +8,11 @@ cd /d "%~dp0.."
 "%MP%" start uvmc || goto failed
 "%MP%" exec uvmc -- rm -rf /tmp/supervisor
 "%MP%" transfer --recursive supervisor uvmc:/tmp/ || goto failed
-"%MP%" exec uvmc -- sudo bash /tmp/supervisor/setup.sh || goto failed
+rem The VM can't see which Multipass the PC has, so tell it (the panel's Settings > Updates).
+rem To be replaced by a direct check once UVMC has a PC-side app (design.md, 7m).
+set "MPV="
+for /f "usebackq tokens=2" %%v in (`call "%MP%" version 2^>nul ^| findstr /b /c:"multipass "`) do if not defined MPV set "MPV=%%v"
+"%MP%" exec uvmc -- sudo env "UVMC_PC_MULTIPASS=%MPV%" bash /tmp/supervisor/setup.sh || goto failed
 exit /b 0
 :failed
 echo Updating the supervisor failed.

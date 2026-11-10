@@ -35,7 +35,7 @@ from typing import Callable
 
 from .executor import no_sudo, root
 from .netproxy import Proxy, SiteList, valid_site
-from . import reports
+from . import browser, privacy, reports
 
 MANIFEST = "uvmc-tool.json"
 NAME = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
@@ -329,8 +329,10 @@ class ToolBox:
         report["images"] = 0
         return report
 
-    def install(self, manifest: dict, files: dict[str, bytes]) -> int:
-        """Freezes an approved version and makes the tool's user, home and way online."""
+    def install(self, manifest: dict, files: dict[str, bytes], level: str = "open") -> int:
+        """Freezes an approved version and makes the tool's user, home and way online. level: the
+        privacy level you approved it at (privacy.py): its code may carry what its conversation saw."""
+        privacy.check(level)
         name = manifest["name"]
         with self.lock:
             entry = self.registry.get(name)
@@ -352,7 +354,7 @@ class ToolBox:
             if entry is None:
                 entry = {"enabled": False, "values": {}, "created": time.time(), "runs": [],
                          "port": self._free_port()}
-            entry.update({"version": version, "manifest": manifest, "updated": time.time()})
+            entry.update({"version": version, "manifest": manifest, "updated": time.time(), "level": level})
             # Settings the new version no longer has are dropped; new ones start empty.
             names = {s["name"] for s in manifest["settings"]}
             entry["values"] = {k: v for k, v in entry.get("values", {}).items() if k in names}
@@ -498,6 +500,17 @@ class ToolBox:
             self._save()
         self.notify()
 
+    def level(self, name: str) -> str:
+        """Its privacy level; tools approved before levels existed count as open."""
+        return self.get(name).get("level", "open")
+
+    def set_level(self, name: str, level: str) -> None:
+        privacy.check(level)
+        with self.lock:
+            self.get(name)["level"] = level
+            self._save()
+        self.notify()
+
     def set_notify(self, name: str, mode: str) -> None:
         """When the panel pops up a browser notification after a run: "never"; "asks" (when the
         run fails, its report's status is bad, or the report asks with "notify"); "always"."""
@@ -554,7 +567,8 @@ class ToolBox:
         env = {"HOME": str(self.home(name)), "UVMC_TOOL": name, "UVMC_DATA": str(self.home(name)),
                "UVMC_REPORT": str(self.home(name) / REPORT_FILE),
                "HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy,
-               "NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1"}
+               "NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
+               **browser.env()}
         secrets = self._secrets(name)
         for st in e["manifest"]["settings"]:
             v = secrets.get(st["name"], "") if st["type"] == "secret" else e["values"].get(st["name"], st["default"])
@@ -805,6 +819,7 @@ class ToolBox:
                         "last_run": runs[-1] if runs else None, "runs": runs[::-1] if name else None,
                         "next_run": next_run(m["schedule"], e.get("last_start"), now) if e["enabled"] else None,
                         "updated": e.get("updated"), "notify": e.get("notify", "asks"),
+                        "level": e.get("level", "open"),
                         "unseen": sum(1 for r in runs if r.get("seen") is False),   # new in Reports
                         "files": sorted(str(p.relative_to(self.version_dir(n, e["version"])))
                                         for p in self.version_dir(n, e["version"]).rglob("*") if p.is_file())

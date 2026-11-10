@@ -62,6 +62,12 @@ class Profile:
     base_url: str = ""
     max_tokens_param: str = "max_tokens"   # OpenAI's newer models want "max_completion_tokens"
     label: str = ""
+    privacy: str = ""              # local | paid | open (privacy.py); "" counts as open
+
+    @property
+    def level(self) -> str:
+        """The most private files this model may see."""
+        return self.privacy if self.privacy in ("local", "paid", "open") else "open"
 
 
 class Provider:
