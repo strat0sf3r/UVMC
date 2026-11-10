@@ -3148,6 +3148,7 @@ function pcControls(m) {
 }
 // The helper's job (a download, a test...): progress while it runs, what it said when it ends.
 let pcTimer = null;
+let localTimer = null, localPolls = 0, localKick = 0;   // looking again while a model loads on the card
 function renderPcJob() {
   const box = $("pcJob");
   if (!box) return;
@@ -3265,9 +3266,17 @@ async function loadLocalModel() {
     b.disabled = true; b.textContent = b.dataset.have ? "Switching..." : "Saving...";
     try { await api("/api/local-model", { model: b.dataset.useLocal }); }
     catch (e) { b.textContent = "Select"; b.disabled = false; b.insertAdjacentHTML("afterend", `<span class="small bad">${esc(e.message)}</span>`); return; }
-    loadLocalModel();
-    if (b.dataset.have) setTimeout(loadLocalModel, 8000);   // loading on the card takes a few seconds
+    localPolls = 0;
+    localKick = Date.now() + 10000;   // the server may not say "loading" yet: look for 10 s either way
+    loadLocalModel();   // and again while it's loading on the card (below)
   }));
+  // A model loading on the card (after Select, or when UVMC first asks): look again every 3 s until
+  // none is, so the list doesn't stay on "loading". At most 2 minutes, then "Check again" does it.
+  clearTimeout(localTimer);
+  if (((m.models || []).some(x => x.status === "loading") || Date.now() < localKick) && localPolls < 40) {
+    localPolls++;
+    localTimer = setTimeout(loadLocalModel, 3000);
+  } else localPolls = 0;
 }
 
 function profileForm(p) {

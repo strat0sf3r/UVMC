@@ -1,4 +1,5 @@
-# Opens the UVMC panel in your browser, signed in. Starts the machine if needed.
+# Opens the UVMC panel in your browser, signed in, through the UVMC helper (started if needed).
+# Starts the machine if needed.
 # Start it with panel.cmd or the "UVMC Panel" shortcut. It first shows the "Start UVMC"
 # window to choose folders (skip it with "Don't ask again"; hold Shift to bring it back).
 #   -ChooseFolders   always show the folder window
@@ -35,6 +36,25 @@ Write-Host 'Sharing the chosen folders...'
 # A problem with sharing shouldn't keep the panel from opening.
 try { & (Join-Path $PSScriptRoot 'share.ps1') -Quiet }
 catch { Write-Host "Sharing folders failed: $($_.Exception.Message). The panel opens anyway." -ForegroundColor Yellow }
+
+# Through the UVMC helper (started if it isn't running; its tray icon appears): it finds the
+# machine's current address, signs you in, and gives the panel its key, so the panel can manage
+# the model on this PC. If the helper doesn't answer, the panel opens the old way below.
+function Test-Helper {
+    try { $c = New-Object Net.Sockets.TcpClient; $ok = $c.ConnectAsync('127.0.0.1', 8092).Wait(500); $c.Close(); return $ok }
+    catch { return $false }
+}
+$helper = Join-Path $PSScriptRoot 'helper.ps1'
+if (-not (Test-Helper) -and (Test-Path $helper)) {
+    Write-Host 'Starting the UVMC helper...'
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$helper`""
+    for ($i = 0; $i -lt 20 -and -not (Test-Helper); $i++) { Start-Sleep -Milliseconds 500 }
+}
+if (Test-Helper) {
+    Start-Process 'http://127.0.0.1:8092/panel'
+    exit 0
+}
+Write-Host 'The UVMC helper did not start; opening the panel without it (the model on your PC is then managed with local-model).' -ForegroundColor Yellow
 
 # Quick lookups, stopped after 20 s if the machine doesn't answer (see timeouts.ps1).
 $ip = ((& $mp exec $Name -- timeout -k 5 20 hostname -I | Out-String).Trim() -split '\s+')[0]

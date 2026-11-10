@@ -363,7 +363,8 @@ Parked: GPU jobs on the PC, autocomplete.
 Later goal (the user, 2026-11-10): the PC helper (0.20, scripts for now: PowerShell on Windows, Python on Mac/Linux, the same calls for the panel) rewritten as one Go program for all three: a tray icon on Mac and Linux too, a few MB of memory instead of about 85, no script host. Needs code signing (Windows) and Apple's notarization (Mac) first, the same decision as step 8.
 
 **The PC helper (0.20, in progress), noted and not done yet** (2026-11-10):
-- Still to build: `panel.ps1` / `panel.sh` opening through the helper (step 5 of its plan), the install and uninstall questions (step 6), guide.md and the version (step 7; the working tree is at 0.19.3 from other work, the helper wants 0.20.0).
+- Done since: the panel shortcut (`panel.ps1` / `panel.sh`) opens through the helper, starting it if needed (the old way if it doesn't answer); tried on the PC 2026-11-10.
+- Still to build: the install and uninstall questions (step 6 of its plan), guide.md and the version (step 7; the helper wants 0.20.0).
 - Not yet tried for real: a model download end to end in the panel; the confirm windows on the PC (delete, your own file); the relay after `Invoke-VmQuick` closed its input; Chrome and Edge (they may ask once to allow "devices on your local network"; Firefox doesn't); `unix/helper` on a real Mac or Linux desktop.
 - Sign-in, later: the panel's permanent key sits in the address, so it stays in the browser's history (common in local tools such as Jupyter, but not good practice). Better: the shortcut and the helper ask the VM for a one-time code (valid once, about a minute), and the panel swaps it for the cookie, so what's in the history is useless.
 - Helper: while it reads from the VM (up to about 25 s if the VM doesn't answer), its tray and other calls wait. The Go version won't have this.
