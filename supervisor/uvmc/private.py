@@ -1,9 +1,14 @@
-"""Private conversations: the model on the PC, no internet, erased when you close them.
+"""Private conversations: erased when you close them, with restrictions you can lift.
 
 A private conversation works like any other while it is open (its steps, approvals and the
 Activity view), but:
-- only a model profile on the PC may run it (privacy.private_ok), its workers too;
-- its proxy refuses every site, allowed ones too (netproxy.Proxy offline);
+- three restrictions, each on unless you untick it on the card (Conversation.opts, fixed once
+  it starts): pc_only, only a model profile on the PC may run it (privacy.private_ok), its
+  workers too; offline, its proxy refuses every site, allowed ones too (netproxy.Proxy
+  offline); sealed, nothing of it reaches the main folder, a folder shared from the PC or a
+  tool, until you close it and choose to keep its files (Controller.keep_files, then the usual
+  bring-in) or erase everything;
+- sites are asked about every time, never "Always allow";
 - its log is kept in memory (config private_log_dir, under /run), never in Runs, and other
   conversations never get its transcript, its tasks or its title (Controller._about);
 - closing it (only after you confirm) erases its log, its copy of the work folder, its user's

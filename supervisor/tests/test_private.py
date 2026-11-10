@@ -28,7 +28,7 @@ from test_supervisor import reply  # noqa: E402
 from uvmc import audit, mcp_http, private  # noqa: E402
 from uvmc.netproxy import Proxy, SiteList  # noqa: E402
 from uvmc.privacy import NeedsConfirm, PrivacyError  # noqa: E402
-from uvmc.service import Busy, create_app  # noqa: E402
+from uvmc.service import Busy, Unsaved, create_app  # noqa: E402
 
 H = {"Authorization": "Bearer t"}
 
@@ -136,6 +136,13 @@ class PrivateTest(ServiceBase):
         p = self.private_conv(ctl)
         ctl.start_task(f"{marker}: make keep.txt", p.id)
         self.assertTrue(wait_for(lambda: p.state == "idle"))
+        with self.assertRaises(PrivacyError):   # its files stay its own...
+            ctl.sync(p.id)
+        with self.assertRaises(Unsaved) as e:   # ...until you close it: keep them or erase everything
+            ctl.close_conversation(p.id)
+        self.assertTrue(e.exception.sealed)
+        ctl.keep_files(p.id)
+        self.assertFalse(p.sealed)
         r = ctl.sync(p.id)
         self.assertIn("keep.txt", r["brought_in"])
         origins = json.loads((self.cfg.state_dir / "main_origins.json").read_text())
@@ -239,6 +246,96 @@ class PrivateTest(ServiceBase):
         ctl.close_conversation(c.id)
         self.assertEqual(sorted(os.listdir(home)), ["shared"])   # the ~/shared link setup makes stays
         self.assertEqual(os.listdir(self.tmpdir), [])
+
+    # --- its restrictions, each can be lifted ------------------------------------------------------
+
+    def test_defaults_are_all_on(self):
+        ctl = self.controller([])
+        p = self.private_conv(ctl)
+        self.assertEqual(p.opts, {"offline": True, "pc_only": True, "sealed": True})
+        self.assertTrue(p.offline and p.pc_only and p.sealed)
+        note = ctl._privacy_note(p)
+        self.assertIn("no internet", note)
+        self.assertIn("keeps its files to itself", note)
+        n = ctl.new_conversation("claude")
+        self.assertFalse(n.offline or n.pc_only or n.sealed)
+
+    def test_any_model_and_internet(self):
+        ctl = self.controller([])
+        p = ctl.new_conversation("claude", private=True,
+                                 private_opts={"offline": False, "pc_only": False, "sealed": True})
+        self.assertTrue(p.private)
+        self.assertEqual(p.model, "claude")
+        self.assertEqual(p.level, "paid")    # the model's, as for any conversation
+        self.assertEqual(p.seen, "paid")
+        self.assertFalse(p.offline)
+        self.assertFalse(p.pc_only)
+        ctl.set_model("claude-opus", p.id)    # another model is fine now
+        self.assertNotIn("no internet", ctl._privacy_note(p))
+        self.assertIn("Allowed sites", ctl._live_briefing(ctl.settings.briefing(), c=p))
+        # Still never handed on, still erased.
+        with self.assertRaises(PrivacyError):
+            ctl.new_conversation("claude", transcript_from=p.id)
+        with self.assertRaises(NeedsConfirm):
+            ctl.close_conversation(p.id)
+        ctl.close_conversation(p.id, erase=True)
+        self.assertNotIn(p.id, ctl.convs)
+
+    def test_sealed_blocks_what_leaves(self):
+        ctl = self.controller([])
+        p = self.private_conv(ctl)
+        text, err = ctl._update_shared(p, {"share": "x", "path": "a.txt", "content": "y"}, "c1")
+        self.assertTrue(err)
+        self.assertIn("keeps its files to itself", text)
+        text, err = ctl._propose_tool(p, {"folder": "tool"}, "c2")
+        self.assertTrue(err)
+        self.assertIn("tools can't be installed", text)
+        with self.assertRaises(PrivacyError):
+            ctl.resolve(p.id, {})
+        with self.assertRaises(ValueError):   # keeping files is only for a sealed private one
+            ctl.keep_files(ctl.new_conversation("claude").id)
+
+    def test_unsealed_brings_in_directly(self):
+        self.cfg.privacy_general = "local"
+        ctl = self.controller([run("c1", "printf hi > out.txt"), say("Done.")])
+        p = ctl.new_conversation(private=True, private_opts={"sealed": False})
+        ctl.start_task("make out.txt", p.id)
+        self.assertTrue(wait_for(lambda: p.state == "idle"))
+        self.assertIn("out.txt", ctl.sync(p.id)["brought_in"])
+
+    def test_erase_everything_with_changes(self):
+        marker = "MARKER-e9d1"
+        ctl = self.controller([run("c1", f"printf {marker} > {marker}.txt"), say("Done.")])
+        p = self.private_conv(ctl)
+        ctl.start_task("write it", p.id)
+        self.assertTrue(wait_for(lambda: p.state == "idle"))
+        ctl.close_conversation(p.id, discard=True, erase=True)   # the card's "Erase everything"
+        self.assertEqual(self.where_is(marker), [])
+        self.assertFalse((Path(self.cfg.workdir) / f"{marker}.txt").exists())
+
+    # --- the panel's API -------------------------------------------------------------------------
+
+    def test_api_options_and_keep(self):
+        self.cfg.privacy_general = "local"
+        ctl = self.controller([run("c1", "printf hi > k.txt"), say("Done.")])
+        client = TestClient(create_app(ctl, "t"))
+        r = client.post("/api/conversations", json={"private": True, "private_options": {"offline": False}}, headers=H)
+        self.assertEqual(r.status_code, 200, r.text)
+        cid = r.json()["conv"]
+        row = {c["id"]: c for c in r.json()["conversations"]}[cid]
+        self.assertEqual(row["private_opts"], {"offline": False, "pc_only": True, "sealed": True})
+        self.assertTrue(row["sealed"])
+        ctl.start_task("make k.txt", cid)
+        self.assertTrue(wait_for(lambda: ctl.conv(cid).state == "idle"))
+        r = client.post("/api/conversations/close", json={"conv": cid}, headers=H)
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(r.json()["unsaved"] and r.json()["sealed"])
+        self.assertEqual(client.post("/api/conversations/keep", json={"conv": cid}, headers=H).status_code, 200)
+        r = client.post("/api/conversations/sync", json={"conv": cid}, headers=H)
+        self.assertEqual(r.status_code, 200, r.text)
+        r = client.post("/api/conversations/close", json={"conv": cid, "erase": True}, headers=H)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((Path(self.cfg.workdir) / "k.txt").read_text(), "hi")
 
     # --- the panel's API -------------------------------------------------------------------------
 

@@ -1826,6 +1826,14 @@ $("model").addEventListener("change", async (e) => {
 // only update their tabs.
 let convs = [], convTimer = null;
 const ORIGIN = { api: "from a script", "claude-app": "from a Claude app" };
+// A private conversation's restrictions, in words (its badge, the card).
+function privateWords(c) {
+  const o = c.private_opts || {};
+  return ["Private: erased when you close it",
+    o.offline ? "no internet" : "internet as usual (no Always allow)",
+    o.pc_only ? "the model on your PC only" : "any model (its provider keeps what it gets)",
+    o.sealed ? (c.sealed ? "its files stay its own until you close it" : "you chose to keep its files") : "it can bring files into the main folder"].join("; ");
+}
 function showTitle() {
   const waiting = convs.some((c) => c.state === "waiting" || c.waiting);
   document.title = waiting ? "Waiting for you - UVMC" : "UVMC Panel";
@@ -1846,7 +1854,7 @@ function renderConvs() {
     const privacyText = where ? `, on ${where}, ${c.level}` : "";   // its projects and privacy level
     tab.innerHTML = `<button type="button" class="pick" role="tab" data-conv="${esc(c.id)}" aria-selected="${selected}"
         title="${esc(title)} (${esc(c.model_label)}${esc(privacyText)})${words[state] || ""}"><span class="dot" aria-hidden="true"></span>
-        <span class="title">${esc(title)}</span>${c.private ? '<span class="private" title="Private: the model on your PC, no internet, erased when you close it">private</span>' : ""}${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
+        <span class="title">${esc(title)}</span>${c.private ? `<span class="private" title="${esc(privateWords(c))}">private</span>` : ""}${ORIGIN[c.origin] ? `<span class="from">${ORIGIN[c.origin]}</span>` : ""}
         <span class="visually-hidden">${words[state] || ""}</span></button>
       <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="${c.private ? "Close and erase this private conversation" : "Close this conversation (it stays under Runs)"}" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
     tab.querySelector(".pick").addEventListener("click", () => {
@@ -1906,6 +1914,25 @@ async function closeConv(id, discard = false, erase = false) {
   if (r0.ok) {
     convs = r.conversations;
     if (id === view.conv) selectConv(r.current); else renderConvs();
+    return;
+  }
+  if (r.unsaved && r.sealed) {   // a private conversation that kept its files to itself: keep them, or erase everything
+    if (id !== view.conv) await selectConv(id);
+    const n = el("div", "item ask", `<div class="box"><h3>Keep its files?</h3><p class="why">${esc(r.error)}</p>
+      <div class="actions"><button type="button" class="btn primary" data-files>Keep its files</button><button type="button" class="btn stop" data-erase>Erase everything</button><button type="button" class="btn" data-keep>Keep it open</button></div>
+      <p class="small">Keep: you review its changes and bring them into the main folder as usual, then close it again to erase the rest.</p></div>`);
+    n.querySelector("[data-keep]").addEventListener("click", () => n.remove());
+    n.querySelector("[data-erase]").addEventListener("click", () => { n.remove(); closeConv(id, true, true); });
+    n.querySelector("[data-files]").addEventListener("click", async () => {
+      n.remove();
+      try {
+        await api("/api/conversations/keep", { conv: id });
+        await refreshConvs();
+        reviewSync(await api(`/api/conversations/${encodeURIComponent(id)}/changes`));
+      } catch (e) { errCard(e); }
+    });
+    add(n);
+    n.querySelector("[data-keep]").focus();
     return;
   }
   if (r.unsaved) {   // its work isn't in the main folder: ask, in that conversation
@@ -1998,8 +2025,10 @@ async function refreshFolder() {
   if (mine || theirs || both || held) {
     const b = el("button", "btn", mine || both || held ? "Bring into the main folder" : "Get them");
     b.type = "button";
-    b.disabled = current !== "idle";
-    b.title = current !== "idle" ? "When this conversation's task ends" : "Shows what would change first";
+    const sealedHere = convs.find((c) => c.id === id)?.sealed;
+    b.disabled = current !== "idle" || Boolean(sealedHere);
+    b.title = sealedHere ? "This private conversation keeps its files to itself; when you close it, you can keep them"
+      : current !== "idle" ? "When this conversation's task ends" : "Shows what would change first";
     b.addEventListener("click", () => reviewSync(ch));
     bar.appendChild(b);
   }
@@ -2194,7 +2223,12 @@ async function newConvCard() {
   const n = el("div", "item sync");
   n.id = "newConv";
   n.innerHTML = `<div class="box"><h3>New conversation</h3>
-    <label class="check"><input type="checkbox" data-private> Private: the model on your PC only, no internet, erased when you close it</label>
+    <label class="check"><input type="checkbox" data-private> Private: erased when you close it</label>
+    <fieldset class="projects-pick" data-private-opts hidden><legend>Its restrictions</legend>
+      <label class="check"><input type="checkbox" data-opt="offline" checked> No internet</label>
+      <label class="check"><input type="checkbox" data-opt="pc_only" checked> Only the model on my PC</label>
+      <label class="check"><input type="checkbox" data-opt="sealed" checked> Nothing reaches the main folder (when you close it, you keep its files or erase them)</label>
+      <p class="small warn" data-opt-warn></p></fieldset>
     <p class="small" data-private-why></p>
     <div class="form-grid">
       <label>Model <select data-model></select></label>
@@ -2208,28 +2242,43 @@ async function newConvCard() {
   const msel = n.querySelector("[data-model]");
   const psel = n.querySelector("[data-private]"), pwhy = n.querySelector("[data-private-why]");
   const pv = s.private || { state: "ok", problems: [], models: [] };
-  const fillModels = () => {   // a private conversation: only the models on your PC
+  const optsBox = n.querySelector("[data-private-opts]"), optWarn = n.querySelector("[data-opt-warn]");
+  const opt = (k) => n.querySelector(`[data-opt="${k}"]`);
+  const pcOnly = () => psel.checked && opt("pc_only").checked;
+  const fillModels = () => {   // a private conversation on the PC: only the models there
     const keep = msel.value || s.model;
     msel.innerHTML = "";
     for (const m of s.models) {
-      if (psel.checked && !pv.models.includes(m.name)) continue;
+      if (pcOnly() && !pv.models.includes(m.name)) continue;
       const o = el("option", "", esc(`${m.label} · ${m.level}`)); o.value = m.name; o.selected = m.name === keep; msel.appendChild(o);
     }
   };
   const privateOff = pv.state === "checking" ? "UVMC is still checking that private conversations leave nothing behind; try again in a minute."
-    : pv.state !== "ok" ? `Private conversations are off: ${pv.problems.join(" ")}`
-    : !pv.models.length ? "Needs a model on your PC (local-model, level local) in Settings › Models." : "";
+    : pv.state !== "ok" ? `Private conversations are off: ${pv.problems.join(" ")}` : "";
   psel.disabled = Boolean(privateOff);
-  pwhy.textContent = privateOff || "Its messages, steps and copy of the files are erased when you close it (you confirm) or when UVMC restarts. Files you bring into the main folder and tools you approve stay.";
-  psel.addEventListener("change", () => { fillModels(); draw(); });
+  if (!pv.models.length) {   // no model on the PC: a private conversation can still use another one
+    opt("pc_only").checked = false; opt("pc_only").disabled = true;
+    opt("pc_only").parentElement.title = "No model on your PC (local-model, level local) in Settings › Models.";
+  }
+  pwhy.textContent = privateOff || "Its messages, steps and copy of the files are erased when you close it (you confirm) or when UVMC restarts.";
+  const warnOpts = () => {
+    const w = [];
+    if (!opt("offline").checked) w.push("Sites not on your list are asked about each time.");
+    if (!opt("pc_only").checked) w.push("Another model's provider receives and keeps the whole conversation: UVMC erases only its own copy.");
+    if (!opt("sealed").checked) w.push("Files it brings into the main folder, tools you approve and files written into your shared folders stay.");
+    optWarn.textContent = w.join(" ");
+  };
+  psel.addEventListener("change", () => { optsBox.hidden = !psel.checked; fillModels(); draw(); });
+  for (const k of ["offline", "pc_only", "sealed"]) opt(k).addEventListener("change", () => { warnOpts(); fillModels(); draw(); });
+  warnOpts();
   fillModels();
   const ticked = new Set(here ? here.projects.map((x) => x.name) : []);
   let level = null;
   const draw = () => {
     const m = s.models.find((x) => x.name === msel.value) || {};
-    const lsel = levelSelect(psel.checked ? "local" : (level && rankOf(level) <= rankOf(m.level) ? level : m.level), { max: m.level || "open" });
+    const lsel = levelSelect(pcOnly() ? "local" : (level && rankOf(level) <= rankOf(m.level) ? level : m.level), { max: m.level || "open" });
     lsel.dataset.level = "";
-    lsel.disabled = psel.checked;   // a private conversation is local
+    lsel.disabled = pcOnly();   // a private conversation on the PC is local
     n.querySelector("[data-level]").replaceWith(lsel);
     lsel.addEventListener("change", () => { level = lsel.value; draw(); });
     const lv = lsel.value;
@@ -2259,6 +2308,7 @@ async function newConvCard() {
     const msg = n.querySelector(".form-msg");
     const projects = [...n.querySelectorAll("[data-projects] input:checked")].map((i) => i.value);
     const body = { model: msel.value, level: n.querySelector("[data-level]").value, projects: projects.length ? projects : null, private: psel.checked };
+    if (psel.checked) body.private_options = Object.fromEntries(["offline", "pc_only", "sealed"].map((k) => [k, opt(k).checked]));
     const tr = n.querySelector("[data-transcript]");
     if (tr && tr.checked) { body.like = view.conv; body.transcript = true; }
     e.target.disabled = true;

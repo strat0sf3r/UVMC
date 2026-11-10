@@ -1,3 +1,3 @@
 """UVMC supervisor: owns the agent loop, the tools, the rules and the logs."""
 
-__version__ = "0.18.0"
+__version__ = "0.18.1"

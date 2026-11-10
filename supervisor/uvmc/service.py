@@ -80,7 +80,10 @@ class Busy(Exception):
 
 
 class Unsaved(Exception):
-    pass
+    sealed = False   # a private conversation whose files may not reach the main folder: keep or erase them
+
+
+PRIVATE_DEFAULTS = {"offline": True, "pc_only": True, "sealed": True}
 
 
 BRING_IN_SPEC = {
@@ -131,7 +134,9 @@ class Conversation:
         self.key = secrets.token_hex(16)        # Claude Code's tool calls name their conversation with this
         self.origin = origin                    # panel | api | claude-app
         self.model = model
-        self.private = False                    # model on the PC, no internet, erased when closed (private.py)
+        self.private = False                    # erased when closed (private.py)
+        self.opts = {k: False for k in PRIVATE_DEFAULTS}   # a private one's restrictions (private.py)
+        self.keep_files = False                 # you chose to keep a sealed private conversation's files
         self.projects: list[str] = []           # the projects it opened (privacy.py; "" = General)
         self.level = "open"                     # what it may see: its model's level, or lower
         self.seen = "open"                      # the most private file it has had in its copy
@@ -158,6 +163,21 @@ class Conversation:
     @property
     def busy(self) -> bool:
         return self.state != "idle"
+
+    @property
+    def offline(self) -> bool:
+        """No internet: every site refused, allowed ones too."""
+        return self.private and self.opts["offline"]
+
+    @property
+    def pc_only(self) -> bool:
+        """Only a model on the PC, its workers too."""
+        return self.private and self.opts["pc_only"]
+
+    @property
+    def sealed(self) -> bool:
+        """Nothing reaches the main folder, another conversation, a shared folder or a tool."""
+        return self.private and self.opts["sealed"] and not self.keep_files
 
     def running_jobs(self) -> list["Worker"]:
         return [w for w in list(self.jobs.values()) if w.session is not None]
@@ -530,17 +550,21 @@ class Controller:
 
     def new_conversation(self, model: str | None = None, origin: str = "panel", focus: bool = True,
                          projects: list[str] | None = None, level: str | None = None,
-                         transcript_from: str | None = None, private: bool = False) -> Conversation:
+                         transcript_from: str | None = None, private: bool = False,
+                         private_opts: dict | None = None) -> Conversation:
         """Opens a conversation. Over the limit, the oldest idle one with nothing left to bring
         into the main folder (not the current one) closes. projects: the ones it opens (none
         given: General if its level allows, else a scratch project of its own); level: what it
         may see, its model's level or lower; transcript_from: another conversation whose whole
         transcript it starts with (only if it may see everything that one has seen); private: a private
-        conversation (private.py: the model on the PC, no internet, erased when closed)."""
+        conversation (private.py: erased when closed); private_opts: its restrictions, each on
+        unless given false: offline (no internet), pc_only (only a model on the PC), sealed
+        (nothing reaches the main folder)."""
+        opts = {k: bool((private_opts or {}).get(k, v)) for k, v in PRIVATE_DEFAULTS.items()}
         if model is not None:
             self.cfg.profile(model)  # KeyError if unknown
         base_conv = self.convs.get(self.current)
-        if private and model is None:   # the model on the PC, if the current one isn't
+        if private and opts["pc_only"] and model is None:   # the model on the PC, if the current one isn't
             fit = [n for n, p in self.cfg.models.items() if privacy.private_ok(p)]
             model = base_conv.model if base_conv and base_conv.model in fit else (fit[0] if fit else None)
             if model is None:
@@ -548,9 +572,9 @@ class Controller:
                                    "runs there (Settings > Models: one with {pc} in its address, level local).")
         profile = self.cfg.profile(model or (base_conv.model if base_conv else self.cfg.model))
         if private:
-            self._check_private(profile)
+            self._check_private(profile, opts["pc_only"])
         chosen_level = bool(level)
-        level = self._check_level(profile, "local" if private else level)
+        level = self._check_level(profile, "local" if private and opts["pc_only"] else level)
         if projects is not None:
             self._check_projects(projects, level, profile.label)
         context = None
@@ -576,17 +600,19 @@ class Controller:
             cid = uuid.uuid4().hex[:8]
             c = Conversation(self.cfg, profile.name, origin, slot, str(self.copies.copy_dir(cid)), cid)
             c.private = private
+            if private:
+                c.opts = opts
             if base is not None and model is None:
                 c.worker_model = base.worker_model
-            if private and c.worker_model and not privacy.private_ok(self.cfg.profile(c.worker_model)):
+            if c.pc_only and c.worker_model and not privacy.private_ok(self.cfg.profile(c.worker_model)):
                 c.worker_model = None
             c.level = level
             c.chosen = projects is not None or chosen_level or context is not None or private
             c.context_from = context
             if context is not None:
                 c.seen = privacy.higher(c.seen, context.get("seen") or "open")   # its history comes along
-            if private:   # counts as having seen local files: nothing of it goes anywhere less private
-                c.seen = "local"
+            if private:   # counts as having seen its level's files: nothing of it goes anywhere less private
+                c.seen = level
             c.projects = list(dict.fromkeys(projects)) if projects is not None else self._default_projects(cid, level)
             self._new_log(c)
             self.convs[c.id] = c
@@ -606,16 +632,16 @@ class Controller:
 
     # --- privacy: projects and levels (privacy.py) ---------------------------------------------
 
-    def _check_private(self, profile: Profile) -> None:
-        """A private conversation may start: the machine was checked, and the model is on the PC."""
+    def _check_private(self, profile: Profile, pc_only: bool = True) -> None:
+        """A private conversation may start: the machine was checked, and (pc_only) the model is on the PC."""
         check = self.private_check
         if check["state"] == "checking":
             raise PrivacyError("UVMC is still checking that private conversations leave nothing behind on this "
                                "machine. Try again in a minute.")
         if check["state"] != "ok":
             raise PrivacyError("Private conversations are off: " + " ".join(check["problems"]))
-        if not privacy.private_ok(profile):
-            raise PrivacyError(f"A private conversation uses only the model on your PC (level local); "
+        if pc_only and not privacy.private_ok(profile):
+            raise PrivacyError(f"This private conversation uses only the model on your PC (level local); "
                                f"{profile.label} isn't one.")
 
     def private_view(self) -> dict:
@@ -672,6 +698,23 @@ class Controller:
                     self.copies.remove(meta.parent.name)
                 except (SyncError, OSError) as e:
                     self.private_left.append(f"a private conversation's copy ({meta.parent.name}): {e}")
+
+    @staticmethod
+    def _check_sealed(c: Conversation) -> None:
+        if c.sealed:
+            raise PrivacyError("This private conversation keeps its files to itself: nothing of it reaches the main "
+                               "folder. When you close it, you can keep its files or erase them.")
+
+    def keep_files(self, cid: str) -> None:
+        """You chose to keep a sealed private conversation's files: it may bring them into the main
+        folder (only that; shared folders and tools stay closed to it)."""
+        c = self.conv(cid)
+        if not (c.private and c.opts["sealed"]):
+            raise ValueError("Only a private conversation that keeps its files to itself needs this.")
+        c.keep_files = True
+        c.log.event("notice", text="You chose to keep this conversation's files: bring them into the main folder, "
+                                   "then close it to erase the rest.")
+        self._broadcast({"kind": "conversations", "conv": c.id})
 
     @staticmethod
     def _name_for_others(c: Conversation) -> str:
@@ -945,7 +988,7 @@ class Controller:
         try:
             c.proxy = Proxy(c.port, self.cfg.net_ports, self.sites,
                             lambda host, port, c=c: self.decide_site(c, host, port),
-                            lambda info, c=c: self._on_net(c, info), offline=c.private).start()
+                            lambda info, c=c: self._on_net(c, info), offline=c.offline).start()
             c.tools.executor.proxy_port = c.proxy.port
         except OSError as e:
             c.log.event("notice", text=f"This conversation's proxy could not start ({e}), so it has no internet.")
@@ -1078,6 +1121,11 @@ class Controller:
                 raise Busy("This conversation is working. Stop it first.")
             n = self.unsaved(c)
             if n and not discard:
+                if c.sealed:
+                    e = Unsaved(f"This private conversation has {n} changed file{'s' if n > 1 else ''}. Keep them "
+                                "(you bring them into the main folder, then it's erased), or erase everything.")
+                    e.sealed = True
+                    raise e
                 raise Unsaved(f"This conversation has {n} change{'s' if n > 1 else ''} not brought into the shared "
                               "folder. Bring them in first, or close it anyway and drop them.")
             if c.private and not erase:
@@ -1152,7 +1200,7 @@ class Controller:
                         "state": c.state, "waiting": waiting, "session": c.log.name, "slot": c.slot,
                         "created": c.created, "last_active": c.last_active, "current": c.id == self.current,
                         "projects": [{"name": n, "label": self._project_label(n)} for n in c.projects],
-                        "level": c.level, "seen": c.seen, "private": c.private,
+                        "level": c.level, "seen": c.seen, "private": c.private, "private_opts": dict(c.opts) if c.private else None, "sealed": c.sealed,
                         "ceiling": self.cfg.models[c.model].level if c.model in self.cfg.models else "open"})
         return out
 
@@ -1299,8 +1347,8 @@ class Controller:
         may not: refused (the history holds those files); start a new conversation instead."""
         profile = self.cfg.profile(name)  # KeyError if unknown
         c = self.conv(cid)
-        if c.private and not privacy.private_ok(profile):
-            raise PrivacyError(f"A private conversation keeps the model on your PC; {profile.label} isn't one.")
+        if c.pc_only and not privacy.private_ok(profile):
+            raise PrivacyError(f"This private conversation keeps the model on your PC; {profile.label} isn't one.")
         old = self.cfg.profile(c.model) if c.model in self.cfg.models else None
         started = self.copies.exists(c.id) or bool(c.session.messages)
         new_level = profile.level
@@ -1353,8 +1401,8 @@ class Controller:
             if name not in self.allowed_workers():
                 raise KeyError(f"'{name}' is not allowed as a worker (see [delegation] in config.toml).")
         c = self.conv(cid)
-        if name is not None and c.private and not privacy.private_ok(self.cfg.profile(name)):
-            raise PrivacyError("A private conversation's worker can only be the model on your PC.")
+        if name is not None and c.pc_only and not privacy.private_ok(self.cfg.profile(name)):
+            raise PrivacyError("This private conversation's worker can only be the model on your PC.")
         if name is not None and privacy.rank(self.cfg.profile(name).level) < privacy.rank(c.seen):
             p = self.cfg.profile(name)
             raise PrivacyError(f"{p.label} is {p.level}, and this conversation has {c.seen} files it would hand on. "
@@ -1435,7 +1483,7 @@ class Controller:
                                shared_workdir=self.cfg.workdir, coordinator_workdir=c.copy_dir,
                                user=job.user if job else c.user, privacy_note=self._privacy_note(c),
                                share_names=self.scope(job or c).shares(self.shares.names()), seen=c.seen,
-                               offline=c.private)
+                               offline=c.offline)
         return briefing_mod.live(view, b["parts"], work_names, worker=worker)
 
     def _privacy_note(self, c: Conversation) -> str:
@@ -1460,8 +1508,13 @@ class Controller:
         if c.given:
             text += f" The user also gave you: {', '.join(sorted(c.given)[:20])}."
         if c.private:
-            text += ("\n- This is a private conversation: it has no internet (every site is refused, so nothing can "
-                     "be looked up, downloaded or installed from online), and the user erases it when they close it.")
+            text += "\n- This is a private conversation: the user erases it when they close it."
+            if c.offline:
+                text += (" It has no internet: every site is refused, so nothing can be looked up, downloaded or "
+                         "installed from online.")
+            if c.sealed:
+                text += (" It keeps its files to itself: nothing you change reaches the main folder, the user's "
+                         "shared folders or a tool (when they close it, they choose whether to keep your files).")
         if c.context_file:
             text += (f"\n- The user started this conversation with another one's whole transcript, in {c.context_file} "
                      f"(\"{(c.context_from or {}).get('title') or 'untitled'}\"): read it first, it's where this work "
@@ -1553,6 +1606,9 @@ class Controller:
 
     def _propose_tool(self, c: Conversation, args: dict, call_id: str, job: Worker | None = None) -> tuple[str, bool]:
         """A tool the agent built: shown to you in full; installed only if you approve."""
+        if c.private and c.opts["sealed"]:
+            return ("This is a private conversation that keeps its files to itself: tools can't be installed from "
+                    "it. The user can build it in a normal conversation.", True)
         folder = str(args.get("folder", "")).strip()
         try:
             manifest, files = self.made.read_folder((job or c).tools._as_agent, folder)
@@ -1585,6 +1641,9 @@ class Controller:
                 f"them again. {nxt}"), False
 
     def _update_shared(self, c: Conversation, args: dict, call_id: str, job: Worker | None = None) -> tuple[str, bool]:
+        if c.private and c.opts["sealed"]:
+            return ("This is a private conversation that keeps its files to itself: it can't write into the user's "
+                    "shared folders. Say what you would change instead.", True)
         share, rel = str(args.get("share", "")), str(args.get("path", ""))
         visible = self.scope(job or c).shares(self.shares.names())
         if share not in visible:
@@ -1630,7 +1689,7 @@ class Controller:
         if name not in self.allowed_workers():
             return f"'{name}' is not an allowed worker. Choose one of: {', '.join(self.allowed_workers())}.", True
         profile = self.cfg.profile(name)
-        if c.private and not privacy.private_ok(profile):
+        if c.pc_only and not privacy.private_ok(profile):
             return (f"This is a private conversation: its workers can only be the model on the user's PC, and "
                     f"{profile.label} isn't.", True)
         if privacy.rank(profile.level) < privacy.rank(c.seen):
@@ -1764,7 +1823,7 @@ class Controller:
         try:
             w.proxy = Proxy(w.port, self.cfg.net_ports, self.sites,
                             lambda host, port, c=c, w=w: self.decide_site(c, host, port, w),
-                            lambda info, c=c, w=w: self._on_net(c, info, w), offline=c.private).start()
+                            lambda info, c=c, w=w: self._on_net(c, info, w), offline=c.offline).start()
             w.tools.executor.proxy_port = w.proxy.port
         except OSError as e:
             c.log.event("notice", text=f"A worker's proxy could not start ({e}), so it has no internet.")
@@ -2097,6 +2156,7 @@ class Controller:
         stays held."""
         choices = dict(choices or {})
         c = self.conv(conv)
+        self._check_sealed(c)
         release = {p for p, v in choices.items() if v == "release"}
         with self.lock:
             if c.busy:
@@ -2189,6 +2249,7 @@ class Controller:
         """Your answer to a proposed resolution: per file "accept", "yours", "main", "other",
         "later", or "agent:<id>" (let that conversation resolve it instead)."""
         c = self.conv(conv)
+        self._check_sealed(c)
         with self.lock:
             if c.busy:
                 raise Busy("Wait until this conversation's task ends.")
@@ -2420,7 +2481,7 @@ class Controller:
             if self.cfg.net_ask_unknown:
                 # A conversation that has seen paid or local files could send them out through the
                 # site: you're asked each time (no "always"), and told what it has seen.
-                private = privacy.rank(c.seen) > privacy.rank("open")
+                private = privacy.rank(c.seen) > privacy.rank("open") or c.private
                 reason = "This site is not on your allowed list."
                 if private:
                     reason += (f" This conversation has seen {c.seen} files, which could go out through it: "
@@ -2775,7 +2836,8 @@ def create_app(ctl: Controller, token: str | None):
         level (local, paid or open: its model's or lower); like (a conversation id: the same
         projects and level as that one, "New conversation on the same projects"); transcript
         (with like: it starts with that conversation's whole transcript); private (true: a private
-        conversation, private.py)."""
+        conversation, private.py); private_options (with private: offline, pc_only, sealed, each
+        true unless given false)."""
         body = await request.json()
         projects = body.get("projects")
         level = body.get("level") or None
@@ -2788,7 +2850,8 @@ def create_app(ctl: Controller, token: str | None):
                 fail(400, "projects is a list of project names.")
             transcript_from = str(body["like"]) if body.get("like") and body.get("transcript") else None
             c = ctl.new_conversation(body.get("model") or None, projects=projects, level=level,
-                                     transcript_from=transcript_from, private=bool(body.get("private")))
+                                     transcript_from=transcript_from, private=bool(body.get("private")),
+                                     private_opts=body.get("private_options") if isinstance(body.get("private_options"), dict) else None)
         except Busy as e:
             fail(409, str(e))
         except KeyError as e:
@@ -2910,7 +2973,7 @@ def create_app(ctl: Controller, token: str | None):
         try:
             ctl.close_conversation(str(body.get("conv", "")), bool(body.get("discard")), bool(body.get("erase")))
         except Unsaved as e:
-            return JSONResponse({"error": str(e), "unsaved": True}, 409)
+            return JSONResponse({"error": str(e), "unsaved": True, "sealed": e.sealed}, 409)
         except Busy as e:
             fail(409, str(e))
         except KeyError as e:
@@ -2927,6 +2990,19 @@ def create_app(ctl: Controller, token: str | None):
             return await run_in_threadpool(ctl.changes, cid)
         except OSError as e:
             fail(500, f"Could not compare the folders: {e}")
+
+    @app.post("/api/conversations/keep")
+    async def conversation_keep(request: Request):
+        """A private conversation that keeps its files to itself: you chose to keep them, so it may
+        now bring them into the main folder (then you close it to erase the rest)."""
+        body = await request.json()
+        try:
+            ctl.keep_files(str(body.get("conv", "")))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
+        return {"ok": True}
 
     @app.post("/api/conversations/sync")
     async def conversation_sync(request: Request):
