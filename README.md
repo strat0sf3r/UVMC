@@ -89,11 +89,11 @@ Download or clone this repository, then:
 | --- | --- |
 | double-click [`windows\install.cmd`](windows/install.cmd) | run [`unix/install.sh`](unix/install.sh) |
 
-The installer asks for admin rights once, turns on Hyper-V if needed (one restart; it continues by itself), installs Multipass if it's missing, creates the VM, installs the supervisor, and takes a `clean` snapshot to reset to. On Windows it also adds a **UVMC Panel** shortcut. The first install takes 5-10 minutes, mostly downloads.
+The installer asks for admin rights once, turns on Hyper-V if needed (one restart; it continues by itself), installs Multipass if it's missing, creates the VM, installs the supervisor, and takes a `clean` snapshot to reset to. It offers the UVMC helper (a tray icon that lets the panel manage the model on your graphics card) and a model on your PC. On Windows it also adds a **UVMC Panel** shortcut. The first install takes 5-10 minutes, mostly downloads.
 
 ## Run
 
-1. **Open the panel:** the **UVMC Panel** shortcut, `windows\panel.cmd`, or `unix/panel.sh`. It asks which folders from your PC the agent may see this time, then opens the panel in your browser.
+1. **Open the panel:** the **UVMC Panel** shortcut, `windows\panel.cmd`, or `unix/panel.sh`. It asks which folders from your PC the agent may see this time, then opens the panel in your browser through the UVMC helper (or double-click the helper's tray icon).
 2. **Give it a brain:** in **Settings**, paste an API key, or click **Sign in with your Claude plan**.
 3. **Type a task** and press Enter. Watch the steps, answer the approval cards, and bring the work into the main folder when you're happy with it.
 
@@ -102,6 +102,7 @@ The agent keeps working when you close the browser; the panel catches up when yo
 | | Windows | macOS / Linux |
 | --- | --- | --- |
 | Open the panel ([details](docs/guide.md#the-control-panel)) | `UVMC Panel` shortcut or [`windows\panel.cmd`](windows/panel.cmd) | [`unix/panel.sh`](unix/panel.sh) |
+| The helper on your PC: the panel downloads, starts, stops and deletes models on your graphics card ([details](docs/guide.md#the-helper-on-your-pc)) | [`windows\helper.cmd`](windows/helper.cmd) (tray icon; `-AutoStart` at login) | `python3` [`unix/helper`](unix/helper) (`--autostart` at login) |
 | Push changes to the supervisor into the VM ([details](docs/guide.md#the-supervisor)) | [`windows\update.cmd`](windows/update.cmd) | [`unix/update.sh`](unix/update.sh) |
 | Run a task from a terminal ([details](docs/guide.md#using-uvmc-from-a-terminal-or-scripts)) | [`windows\uvmc.cmd`](windows/uvmc.cmd) `ask "..."` | [`unix/uvmc`](unix/uvmc) `ask "..."` |
 | Let Claude Code and Claude Desktop use UVMC ([details](docs/guide.md#your-pcs-claude-apps-using-uvmc-optional)) | [`windows\connect-claude-apps.cmd`](windows/connect-claude-apps.cmd) | [`unix/connect-claude-apps.sh`](unix/connect-claude-apps.sh) |
