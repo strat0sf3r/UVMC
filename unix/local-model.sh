@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Runs a model on this computer's graphics chip for UVMC, with llama.cpp's own server (no account,
+# Runs models on this computer's graphics chip for UVMC, with llama.cpp's own server (no account,
 # no subscription). Mac: Metal (Apple Silicon). Linux: Vulkan (NVIDIA, AMD, Intel; needs the
 # Vulkan loader, e.g. "sudo apt install libvulkan1 mesa-vulkan-drivers").
 #   unix/local-model.sh                    set up: download llama.cpp and a model sized to your
 #                                          chip, start it, connect UVMC
-#   unix/local-model.sh --model qwen3-4b   switch model (the old file is deleted: one at a time)
+#   unix/local-model.sh --list             the models you can add, what each is good and bad at
+#   unix/local-model.sh --add gemma4-e4b   download another model (several can be kept; the panel
+#                                          picks which one UVMC uses)
+#   unix/local-model.sh --delete <model>   delete a model's file
+#   unix/local-model.sh --test [model]     check a model with UVMC's tools: tool call right? speed?
 #   unix/local-model.sh --update           get the newest llama.cpp
 #   unix/local-model.sh --status | --start | --stop | --remove
 #   unix/local-model.sh --autostart        start it each time you log in (off unless you ask)
@@ -13,7 +17,8 @@
 #
 # The server listens only on this computer and on the network to the UVMC machine, and answers
 # only with a key kept inside UVMC (out of the agent's reach). The model only writes text;
-# whatever it asks for is done by the supervisor inside the VM.
+# whatever it asks for is done by the supervisor inside the VM. It runs in llama.cpp's router
+# mode: every downloaded model is listed, and the one a request names is loaded (one at a time).
 set -euo pipefail
 PORT=8091
 VM=uvmc
@@ -26,24 +31,60 @@ ARCH="$(uname -m)"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
-# name|repo|file|min MiB|label: from the Qwen team's own Hugging Face pages, 4-bit (Q4_K_M)
-MODELS="qwen3-4b|Qwen/Qwen3-4B-GGUF|Qwen3-4B-Q4_K_M.gguf|0|Qwen3 4B (2.4 GB), basic tasks
-qwen3-8b|Qwen/Qwen3-8B-GGUF|Qwen3-8B-Q4_K_M.gguf|6000|Qwen3 8B (4.8 GB)
-qwen3-14b|Qwen/Qwen3-14B-GGUF|Qwen3-14B-Q4_K_M.gguf|11000|Qwen3 14B (8.6 GB)
-qwen3-32b|Qwen/Qwen3-32B-GGUF|Qwen3-32B-Q4_K_M.gguf|20000|Qwen3 32B (18.8 GB)"
-model_field() { printf '%s\n' "$MODELS" | awk -F'|' -v n="$1" -v f="$2" '$1 == n { print $f }'; }
+# The models on offer, with what each is good and bad at: one list for this script,
+# windows/local-model.ps1 and the panel. Every file's SHA-256 is pinned there.
+CATALOG="$(dirname "$HERE")/supervisor/uvmc/local_models.json"
+[ -f "$CATALOG" ] || fail "The list of models ($CATALOG) is missing."
+# catalog field NAME KEY | names | pick MIB | source NAME | files | list "HAVE" MIB
+catalog() {
+  python3 - "$CATALOG" "$@" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1], encoding="utf-8")); m = c["models"]; cmd = sys.argv[2]; a = sys.argv[3:]
+def source(x):
+    return {"official": f"from {x['by']}'s own page",
+            "quantized": f"{x['maker']}'s model, converted to GGUF by {x['by']}",
+            "uncensored": f"UNOFFICIAL: changed by {x['by']}, outside {x['maker']}"}[x["kind"]]
+if cmd == "field":
+    print(m.get(a[0], {}).get(a[1], ""))
+elif cmd == "names":
+    print(" ".join(m))
+elif cmd == "pick":
+    pick = ""
+    for k, v in c["default_from_mib"].items():
+        if int(a[0]) >= int(k): pick = v
+    print(pick)
+elif cmd == "source":
+    print(source(m[a[0]]))
+elif cmd == "files":
+    print("\n".join(x["file"] for x in m.values()))
+elif cmd == "list":
+    have, mib = a[0].split(), int(a[1] or 0)
+    for k, x in m.items():
+        fit = "" if not mib or mib >= x["min_mib"] else f"  (meant for {round(x['min_mib'] / 1000)} GB chips: slow on yours)"
+        print(f"\n{'[x]' if k in have else '[ ]'} {k}  -  {x['label']}, {x['size_gb']} GB{fit}")
+        print(f"    {x['about']} {source(x)}.")
+        print(f"    Good: {x['good']}")
+        print(f"    Weak: {x['weak']}")
+        if not x["tested"]: print("    Not yet tested in UVMC: --test after adding it.")
+PY
+}
+field() { catalog field "$1" "$2"; }
 
-DIR="" MODEL="" LLAMA="" MODEL_SHA="" CARD="" CARD_MIB=0 VM_IF=""
+DIR="" MODEL="" HAVE="" VERIFIED="" LLAMA="" MODEL_SHA="" CARD="" CARD_MIB=0 VM_IF=""
 [ -f "$STATE" ] && . "$STATE"
 save_state() {
   mkdir -p "$(dirname "$STATE")"
-  { for v in DIR MODEL LLAMA MODEL_SHA CARD CARD_MIB VM_IF; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$STATE"
+  { for v in DIR HAVE VERIFIED LLAMA CARD CARD_MIB VM_IF; do printf '%s=%q\n' "$v" "${!v}"; done; } > "$STATE"
 }
+has() { case " $HAVE " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-ACTION=setup WANT_MODEL="" UPDATE=0 YES=0
+ACTION=setup WANT_MODEL="" UPDATE=0 YES=0 TEST_ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --model) WANT_MODEL="$2"; shift ;;
+    --model|--add) WANT_MODEL="$2"; shift ;;   # --model was "switch to"; now models are kept side by side
+    --delete) ACTION=delete; WANT_MODEL="$2"; shift ;;
+    --list) ACTION=list ;;
+    --test) ACTION=test; if [ $# -gt 1 ] && [ "${2#--}" = "$2" ]; then TEST_ONLY="$2"; shift; fi ;;
     --dir) DIR="$(mkdir -p "$2" && cd "$2" && pwd)"; shift ;;
     --update) UPDATE=1 ;;
     --status) ACTION=status ;; --start) ACTION=start ;; --stop) ACTION=stop ;; --remove) ACTION=remove ;;
@@ -56,10 +97,25 @@ done
 [ -n "$DIR" ] || DIR="$(dirname "$(dirname "$HERE")")/uvmc-local"
 SERVER="$DIR/llama.cpp/llama-server"
 PIDFILE="$DIR/server.pid"
+PRESET="$DIR/models.ini"
+model_path() { printf '%s/models/%s' "$DIR" "$(field "$1" file)"; }
+# Before 0.16 one model was kept (MODEL). Carry it over if it's still offered.
+if [ -n "$MODEL" ]; then
+  if [ -n "$(field "$MODEL" file)" ] && [ -f "$(model_path "$MODEL")" ] && ! has "$MODEL"; then HAVE="${HAVE:+$HAVE }$MODEL"; fi
+  MODEL=""
+fi
+HAVE="$(for n in $HAVE; do [ -n "$(field "$n" file)" ] && printf '%s ' "$n"; done)"; HAVE="${HAVE% }"
 
 running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 stop_server() {
-  if running; then kill "$(cat "$PIDFILE")"; rm -f "$PIDFILE"; say "Stopped."; else say "It was not running."; fi
+  if ! running; then say "It was not running."; return; fi
+  # The router ends the model it loaded; wait until both are gone, so a restart can take the port.
+  local pid i; pid="$(cat "$PIDFILE")"
+  kill "$pid"
+  for i in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  pkill -f "^$SERVER " 2>/dev/null || true
+  rm -f "$PIDFILE"; say "Stopped."
 }
 
 # This computer's address on a network interface (the one to the UVMC machine).
@@ -132,64 +188,107 @@ get_card() {
   CARD_MIB="$(printf '%s' "$line" | sed -E 's/.*\(([0-9]+) MiB.*/\1/')"
 }
 
-pick_model() {
-  printf '%s\n' "$MODELS" | awk -F'|' -v m="$1" '$4 <= m { pick = $1 } END { print pick }'
-}
+sha() { (command -v sha256sum >/dev/null && sha256sum "$1" || shasum -a 256 "$1") | awk '{print $1}'; }
 
+# Downloads a model, checked against the SHA-256 pinned in local_models.json.
 get_model() {
   local repo file want path
-  repo="$(model_field "$1" 2)"; file="$(model_field "$1" 3)"
+  repo="$(field "$1" repo)"; file="$(field "$1" file)"; want="$(field "$1" sha256)"
   path="$DIR/models/$file"
-  want="$(curl -fsSL -H 'User-Agent: uvmc' "https://huggingface.co/api/models/$repo/tree/main" | python3 -c '
-import json, sys
-print(next((f["lfs"]["oid"] for f in json.load(sys.stdin) if f["path"] == sys.argv[1] and f.get("lfs")), ""))' "$file")"
-  [ -n "$want" ] || fail "$file was not found on huggingface.co/$repo."
-  sha() { (command -v sha256sum >/dev/null && sha256sum "$1" || shasum -a 256 "$1") | awk '{print $1}'; }
-  if ! { [ -f "$path" ] && [ "$MODEL_SHA" = "$want" ]; }; then
+  if ! { [ -f "$path" ] && case " $VERIFIED " in *" $file=$want "*) true ;; *) false ;; esac; }; then
     mkdir -p "$DIR/models"
-    if [ -f "$path" ] && { say "Checking the model file already in the folder..."; [ "$(sha "$path")" = "$want" ]; }; then :
+    if [ -f "$path" ] && { say "Checking $file, already in the folder..."; [ "$(sha "$path")" = "$want" ]; }; then :
     else
-      say "Downloading $(model_field "$1" 5) from huggingface.co/$repo... (it can be stopped and resumed)"
-      curl -fL -C - -o "$path" "https://huggingface.co/$repo/resolve/main/$file" || fail "The download stopped. Run this again to resume it."
+      [ "$(field "$1" kind)" = uncensored ] && say "$(field "$1" label) is $(catalog source "$1"). UVMC pinned the file it checked; a changed file is refused."
+      say "Downloading $(field "$1" label) ($(field "$1" size_gb) GB) from huggingface.co/$repo... (it can be stopped and resumed)"
+      curl -fL -C - -o "$path" "https://huggingface.co/$repo/resolve/main/$file" || fail "The download stopped. Run --add $1 again to resume it."
       say "Checking the file..."
-      [ "$(sha "$path")" = "$want" ] || { rm -f "$path"; fail "The model does not match its published checksum; deleted it. Run this again."; }
+      [ "$(sha "$path")" = "$want" ] || { rm -f "$path"; fail "$file does not match the checksum UVMC pinned; deleted it. Try again; if it happens again, the file was changed on Hugging Face and UVMC has to check it again before using it."; }
     fi
-    MODEL_SHA="$want"
+    VERIFIED="$(for v in $VERIFIED; do [ "${v%%=*}" = "$file" ] || printf '%s ' "$v"; done)$file=$want"
   fi
-  for f in "$DIR"/models/*.gguf; do
-    [ "$f" = "$path" ] || { say "Deleting the previous model $(basename "$f")."; rm -f "$f"; }
-  done
-  MODEL="$1"
+  has "$1" || HAVE="${HAVE:+$HAVE }$1"
 }
 
-server_args() {
+# llama.cpp's router reads this when it starts: the settings for every model ([*]), then one section
+# per downloaded model. The section name is the name UVMC asks for.
+write_preset() {
   # Measured on an 8 GB AMD card through Vulkan: flash attention fell back to the processor (10x
   # slower on long prompts), and a smaller work buffer kept the model off shared memory.
-  ARGS=(-ngl 99 -np 1 --jinja --reasoning-budget 0)
-  if [ "$OS" = Darwin ] || [[ "$CARD" == *NVIDIA* ]]; then ARGS+=(-fa auto); else ARGS+=(-fa off); fi
-  if [ "$CARD_MIB" -ge 11000 ]; then ARGS+=(-c 16384); else ARGS+=(-c 8192 -ub 256); fi
+  local fa=off n
+  if [ "$OS" = Darwin ] || [[ "$CARD" == *NVIDIA* ]]; then fa=auto; fi
+  {
+    printf '; Written by local-model. Changes are lost the next time it runs.\nversion = 1\n\n[*]\n'
+    printf 'n-gpu-layers = 99\nparallel = 1\njinja = true\nreasoning-budget = 0\nflash-attn = %s\n' "$fa"
+    if [ "$CARD_MIB" -ge 11000 ]; then printf 'ctx-size = 16384\n'; else printf 'ctx-size = 8192\nubatch-size = 256\n'; fi
+    for n in $HAVE; do printf '\n[%s]\nmodel = %s\n' "$n" "$(model_path "$n")"; done
+  } > "$PRESET"
 }
 
 start_server() {
-  running && { say "The model is already running."; return; }
+  running && { say "The model server is already running."; return; }
+  [ -n "$HAVE" ] || fail "No model downloaded yet. Run unix/local-model.sh, or --add <model> (--list shows them)."
+  [ -f "$PRESET" ] || write_preset
   local hosts=127.0.0.1 ip="" i
   # On a Mac the network to the UVMC machine only exists while it runs: wait for it a while.
   if [ -n "$VM_IF" ]; then
     for i in $(seq 60); do ip="$(if_address "$VM_IF")"; [ -n "$ip" ] && break; [ "$ACTION" = start ] || break; sleep 10; done
   fi
   if [ -n "$ip" ]; then hosts="$hosts,$ip"; else say "The network to the UVMC machine was not found; the model starts for this computer only."; fi
-  server_args
-  nohup "$SERVER" -m "$DIR/models/$(model_field "$MODEL" 3)" --alias "$MODEL" --host "$hosts" --port "$PORT" \
-    --api-key-file "$DIR/api_key" --log-file "$DIR/server.log" "${ARGS[@]}" >/dev/null 2>&1 &
+  # Router mode: no model on the command line. --models-max 1: one model on the chip at a time.
+  nohup "$SERVER" --models-preset "$PRESET" --models-max 1 --host "$hosts" --port "$PORT" \
+    --api-key-file "$DIR/api_key" --log-file "$DIR/server.log" >/dev/null 2>&1 &
   echo $! > "$PIDFILE"
   local key; key="$(cat "$DIR/api_key")"
-  for i in $(seq 120); do
+  for i in $(seq 60); do
     sleep 1
-    curl -fs -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/health" | grep -q '"ok"' && {
-      say "Running: $(model_field "$MODEL" 5) on $CARD."; return; }
+    curl -fs -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/models" | grep -q '"data"' && {
+      say "Running on $CARD, with: $HAVE."
+      say "A model is loaded on the chip the first time UVMC asks for it (a few seconds)."; return; }
     running || break
   done
-  fail "The model did not start. See $DIR/server.log."
+  fail "The model server did not start. See $DIR/server.log."
+}
+restart_if_running() { if running; then stop_server; start_server; fi; }   # it reads models.ini when it starts
+
+# The same request UVMC makes: a system prompt, a task, its run_command tool. Passes when the model
+# asks for the tool with a sensible command. Then a plain reply, to measure speed.
+test_model() {
+  say ""; say "Testing $(field "$1" label)... (loading it on the chip first can take a minute)"
+  python3 - "$PORT" "$(cat "$DIR/api_key")" "$1" <<'PY'
+import json, sys, time, urllib.request
+port, key, name = sys.argv[1:]
+def post(body):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    return json.load(urllib.request.urlopen(req, timeout=600))
+tool = {"type": "function", "function": {"name": "run_command",
+        "description": "Run a bash command as the agent user and return its exit code and combined output.",
+        "parameters": {"type": "object", "properties": {"command": {"type": "string", "description": "The bash command to run."}},
+                       "required": ["command"]}}}
+t = time.time()
+try:
+    r = post({"model": name, "max_tokens": 400, "tool_choice": "auto", "tools": [tool], "messages": [
+        {"role": "system", "content": "You are an agent working on a Linux machine. Use the tools to do the task."},
+        {"role": "user", "content": "How many files are in the folder /tmp/demo? Find out with a command."}]})
+except Exception as e:
+    print(f"  Failed: {e}. See server.log."); sys.exit(1)
+first = round(time.time() - t)
+msg = r["choices"][0]["message"]; calls = msg.get("tool_calls") or []
+ok = False
+if calls:
+    f = calls[0]["function"]
+    try: cmd = json.loads(f["arguments"]).get("command", "")
+    except ValueError: cmd = ""
+    ok = f["name"] == "run_command" and "/tmp/demo" in cmd
+    print(f"  Tool call: right (run_command: {cmd})" if ok else f"  Tool call: wrong ({f['name']}: {f['arguments']})")
+else:
+    print("  Tool call: none. It wrote instead: " + " ".join((msg.get("content") or "").split()))
+r = post({"model": name, "max_tokens": 200, "messages": [{"role": "user", "content": "Write a short paragraph about why backups matter."}]})
+tm = r.get("timings") or {}
+print(f"  Speed: {round(tm.get('predicted_per_second', 0))} tokens a second writing. First answer after {first} s (loading included).")
+sys.exit(0 if ok else 1)
+PY
 }
 
 PLIST="$HOME/Library/LaunchAgents/com.uvmc.local-model.plist"
@@ -248,24 +347,46 @@ send_key() {
 connect_uvmc() {
   if ! command -v multipass >/dev/null; then say "Multipass is not installed, so UVMC was not connected."; return; fi
   if send_key "$(cat "$DIR/api_key")"; then
-    say 'UVMC connected: pick "Local model on my PC" in the panel.'
+    say 'UVMC connected: pick "Local model on my PC" in the panel, and which model it uses under Settings > Models.'
   else say "Could not give UVMC the key. Is the UVMC machine installed and running?"; fi
 }
 
 case "$ACTION" in
   status)
-    [ -n "$MODEL" ] || { say "Not set up yet. Run unix/local-model.sh."; exit 0; }
+    [ -n "$HAVE" ] || { say "Not set up yet. Run unix/local-model.sh."; exit 0; }
     say "Folder:    $DIR"; say "llama.cpp: $LLAMA"; say "Chip:      $CARD ($CARD_MIB MiB)"
-    say "Model:     $(model_field "$MODEL" 5)"
+    say "Models:    $HAVE"
     if running; then say "Running, port $PORT."; else say "Not running (unix/local-model.sh --start)."; fi
     if autostart_on; then say "Starts at login: yes (--no-autostart to stop that)"; else say "Starts at login: no (--autostart if you want it)"; fi
     exit 0 ;;
-  autostart) [ -n "$MODEL" ] || fail "Not set up yet. Run unix/local-model.sh first."; autostart; exit 0 ;;
+  list)
+    if [ "$CARD_MIB" -gt 0 ]; then say "Your chip: $CARD, $CARD_MIB MiB. [x] = downloaded."; else say "[x] = downloaded. (Run this once so it knows your chip.)"; fi
+    catalog list "$HAVE" "$CARD_MIB"
+    say ""; say "Add one with --add <name>. The panel (Settings > Models) picks which one UVMC uses."
+    exit 0 ;;
+  test)
+    running || fail "The model server is not running (--start)."
+    which="${TEST_ONLY:-$HAVE}"; failed=0; count=0
+    for n in $which; do has "$n" || fail "Not downloaded: $n. Downloaded: $HAVE."; done
+    for n in $which; do count=$((count + 1)); test_model "$n" || failed=$((failed + 1)); done
+    say ""
+    [ "$failed" = 0 ] || { say "$failed of $count did not call the tool right: UVMC's agent would struggle with them."; exit 1; }
+    say "All passed."; exit 0 ;;
+  delete)
+    has "$WANT_MODEL" || fail "'$WANT_MODEL' is not downloaded. Downloaded: $HAVE."
+    rest="$(for n in $HAVE; do [ "$n" = "$WANT_MODEL" ] || printf '%s ' "$n"; done)"; rest="${rest% }"
+    [ -n "$rest" ] || fail "It is the only model left. --remove removes everything."
+    path="$(model_path "$WANT_MODEL")"
+    HAVE="$rest"; save_state; write_preset; restart_if_running
+    rm -f "$path"
+    say "Deleted $(field "$WANT_MODEL" label). If the panel had picked it, UVMC now uses another one until you pick again."
+    exit 0 ;;
+  autostart) [ -n "$HAVE" ] || fail "Not set up yet. Run unix/local-model.sh first."; autostart; exit 0 ;;
   no-autostart) no_autostart; exit 0 ;;
   stop) stop_server; exit 0 ;;
-  start) [ -n "$MODEL" ] || fail "Not set up yet. Run unix/local-model.sh first."; start_server; exit 0 ;;
+  start) [ -n "$HAVE" ] || fail "Not set up yet. Run unix/local-model.sh first."; start_server; exit 0 ;;
   remove)
-    if [ "$YES" = 0 ]; then read -rp "Delete $DIR (llama.cpp and the model)? [y/N] " a; [[ "$a" =~ ^[yY] ]] || exit 0; fi
+    if [ "$YES" = 0 ]; then read -rp "Delete $DIR (llama.cpp and the models)? [y/N] " a; [[ "$a" =~ ^[yY] ]] || exit 0; fi
     stop_server
     no_autostart >/dev/null
     [ -d "$DIR" ] && rm -rf -- "$DIR"
@@ -274,25 +395,42 @@ case "$ACTION" in
     say "Removed."; exit 0 ;;
 esac
 
-if [ -n "$WANT_MODEL" ] && [ -z "$(model_field "$WANT_MODEL" 1)" ]; then
-  fail "Unknown model '$WANT_MODEL'. Choose one of: $(printf '%s\n' "$MODELS" | cut -d'|' -f1 | tr '\n' ' ')"
+if [ -n "$WANT_MODEL" ] && [ -z "$(field "$WANT_MODEL" file)" ]; then
+  fail "Unknown model '$WANT_MODEL'. --list shows them: $(catalog names)"
 fi
 mkdir -p "$DIR"
 say "Folder: $DIR"
 if [ "$UPDATE" = 1 ] || [ ! -x "$SERVER" ]; then get_llama; fi
 get_card || fail "llama.cpp found no graphics chip it can use. (Linux: is the Vulkan loader installed?)"
 say "Graphics: $CARD, $CARD_MIB MiB."
-name="${WANT_MODEL:-${MODEL:-$(pick_model "$CARD_MIB")}}"
-[ "$(model_field "$name" 4)" -gt "$CARD_MIB" ] && say "$(model_field "$name" 5) is meant for bigger chips; it will be slow on this one."
-say "Model: $(model_field "$name" 5)"
-get_model "$name"
+name="$WANT_MODEL"; [ -n "$name" ] || [ -n "$HAVE" ] || name="$(catalog pick "$CARD_MIB")"
+if [ -n "$name" ]; then
+  [ "$(field "$name" min_mib)" -gt "$CARD_MIB" ] && say "$(field "$name" label) is meant for bigger chips; it will be slow on this one."
+  say "Model: $(field "$name" label). $(field "$name" about)"
+  get_model "$name"
+fi
 [ -f "$DIR/api_key" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DIR/api_key")
+save_state
+write_preset
+# Files from before 0.16 that are no longer on the list stay until you delete them.
+known="$(catalog files)"
+for f in "$DIR"/models/*.gguf; do
+  [ -f "$f" ] || continue
+  printf '%s\n' "$known" | grep -qxF "$(basename "$f")" || say "$(basename "$f") is no longer on the list, so UVMC doesn't use it. Delete it by hand to free space: $f"
+done
+if [ -n "$WANT_MODEL" ] && [ "$UPDATE" = 0 ]; then
+  # Only a model added: no need to look for the UVMC machine again.
+  restart_if_running; running || start_server
+  if [ -n "$VM_IF" ]; then say "Added. Pick it in the panel (Settings > Models), and try it with --test $WANT_MODEL."
+  else say "Added, and running for this computer only (try it with --test $WANT_MODEL). UVMC is not connected yet: run unix/local-model.sh with no options to connect it."; fi
+  exit 0
+fi
 VM_IF="$(find_vm_interface || true)"
 [ -n "$VM_IF" ] || say "The UVMC machine was not found; run this again once it's installed to connect it."
 save_state
 running && { kill "$(cat "$PIDFILE")"; rm -f "$PIDFILE"; sleep 2; }   # restart on today's addresses
 start_server
 [ -n "$VM_IF" ] && connect_uvmc
-say "Done. It runs until you stop it (--stop) or restart; --start starts it again."
+say "Done. It runs until you stop it (--stop) or restart; --start starts it again. More models: --list."
 if autostart_on; then say "It also starts each time you log in (--no-autostart turns that off)."
 else say "It does not start by itself when you log in; --autostart does that, if you want it."; fi

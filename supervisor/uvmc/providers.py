@@ -144,6 +144,26 @@ class OpenAIProvider(Provider):
         self.on_pc = pc.PLACEHOLDER in (profile.base_url or "")   # a model on your PC (local-model.cmd)
         base = pc.resolve(profile.base_url or "https://api.openai.com/v1").rstrip("/")
         self.http = httpx.Client(base_url=base, headers=headers, timeout=timeout)
+        self.root = base.removesuffix("/v1")
+        self._pc_model: str | None = None
+
+    def model_name(self) -> str:
+        """The model to ask for. On the PC, llama.cpp's router serves several models: the one picked
+        in the panel if it's downloaded, else the one on the card, else the first (local_models.py).
+        Looked up once per task (a provider is made for each)."""
+        if not self.on_pc:
+            return self.profile.model
+        if self._pc_model is None:
+            from . import local_models
+            self._pc_model = self.profile.model
+            try:
+                r = self.http.get(self.root + "/models", timeout=5)
+                rows = local_models.router_models(r.json()) if r.status_code == 200 else None
+            except Exception:
+                rows = None   # the request itself then says what's wrong
+            if rows:
+                self._pc_model = local_models.choose(self.profile.model, rows)
+        return self._pc_model
 
     @staticmethod
     def tools(tools: list[dict]) -> list[dict]:
@@ -172,7 +192,7 @@ class OpenAIProvider(Provider):
         return out
 
     def complete(self, system, messages, tools, max_tokens) -> Reply:
-        body = {"model": self.profile.model, "messages": self.to_native(system, messages)}
+        body = {"model": self.model_name(), "messages": self.to_native(system, messages)}
         if tools:
             body["tools"] = self.tools(tools)
             body["tool_choice"] = "auto"

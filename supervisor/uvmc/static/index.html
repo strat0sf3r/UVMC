@@ -417,6 +417,7 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .mtool details summary { margin: 0; font-size: 14px; }
 .mtool .setup { background: var(--signal-bg); border-radius: 6px; padding: 8px 10px; font-size: 14px; white-space: pre-wrap; margin: 8px 0; }
 .mtool .pform { margin: 8px 0; }
+.mtool.unofficial { border-color: var(--signal); }
 .mtool pre.log { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
 .mtool .runlist button, .mtool .filelist button { all: unset; cursor: pointer; display: block; font-size: 13px; padding: 2px 0; }
 .mtool .runlist button:hover, .mtool .filelist button:hover { text-decoration: underline; }
@@ -2878,7 +2879,28 @@ async function planSignin() {
   f.code.focus();
 }
 
-// The model on your PC (windows\local-model.cmd, unix/local-model.sh): is it there and running?
+// The models on your PC (windows\local-model.cmd, unix/local-model.sh): there? running? which one?
+// local-model 0.16+ runs llama.cpp's router: several downloaded models, one on the card at a time,
+// and the one picked here is what UVMC asks for. Each comes with what it's good and bad at.
+const KIND_TEXT = {
+  official: m => `from ${m.by}`,
+  quantized: m => `${m.maker}'s model, converted by ${m.by}`,
+  uncensored: m => `unofficial: refusals removed by ${m.by}`,
+};
+function localCard(m, use) {
+  const kind = KIND_TEXT[m.kind] ? KIND_TEXT[m.kind](m) : "";
+  const chip = m.status === "loaded" ? `<span class="chip on">on the card</span>`
+    : m.status === "loading" ? `<span class="chip need">loading</span>`
+    : m.status ? `<span class="chip">not loaded</span>` : `<span class="chip">${esc(String(m.size_gb))} GB</span>`;
+  return `<li class="mtool${m.kind === "uncensored" ? " unofficial" : ""}">
+    <div class="top"><strong>${esc(m.label)}</strong>${m.status && m.size_gb ? `<span class="ver">${esc(String(m.size_gb))} GB</span>` : ""}${chip}</div>
+    ${m.known === false ? `<p class="desc">Not on UVMC's list (from an older local-model).</p>` : `
+    <p class="desc">${esc(m.about)} <span class="when">${esc(kind)}${m.min_mib >= 11000 ? `; meant for cards with ${Math.round(m.min_mib / 1000)} GB or more` : ""}.</span></p>
+    <p class="desc"><strong>Good:</strong> ${esc(m.good)}</p>
+    <p class="desc"><strong>Weak:</strong> ${esc(m.weak)}</p>
+    ${m.tested ? "" : `<p class="when">Not yet tested in UVMC: <span class="cmdish">local-model -Test ${esc(m.id)}</span> on your PC checks it.</p>`}`}
+    ${use}</li>`;
+}
 async function loadLocalModel() {
   const box = $("localModel");
   if (!box) return;
@@ -2887,18 +2909,38 @@ async function loadLocalModel() {
   if (!m.profile) { box.innerHTML = ""; return; }
   const run = `<span class="cmdish">local-model</span>`;
   let body;
-  if (m.running && m.key_ok) {
+  if (m.running && m.key_ok && m.router) {
+    const have = new Set(m.models.map(x => x.id));
+    const cards = m.models.map(x => localCard(x, x.id === m.in_use
+      ? `<div class="row"><span class="plan-ok">&#10003; UVMC uses this one${m.picked === x.id ? "" : " (none picked yet: the one on the card, or the first)"}</span></div>`
+      : `<div class="row"><button class="btn" type="button" data-use-local="${esc(x.id)}">Use this one</button></div>`)).join("");
+    const more = (m.offered || []).filter(x => !have.has(x.id));
+    body = `<p class="plan-ok">&#10003; Running on your PC${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}${m.context ? `; holds ${m.context.toLocaleString()} tokens of conversation` : ""}.</p>
+      <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header; the model it runs is chosen here, for every conversation, from the next message on. Switching loads the new one on the card (a few seconds). Local models are slower and less capable than Claude: give them small tasks, and start a new conversation when one says it's too long.</p>
+      <ul class="mtools">${cards}</ul>
+      ${more.length ? `<details><summary>More models you can add (${more.length})</summary>
+        <p class="small">On your PC: ${run} -Add <em>name</em>, then pick it here. ${run} -List shows the same list.</p>
+        <ul class="mtools">${more.map(x => localCard(x, `<div class="row"><span class="cmdish">local-model -Add ${esc(x.id)}</span></div>`)).join("")}</ul></details>` : ""}
+      <p class="small">${run} -Update gets the newest llama.cpp; ${run} -Delete <em>name</em> deletes a model.</p>`;
+  } else if (m.running && m.key_ok) {
     body = `<p class="plan-ok">&#10003; Running: <strong>${esc(m.model || m.file)}</strong>${m.file && m.model ? ` (${esc(m.file)})` : ""}, holds ${m.context.toLocaleString()} tokens of conversation${m.build ? `, llama.cpp ${esc(m.build.split("-")[0])}` : ""}.</p>
-      <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header. It's slower and less capable than Claude: give it small tasks, and start a new conversation when it says this one is too long. To switch model or update llama.cpp, run ${run} on your PC (${run} -Model qwen3-4b, ${run} -Update).</p>`;
+      <p class="small">Pick <strong>${esc(m.label)}</strong> in a conversation's header. To choose among several models here (Qwen, Gemma, Mistral, uncensored ones), run ${run} on your PC again: this one is from an older version and runs one model only.</p>`;
   } else if (m.running) {
     body = `<p class="small bad">Running on your PC, but UVMC's key doesn't match it. Run ${run} on your PC again: it reconnects UVMC.</p>`;
   } else if (m.has_key) {
     body = `<p class="small bad">Not running. Start it on your PC: double-click <span class="cmdish">start-local-model</span> in the UVMC folder (or ${run} -AutoStart to have it start each time you log in).</p>`;
   } else {
-    body = `<p class="small">Not set up. A model can run on your PC's graphics card (NVIDIA, AMD, Intel or a Mac), with no account and no key to buy: run ${run} from the UVMC folder on your PC once. It downloads llama.cpp and a model sized to your card, and connects UVMC.</p>`;
+    body = `<p class="small">Not set up. Models can run on your PC's graphics card (NVIDIA, AMD, Intel or a Mac), with no account and no key to buy: run ${run} from the UVMC folder on your PC once. It downloads llama.cpp and a model sized to your card, and connects UVMC. Others can be added after (${run} -List).</p>`;
   }
-  box.innerHTML = `<h3>Model on your PC</h3>${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
+  box.innerHTML = `<h3>Models on your PC</h3>${body}<button class="btn" type="button" id="localCheck">Check again</button>`;
   $("localCheck").addEventListener("click", loadLocalModel);
+  box.querySelectorAll("[data-use-local]").forEach(b => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "Switching...";
+    try { await api("/api/local-model", { model: b.dataset.useLocal }); }
+    catch (e) { b.textContent = "Use this one"; b.disabled = false; b.insertAdjacentHTML("afterend", `<span class="small bad">${esc(e.message)}</span>`); return; }
+    loadLocalModel();
+    setTimeout(loadLocalModel, 8000);   // loading on the card takes a few seconds
+  }));
 }
 
 function profileForm(p) {

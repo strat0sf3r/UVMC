@@ -1,8 +1,12 @@
-# Runs a model on this PC's graphics card for UVMC, with llama.cpp's own server (no account,
+# Runs models on this PC's graphics card for UVMC, with llama.cpp's own server (no account,
 # no subscription). Start it with local-model.cmd.
 #   local-model                      set up: download llama.cpp and a model sized to your card,
 #                                    open the way for the UVMC machine only, start, connect UVMC
-#   local-model -Model qwen3-4b      switch model (the old file is deleted: one model at a time)
+#   local-model -List                the models you can add, what each is good and bad at
+#   local-model -Add gemma4-e4b      download another model (several can be kept; the panel
+#                                    picks which one UVMC uses)
+#   local-model -Delete gemma4-e4b   delete a model's file
+#   local-model -Test [model]        check a model with UVMC's tools: tool call right? how fast?
 #   local-model -Update              get the newest llama.cpp
 #   local-model -Status | -Start | -Stop | -Remove
 #   local-model -AutoStart           start it each time you log in (off unless you ask)
@@ -12,9 +16,16 @@
 # The server listens only on this PC and on the network to the UVMC machine, never on your
 # home network, and answers only with a key that is kept inside UVMC (out of the agent's reach).
 # The model only writes text; whatever it asks for is done by the supervisor inside the VM.
+# It runs in llama.cpp's router mode: every downloaded model is listed, and the one a request
+# names is loaded (one at a time on the card).
+[CmdletBinding(PositionalBinding = $false)]   # "-Test qwen3.5-9b": the name goes to $Rest, not to -Model
 param(
     [string]$Model,
+    [string]$Add,
+    [string]$Delete,
     [string]$Dir,
+    [switch]$List,
+    [switch]$Test,
     [switch]$Update,
     [switch]$Status,
     [switch]$Start,
@@ -22,7 +33,8 @@ param(
     [switch]$Remove,
     [switch]$AutoStart,
     [switch]$NoAutoStart,
-    [switch]$Yes
+    [switch]$Yes,
+    [Parameter(ValueFromRemainingArguments = $true)] [string[]]$Rest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,13 +47,13 @@ $OutRuleName = 'UVMC local model (no outgoing)'
 $StateFile = Join-Path $env:LOCALAPPDATA 'UVMC\local-model.json'
 $Startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'UVMC local model.lnk'
 
-# One model per size of card. All from the Qwen team's own Hugging Face page, 4-bit (Q4_K_M).
-$Models = [ordered]@{
-    'qwen3-4b'  = @{ Repo = 'Qwen/Qwen3-4B-GGUF';  File = 'Qwen3-4B-Q4_K_M.gguf';  MinMiB = 0;     Label = 'Qwen3 4B (2.4 GB), basic tasks' }
-    'qwen3-8b'  = @{ Repo = 'Qwen/Qwen3-8B-GGUF';  File = 'Qwen3-8B-Q4_K_M.gguf';  MinMiB = 6000;  Label = 'Qwen3 8B (4.8 GB)' }
-    'qwen3-14b' = @{ Repo = 'Qwen/Qwen3-14B-GGUF'; File = 'Qwen3-14B-Q4_K_M.gguf'; MinMiB = 11000; Label = 'Qwen3 14B (8.6 GB)' }
-    'qwen3-32b' = @{ Repo = 'Qwen/Qwen3-32B-GGUF'; File = 'Qwen3-32B-Q4_K_M.gguf'; MinMiB = 20000; Label = 'Qwen3 32B (18.8 GB)' }
-}
+# The models on offer, with what each is good and bad at: one list for this script, unix/local-model.sh
+# and the panel. Every file's SHA-256 is pinned there.
+$CatalogFile = Join-Path (Split-Path $PSScriptRoot) 'supervisor\uvmc\local_models.json'
+if (-not (Test-Path $CatalogFile)) { Write-Host "The list of models ($CatalogFile) is missing." -ForegroundColor Red; exit 1 }
+$Catalog = [IO.File]::ReadAllText($CatalogFile) | ConvertFrom-Json
+$Models = [ordered]@{}
+foreach ($p in $Catalog.models.PSObject.Properties) { $Models[$p.Name] = $p.Value }
 
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
 function Fail($text) { Write-Host $text -ForegroundColor Red; exit 1 }
@@ -55,6 +67,15 @@ function Save-State($s) {
     [IO.File]::WriteAllText($StateFile, ($s | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 }
 function Set-Field($s, $name, $value) { $s | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force }
+function Installed($s) { if ($s.PSObject.Properties['models']) { return @($s.models | Where-Object { $Models.Contains($_) }) } else { return @() } }
+
+function Source-Line($m) {
+    switch ($m.kind) {
+        'official'   { "from $($m.by)'s own page" }
+        'quantized'  { "$($m.maker)'s model, converted to GGUF by $($m.by)" }
+        'uncensored' { "UNOFFICIAL: changed by $($m.by), outside $($m.maker)" }
+    }
+}
 
 function Find-Multipass {
     $c = Get-Command multipass.exe -ErrorAction SilentlyContinue
@@ -83,7 +104,11 @@ function Find-VmNetwork {
 }
 
 function Server-Exe($s) { Join-Path $s.dir 'llama.cpp\llama-server.exe' }
+function Preset-File($s) { Join-Path $s.dir 'models.ini' }
+function Model-Path($s, $name) { Join-Path $s.dir "models\$($Models[$name].file)" }
+# The router and the model it has loaded are both llama-server processes from this folder.
 function Running { Get-Process llama-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$($state.dir)*" } }
+function Api-Key($s) { (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim() }
 
 function Get-LlamaCpp($s) {
     # The newest llama.cpp release that has a Windows Vulkan build. Vulkan works on NVIDIA,
@@ -129,57 +154,83 @@ function Get-Card($s) {
 }
 
 function Pick-Model($mib) {
-    $pick = 'qwen3-4b'
-    foreach ($k in $Models.Keys) { if ($mib -ge $Models[$k].MinMiB) { $pick = $k } }
+    $pick = $null
+    foreach ($p in $Catalog.default_from_mib.PSObject.Properties) { if ($mib -ge [int]$p.Name) { $pick = $p.Value } }
     return $pick
 }
 
 function Get-Model($s, $name) {
+    # Downloads a model, checked against the SHA-256 pinned in local_models.json.
     $m = $Models[$name]
-    $path = Join-Path $s.dir "models\$($m.File)"
-    $info = Invoke-RestMethod "https://huggingface.co/api/models/$($m.Repo)/tree/main" -Headers @{ 'User-Agent' = 'uvmc' }
-    $want = (($info | Where-Object { $_.path -eq $m.File }).lfs.oid)
-    if (-not $want) { Fail "$($m.File) was not found on huggingface.co/$($m.Repo)." }
-    $verified = (Test-Path $path) -and $s.PSObject.Properties['model_sha'] -and $s.model_sha -eq $want
-    if (-not $verified -and (Test-Path $path)) {
+    $path = Model-Path $s $name
+    $verified = @{}
+    if ($s.PSObject.Properties['verified']) { foreach ($p in $s.verified.PSObject.Properties) { $verified[$p.Name] = $p.Value } }
+    $ok = (Test-Path $path) -and $verified[$m.file] -eq $m.sha256
+    if (-not $ok -and (Test-Path $path)) {
         # Already in the folder (or half downloaded): if it's complete and correct, keep it.
-        Say 'Checking the model file already in the folder...'
-        if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLower() -eq $want) { $verified = $true; Set-Field $s 'model_sha' $want }
+        Say "Checking $($m.file), already in the folder..."
+        $ok = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower() -eq $m.sha256
     }
-    if (-not $verified) {
+    if (-not $ok) {
         New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
-        Say "Downloading $($m.Label) from huggingface.co/$($m.Repo)... (it can be stopped and resumed)"
-        & curl.exe -fL -C - -o $path "https://huggingface.co/$($m.Repo)/resolve/main/$($m.File)"
-        if ($LASTEXITCODE -ne 0) { Fail 'The download stopped. Run local-model again to resume it.' }
+        if ($m.kind -eq 'uncensored') { Say "$($m.label) is $(Source-Line $m). UVMC pinned the file it checked; a changed file is refused." 'Yellow' }
+        Say "Downloading $($m.label) ($($m.size_gb) GB) from huggingface.co/$($m.repo)... (it can be stopped and resumed)"
+        & curl.exe -fL -C - -o $path "https://huggingface.co/$($m.repo)/resolve/main/$($m.file)"
+        if ($LASTEXITCODE -ne 0) { Fail "The download stopped. Run local-model -Add $name again to resume it." }
         Say 'Checking the file...'
-        if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLower() -ne $want) {
-            Remove-Item $path; Fail 'The model does not match its published checksum; deleted it. Run local-model again.'
+        if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLower() -ne $m.sha256) {
+            Remove-Item $path
+            Fail ("$($m.file) does not match the checksum UVMC pinned; deleted it. Try again; if it happens again, " +
+                  'the file was changed on Hugging Face and UVMC has to check it again before using it.')
         }
-        Set-Field $s 'model_sha' $want
     }
-    # One model at a time: other model files go.
-    Get-ChildItem (Join-Path $s.dir 'models') -Filter *.gguf | Where-Object { $_.Name -ne $m.File } | ForEach-Object {
-        Say "Deleting the previous model $($_.Name)."; Remove-Item $_.FullName
-    }
-    Set-Field $s 'model' $name
+    $verified[$m.file] = $m.sha256
+    Set-Field $s 'verified' ([pscustomobject]$verified)
+    $list = @(Installed $s)
+    if ($list -notcontains $name) { $list += $name }
+    Set-Field $s 'models' $list
 }
 
-function Settings-For($card) {
+function Forget-OldModel($s) {
+    # Before 0.16 one model was kept (state "model"). Carry it over if it's still offered.
+    if (-not $s.PSObject.Properties['model']) { return }
+    $old = $s.model
+    $s.PSObject.Properties.Remove('model')
+    if ($s.PSObject.Properties['model_sha']) { $s.PSObject.Properties.Remove('model_sha') }
+    if ($Models.Contains($old) -and (Test-Path (Model-Path $s $old))) {
+        $list = @(Installed $s); if ($list -notcontains $old) { $list += $old }
+        Set-Field $s 'models' $list
+    }
+}
+
+function Preset-Settings($card) {
     # Measured on an RX 5700 XT (8 GB): flash attention falls back to the processor on AMD and
     # Intel cards through Vulkan (10x slower on long prompts), and on 8 GB cards a smaller work
     # buffer keeps the model off shared memory (18 s instead of 32 s for a 7,000-token prompt).
-    $a = @('-ngl', '99', '-np', '1', '--jinja', '--reasoning-budget', '0')
-    $a += @('-fa', $(if ($card.Name -match 'NVIDIA') { 'auto' } else { 'off' }))
-    $a += @('-c', $(if ($card.MiB -ge 11000) { '16384' } else { '8192' }))
-    if ($card.MiB -lt 11000) { $a += @('-ub', '256') }
+    $a = @('n-gpu-layers = 99', 'parallel = 1', 'jinja = true', 'reasoning-budget = 0')
+    $a += "flash-attn = $(if ($card.Name -match 'NVIDIA') { 'auto' } else { 'off' })"
+    $a += "ctx-size = $(if ($card.MiB -ge 11000) { '16384' } else { '8192' })"
+    if ($card.MiB -lt 11000) { $a += 'ubatch-size = 256' }
     return $a
+}
+
+function Write-Preset($s) {
+    # llama.cpp's router reads this when it starts: the settings for every model ([*]), then one
+    # section per downloaded model. The section name is the name UVMC asks for.
+    $card = @{ Name = $s.card; MiB = [int]$s.card_mib }
+    $lines = @('; Written by local-model. Changes are lost the next time it runs.', 'version = 1', '', '[*]') + (Preset-Settings $card)
+    foreach ($name in (Installed $s)) {
+        $lines += ''; $lines += "[$name]"; $lines += "model = $(Model-Path $s $name)"
+    }
+    [IO.File]::WriteAllText((Preset-File $s), (($lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding $false))
 }
 
 function Open-Firewall($s, $net) {
     # Windows asks for administrator rights once, for these two rules: llama-server may accept
     # connections on the network to the UVMC machine, on its port only, and may not open any
     # connection itself. (It never needs to: answers to the UVMC machine go back on the connection
-    # it opened, and downloads are done by this script. The firewall doesn't filter 127.0.0.1.)
+    # it opened, and downloads are done by this script. The firewall doesn't filter 127.0.0.1,
+    # which the router uses to reach the model it loaded.)
     # Already there for this llama-server? (netsh, since Get-NetFirewallRule sees nothing without
     # administrator rights, which would ask for them again on every run.)
     $exeRx = [regex]::Escape((Server-Exe $s))
@@ -200,7 +251,9 @@ function Open-Firewall($s, $net) {
 }
 
 function Start-Server($s) {
-    if (Running) { Say 'The model is already running.' 'Green'; return }
+    if (Running) { Say 'The model server is already running.' 'Green'; return }
+    if (-not (Installed $s)) { Fail 'No model downloaded yet. Run local-model, or local-model -Add <model> (local-model -List shows them).' }
+    if (-not (Test-Path (Preset-File $s))) { Write-Preset $s }
     # The network card to the UVMC machine was found during set-up; its address changes at each
     # restart of Windows, so it's read now. (No need to start the UVMC machine for this.)
     $hosts = '127.0.0.1'
@@ -209,30 +262,46 @@ function Start-Server($s) {
         $ip = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $s.vm_interface -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
     }
     if ($ip) { $hosts += ",$ip" } else { Say 'The network to the UVMC machine was not found; the model starts for this PC only.' 'Yellow' }
-    $card = @{ Name = $s.card; MiB = [int]$s.card_mib }
-    $m = $Models[$s.model]
-    $args_ = @('-m', (Join-Path $s.dir "models\$($m.File)"), '--alias', $s.model,
+    # Router mode: no model on the command line. --models-max 1: one model on the card at a time;
+    # asking for another unloads the first.
+    $args_ = @('--models-preset', (Preset-File $s), '--models-max', '1',
                '--host', $hosts, '--port', "$Port", '--api-key-file', (Join-Path $s.dir 'api_key'),
-               '--log-file', (Join-Path $s.dir 'server.log')) + (Settings-For $card)
+               '--log-file', (Join-Path $s.dir 'server.log'))
     Start-Process (Server-Exe $s) -ArgumentList $args_ -WindowStyle Hidden | Out-Null
-    $key = (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim()
-    for ($i = 0; $i -lt 120; $i++) {
+    $key = Api-Key $s
+    for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep 1
         try {
-            $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -Headers @{ Authorization = "Bearer $key" } -TimeoutSec 2
-            if ($h.status -eq 'ok') { Say "Running: $($m.Label) on $($s.card)." 'Green'; return }
+            $r = Invoke-RestMethod "http://127.0.0.1:$Port/models" -Headers @{ Authorization = "Bearer $key" } -TimeoutSec 2
+            if ($r.data) {
+                Say "Running on $($s.card), with: $((@($r.data | ForEach-Object { $_.id })) -join ', ')." 'Green'
+                Say 'A model is loaded on the card the first time UVMC asks for it (a few seconds).'
+                return
+            }
         } catch { if (-not (Running)) { break } }
     }
-    Fail "The model did not start. See $(Join-Path $s.dir 'server.log')."
+    Fail "The model server did not start. See $(Join-Path $s.dir 'server.log')."
 }
 
 function Stop-Server {
     $p = Running
     if ($p) {
-        $p | Stop-Process -Force
-        $p | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue   # gone before saying so
+        # The router and the model it loaded; the router may still be ending the model when it is
+        # stopped itself, so wait until no llama-server from this folder is left (else a restart
+        # right after would find one and think it's running).
+        for ($i = 0; $i -lt 30 -and $p; $i++) {
+            $p | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+            $p = Running
+        }
+        if ($p) { Fail 'llama-server did not stop. Close it in Task Manager and try again.' }
         Say 'Stopped.'
     } else { Say 'It was not running.' }
+}
+
+function Restart-IfRunning($s) {
+    # The router reads models.ini when it starts.
+    if (Running) { Stop-Server; Start-Server $s }
 }
 
 function Send-Key($mp, $value) {
@@ -263,8 +332,8 @@ function Connect-Uvmc($s) {
     # Gives UVMC the key, through uvmc-setkey: stored where the agent can't read it.
     $mp = Find-Multipass
     if (-not $mp) { Say 'Multipass is not installed, so UVMC was not connected. Run install.cmd, then local-model again.' 'Yellow'; return }
-    $ok = Send-Key $mp (Get-Content (Join-Path $s.dir 'api_key') -Raw).Trim()
-    if ($ok) { Say 'UVMC connected: pick "Local model on my PC" in the panel.' 'Green' }
+    $ok = Send-Key $mp (Api-Key $s)
+    if ($ok) { Say 'UVMC connected: pick "Local model on my PC" in the panel, and which model it uses under Settings > Models.' 'Green' }
     else { Say 'Could not give UVMC the key. Is the UVMC machine installed and running?' 'Yellow' }
 }
 
@@ -284,14 +353,77 @@ function Set-AutoStart([bool]$on) {
     Say 'It now starts each time you log in (local-model -NoAutoStart turns that off).' 'Green'
 }
 
+function Show-List($s) {
+    $have = @(Installed $s)
+    $mib = if ($s.PSObject.Properties['card_mib']) { [int]$s.card_mib } else { 0 }
+    if ($mib) { Say "Your card: $($s.card), $mib MiB. [x] = downloaded." } else { Say '[x] = downloaded. (Run local-model once so it knows your card.)' }
+    foreach ($name in $Models.Keys) {
+        $m = $Models[$name]
+        $mark = if ($have -contains $name) { '[x]' } else { '[ ]' }
+        $fit = if (-not $mib) { '' } elseif ($mib -ge $m.min_mib) { '' } else { "  (meant for $([math]::Round($m.min_mib / 1000)) GB cards: slow on yours)" }
+        $color = if ($m.kind -eq 'uncensored') { 'Yellow' } else { 'White' }
+        Say ''
+        Say "$mark $name  -  $($m.label), $($m.size_gb) GB$fit" $color
+        Say "    $($m.about) $(Source-Line $m)."
+        Say "    Good: $($m.good)"
+        Say "    Weak: $($m.weak)"
+        if (-not $m.tested) { Say '    Not yet tested in UVMC: local-model -Test after adding it.' 'DarkGray' }
+    }
+    Say ''
+    Say 'Add one with local-model -Add <name>. The panel (Settings > Models) picks which one UVMC uses.'
+}
+
+function Post-Json($path, $body, $key, $timeout) {
+    $json = $body | ConvertTo-Json -Depth 10 -Compress
+    Invoke-RestMethod "http://127.0.0.1:$Port$path" -Method Post -ContentType 'application/json' `
+        -Headers @{ Authorization = "Bearer $key" } -Body ([Text.Encoding]::UTF8.GetBytes($json)) -TimeoutSec $timeout
+}
+
+function Test-Model($s, $name) {
+    # The same request UVMC makes: a system prompt, a task, its run_command tool. Passes when the
+    # model asks for the tool with a sensible command. Then a plain reply, to measure speed.
+    $key = Api-Key $s
+    $m = $Models[$name]
+    Say ''
+    Say "Testing $($m.label)... (loading it on the card first can take a minute)"
+    $tool = @{ type = 'function'; function = @{ name = 'run_command'
+        description = 'Run a bash command as the agent user and return its exit code and combined output.'
+        parameters = @{ type = 'object'; properties = @{ command = @{ type = 'string'; description = 'The bash command to run.' } }; required = @('command') } } }
+    $body = @{ model = $name; max_tokens = 400; tool_choice = 'auto'; tools = @($tool)
+        messages = @(@{ role = 'system'; content = 'You are an agent working on a Linux machine. Use the tools to do the task.' },
+                     @{ role = 'user'; content = 'How many files are in the folder /tmp/demo? Find out with a command.' }) }
+    $t = [Diagnostics.Stopwatch]::StartNew()
+    try { $r = Post-Json '/v1/chat/completions' $body $key 600 }
+    catch { Say "  Failed: $($_.Exception.Message). See $(Join-Path $s.dir 'server.log')." 'Red'; return $false }
+    $first = [math]::Round($t.Elapsed.TotalSeconds)
+    $call = @($r.choices[0].message.tool_calls)[0]
+    $cmd = ''
+    if ($call) { try { $cmd = ($call.function.arguments | ConvertFrom-Json).command } catch { $cmd = '' } }
+    $toolOk = $call -and $call.function.name -eq 'run_command' -and $cmd -match '/tmp/demo'
+    if ($toolOk) { Say "  Tool call: right (run_command: $cmd)" 'Green' }
+    elseif ($call) { Say "  Tool call: wrong ($($call.function.name): $($call.function.arguments))" 'Red' }
+    else { Say "  Tool call: none. It wrote instead: $(([string]$r.choices[0].message.content).Trim() -replace '\s+', ' ')" 'Red' }
+    $body = @{ model = $name; max_tokens = 200
+        messages = @(@{ role = 'user'; content = 'Write a short paragraph about why backups matter.' }) }
+    try { $r = Post-Json '/v1/chat/completions' $body $key 600 } catch { Say "  Failed: $($_.Exception.Message)" 'Red'; return $false }
+    $w = [math]::Round([double]$r.timings.predicted_per_second)
+    Say "  Speed: $w tokens a second writing. First answer after $first s (loading included)."
+    return [bool]$toolOk
+}
+
 function Show-Status($s) {
     if (-not $s.PSObject.Properties['dir']) { Say 'Not set up yet. Run local-model.'; return }
     Say "Folder:    $($s.dir)"
     Say "llama.cpp: $($s.llama)"
     Say "Card:      $($s.card) ($($s.card_mib) MiB)"
-    Say "Model:     $($Models[$s.model].Label)"
+    Say "Models:    $(((Installed $s) | ForEach-Object { $Models[$_].label }) -join ', ')"
     Say "Starts at login: $(if (Test-Path $Startup) { 'yes (local-model -NoAutoStart to stop that)' } else { 'no (local-model -AutoStart if you want it)' })"
-    if (Running) { Say "Running, port $Port." 'Green' } else { Say 'Not running (local-model -Start).' 'Yellow' }
+    if (-not (Running)) { Say 'Not running (local-model -Start).' 'Yellow'; return }
+    try {
+        $r = Invoke-RestMethod "http://127.0.0.1:$Port/models" -Headers @{ Authorization = "Bearer $(Api-Key $s)" } -TimeoutSec 3
+        $loaded = @($r.data | Where-Object { $_.status.value -eq 'loaded' } | ForEach-Object { $_.id })
+        Say "Running, port $Port. On the card now: $(if ($loaded) { $loaded -join ', ' } else { 'none (loaded when UVMC asks)' })." 'Green'
+    } catch { Say "Running, port $Port." 'Green' }
 }
 
 # --- main -----------------------------------------------------------------------------
@@ -300,20 +432,47 @@ if ($Dir) { Set-Field $state 'dir' ([IO.Path]::GetFullPath($Dir)) }
 elseif (-not $state.PSObject.Properties['dir']) {
     Set-Field $state 'dir' (Join-Path (Split-Path (Split-Path $PSScriptRoot)) 'uvmc-local')
 }
+Forget-OldModel $state
+if ($Model) { $Add = $Model }   # -Model was "switch to"; now models are kept side by side
 
 if ($Status) { Show-Status $state; exit 0 }
+if ($List) { Show-List $state; exit 0 }
 if ($AutoStart -or $NoAutoStart) {
-    if ($AutoStart -and -not $state.PSObject.Properties['model']) { Fail 'Not set up yet. Run local-model first.' }
+    if ($AutoStart -and -not (Installed $state)) { Fail 'Not set up yet. Run local-model first.' }
     Set-AutoStart $AutoStart; exit 0
 }
 if ($Stop) { Stop-Server; exit 0 }
 if ($Start) {
-    if (-not $state.PSObject.Properties['model']) { Fail 'Not set up yet. Run local-model first.' }
+    if (-not (Installed $state)) { Fail 'Not set up yet. Run local-model first.' }
     Start-Server $state; exit 0
+}
+if ($Test) {
+    if (-not (Running)) { Fail 'The model server is not running (local-model -Start).' }
+    $which = if ($Rest) { @($Rest) } else { @(Installed $state) }
+    $bad = @($which | Where-Object { (Installed $state) -notcontains $_ })
+    if ($bad) { Fail "Not downloaded: $($bad -join ', '). Downloaded: $((Installed $state) -join ', ')." }
+    $failed = 0
+    foreach ($n in $which) { if (-not (Test-Model $state $n)) { $failed++ } }
+    Say ''
+    if ($failed) { Say "$failed of $($which.Count) did not call the tool right: UVMC's agent would struggle with them." 'Yellow'; exit 1 }
+    Say 'All passed.' 'Green'; exit 0
+}
+if ($Delete) {
+    if ((Installed $state) -notcontains $Delete) { Fail "'$Delete' is not downloaded. Downloaded: $((Installed $state) -join ', ')." }
+    $rest = @(Installed $state | Where-Object { $_ -ne $Delete })
+    if (-not $rest) { Fail 'It is the only model left. local-model -Remove removes everything.' }
+    $path = Model-Path $state $Delete
+    Set-Field $state 'models' $rest
+    Save-State $state
+    Write-Preset $state
+    Restart-IfRunning $state
+    if (Test-Path $path) { Remove-Item $path }
+    Say "Deleted $($Models[$Delete].label). If the panel had picked it, UVMC now uses another one until you pick again." 'Green'
+    exit 0
 }
 if ($Remove) {
     if (-not $Yes) {
-        $a = Read-Host "Delete $($state.dir) (llama.cpp and the model) and the firewall rules? [y/N]"
+        $a = Read-Host "Delete $($state.dir) (llama.cpp and the models) and the firewall rules? [y/N]"
         if ($a -notmatch '^[yY]') { exit 0 }
     }
     Stop-Server
@@ -332,9 +491,9 @@ if ($Remove) {
     Remove-Item $StateFile -ErrorAction SilentlyContinue
     Say 'Removed.' 'Green'; exit 0
 }
-if ($Model -and -not $Models.Contains($Model)) { Fail "Unknown model '$Model'. Choose one of: $($Models.Keys -join ', ')." }
+if ($Add -and -not $Models.Contains($Add)) { Fail "Unknown model '$Add'. local-model -List shows them: $($Models.Keys -join ', ')." }
 
-# Set up, or switch model, or update.
+# Set up, add a model, or update.
 New-Item -ItemType Directory -Force $state.dir | Out-Null
 Say "Folder: $($state.dir)"
 if ($Update -or -not (Test-Path (Server-Exe $state))) { Get-LlamaCpp $state }
@@ -344,12 +503,13 @@ if (-not $card) { Fail 'llama.cpp found no graphics card it can use. Is the grap
 Set-Field $state 'card' $card.Name; Set-Field $state 'card_mib' $card.MiB
 Say "Graphics card: $($card.Name), $($card.MiB) MiB."
 
-$name = if ($Model) { $Model } elseif ($state.PSObject.Properties['model']) { $state.model } else { Pick-Model $card.MiB }
-if ($Models[$name].MinMiB -gt $card.MiB) { Say "$($Models[$name].Label) is meant for bigger cards; it will be slow on this one." 'Yellow' }
-Say "Model: $($Models[$name].Label)"
-$switching = $state.PSObject.Properties['model'] -and $state.model -ne $name
-if ($switching) { Stop-Server }
-Get-Model $state $name
+$name = if ($Add) { $Add } elseif (-not (Installed $state)) { Pick-Model $card.MiB } else { $null }
+if ($name) {
+    $m = $Models[$name]
+    if ($m.min_mib -gt $card.MiB) { Say "$($m.label) is meant for bigger cards; it will be slow on this one." 'Yellow' }
+    Say "Model: $($m.label). $($m.about)"
+    Get-Model $state $name
+}
 
 $keyFile = Join-Path $state.dir 'api_key'
 if (-not (Test-Path $keyFile)) {
@@ -358,14 +518,39 @@ if (-not (Test-Path $keyFile)) {
     [IO.File]::WriteAllText($keyFile, (-join ($bytes | ForEach-Object { $_.ToString('x2') })))
 }
 Save-State $state
+Write-Preset $state
+
+# Files from before 0.16 that are no longer on the list stay until you delete them.
+$known = @($Models.Values | ForEach-Object { $_.file })
+$mdir = Join-Path $state.dir 'models'
+if (Test-Path $mdir) {
+    Get-ChildItem $mdir -Filter *.gguf | Where-Object { $known -notcontains $_.Name } | ForEach-Object {
+        Say "$($_.Name) is no longer on the list, so UVMC doesn't use it. Delete it by hand to free $([math]::Round($_.Length / 1GB, 1)) GB: $($_.FullName)" 'Yellow'
+    }
+}
+
+if ($Add -and -not $Update) {
+    # Only a model added: no need to look for the UVMC machine or touch the firewall again.
+    Restart-IfRunning $state
+    if (-not (Running)) { Start-Server $state }
+    if ($state.PSObject.Properties['vm_interface']) {
+        Say "Added. Pick it in the panel (Settings > Models), and try it with local-model -Test $Add." 'Green'
+    } else {
+        # A first set-up done with -Add: running for this PC only, not yet for UVMC.
+        Say "Added, and running for this PC only (try it with local-model -Test $Add)." 'Green'
+        Say 'UVMC is not connected yet: run local-model with no options to connect it (Windows asks for administrator rights once, for the firewall).' 'Yellow'
+    }
+    exit 0
+}
 
 $net = Find-VmNetwork
 if ($net) { Set-Field $state 'vm_interface' $net.Interface; Save-State $state; Open-Firewall $state $net } else { Say 'The UVMC machine was not found; it can be connected later by running local-model again.' 'Yellow' }
 
-if (Running) { Running | Stop-Process -Force; Start-Sleep 2 }   # restart, so it listens on today's addresses
+if (Running) { Stop-Server }   # restart, so it listens on today's addresses
 Start-Server $state
 
 if ($net) { Connect-Uvmc $state }
 Say 'Done. It runs until you stop it (local-model -Stop) or restart Windows; local-model -Start starts it again.'
+Say 'More models: local-model -List.'
 if (Test-Path $Startup) { Say 'It also starts each time you log in (local-model -NoAutoStart turns that off).' }
 else { Say 'It does not start by itself when you log in; local-model -AutoStart does that, if you want it.' }

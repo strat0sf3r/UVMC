@@ -12,15 +12,16 @@ import copy
 import json
 import os
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from . import briefing as briefing_mod
-from . import config, privacy
+from . import config, pc, privacy
 from .executor import root
 from .providers import ADAPTERS, Profile
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
+NAME_LOCAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,80}$")   # local-model's names, e.g. qwen3.5-9b
 SETKEY = Path("/usr/local/bin/uvmc-setkey")
 FIELDS = ("label", "provider", "model", "key", "base_url", "max_tokens_param", "privacy")
 
@@ -69,6 +70,12 @@ class Settings:
                 models[name] = Profile(name=name, **{k: str(p.get(k, "")) for k in FIELDS})
             except TypeError:
                 continue
+        # The model on the PC that the panel picked (local_models.py): what profiles on the PC ask for.
+        pick = self.data.get("local_model")
+        if isinstance(pick, str) and pick:
+            for name, p in models.items():
+                if pc.PLACEHOLDER in p.base_url:
+                    models[name] = replace(p, model=pick)
         self.cfg.models.clear()
         self.cfg.models.update(models)
         default = self.data.get("default")
@@ -126,6 +133,22 @@ class Settings:
         if name not in self.cfg.models:
             raise SettingsError(f"No model profile called '{name}'.")
         self.data["default"] = name
+        self._save()
+        self._apply()
+
+    def local_model(self) -> str:
+        """The model on the PC picked in the panel; "" = whichever local-model has loaded."""
+        v = self.data.get("local_model")
+        return v if isinstance(v, str) else ""
+
+    def set_local_model(self, mid: str) -> None:
+        mid = (mid or "").strip()
+        if mid and not NAME_LOCAL.match(mid):
+            raise SettingsError("That is not a model name local-model uses.")
+        if mid:
+            self.data["local_model"] = mid
+        else:
+            self.data.pop("local_model", None)
         self._save()
         self._apply()
 

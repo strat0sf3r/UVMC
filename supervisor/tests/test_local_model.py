@@ -23,7 +23,7 @@ from test_providers import FakeOpenAI, chat  # noqa: E402
 from test_service import ServiceBase  # noqa: E402
 from test_supervisor import FakeClient  # noqa: E402
 from test_walls import UPSTREAM_HOST, start_upstream, through_proxy  # noqa: E402
-from uvmc import config, pc  # noqa: E402
+from uvmc import config, local_models, pc  # noqa: E402
 from uvmc.netproxy import Proxy, SiteList  # noqa: E402
 from uvmc.providers import Profile, ProviderError, make  # noqa: E402
 from uvmc.service import Controller  # noqa: E402
@@ -138,6 +138,122 @@ class FakeLlama:
         self.srv.shutdown()
 
 
+class FakeRouter:
+    """llama.cpp's server in router mode (local-model 0.16+): /models, /props?model=, /models/load,
+    /v1/chat/completions (records which model was asked for)."""
+
+    def __init__(self, models=(("qwen3.5-9b", "unloaded"), ("gemma4-e4b", "loaded")), key="k"):
+        self.models = [list(m) for m in models]
+        self.asked, self.loads = [], []
+        router = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def reply(self, code, data):
+                body = json.dumps(data).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def authorized(self):
+                if self.headers.get("Authorization") == f"Bearer {key}":
+                    return True
+                self.reply(401, {"error": {"message": "Invalid API Key"}})
+                return False
+
+            def do_GET(self):
+                if not self.authorized():
+                    return
+                if self.path.startswith("/models"):
+                    self.reply(200, {"data": [{"id": i, "path": f"/m/{i}.gguf", "status": {"value": st}}
+                                              for i, st in router.models]})
+                elif self.path.startswith("/props?model="):
+                    self.reply(200, {"build_info": "b13001-abc", "model_path": "D:\\m\\gemma-4-E4B_q4_0-it.gguf",
+                                     "default_generation_settings": {"n_ctx": 8192}})
+                else:
+                    self.reply(400, {"error": {"message": "model name is missing from the request"}})
+
+            def do_POST(self):
+                if not self.authorized():
+                    return
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                if self.path == "/models/load":
+                    router.loads.append(body.get("model"))
+                    self.reply(200, {"success": True})
+                elif self.path == "/v1/chat/completions":
+                    router.asked.append(body.get("model"))
+                    self.reply(200, {"choices": [{"message": {"role": "assistant", "content": "Hi."},
+                                                  "finish_reason": "stop"}], "usage": {}})
+                else:
+                    self.reply(404, {})
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.srv.shutdown()
+
+
+class CatalogTest(unittest.TestCase):
+    """local_models.json: read by both PC scripts and the panel; every file's hash pinned."""
+
+    def test_entries_complete(self):
+        data = json.loads(local_models.CATALOG.read_text(encoding="utf-8"))
+        models = data["models"]
+        self.assertGreaterEqual(len(models), 8)
+        for mid, m in models.items():
+            with self.subTest(mid):
+                self.assertRegex(mid, r"^[a-z0-9][a-z0-9.-]*$")
+                for k in ("label", "maker", "kind", "by", "repo", "file", "about", "good", "weak"):
+                    self.assertTrue(str(m.get(k, "")).strip(), k)
+                self.assertRegex(m["sha256"], r"^[0-9a-f]{64}$")
+                self.assertIn(m["kind"], ("official", "quantized", "uncensored"))
+                self.assertTrue(m["file"].endswith(".gguf"))
+                self.assertIsInstance(m["min_mib"], int)
+                self.assertIsInstance(m["tested"], bool)
+                if m["kind"] == "official":
+                    self.assertIn(m["repo"].split("/")[0], ("Qwen", "google", "mistralai"))
+        for mib, mid in data["default_from_mib"].items():
+            self.assertIn(mid, models)
+            self.assertLessEqual(models[mid]["min_mib"], int(mib))
+        self.assertEqual(len({m["file"] for m in models.values()}), len(models))   # one file, one name
+
+    def test_info_and_choice(self):
+        self.assertEqual(local_models.info("gemma4-e4b")["maker"], "Google (USA)")
+        self.assertEqual(local_models.info("my-own"), {"id": "my-own", "label": "my-own", "known": False})
+        rows = [{"id": "a", "status": "unloaded"}, {"id": "b", "status": "loaded"}]
+        self.assertEqual(local_models.choose("a", rows), "a")          # picked and downloaded
+        self.assertEqual(local_models.choose("gone", rows), "b")       # picked but deleted: the one on the card
+        self.assertEqual(local_models.choose("local", rows), "b")      # nothing picked
+        self.assertEqual(local_models.choose("", [{"id": "a", "status": "unloaded"}]), "a")
+        self.assertIsNone(local_models.router_models({"model_alias": "qwen3-8b"}))   # an older local-model
+        self.assertIsNone(local_models.router_models({"data": [{"id": "x"}]}))       # a plain server's list
+        self.assertEqual(local_models.router_models({"data": [{"id": "x", "status": {"value": "loaded"}}]}),
+                         [{"id": "x", "status": "loaded"}])
+
+
+class RouterProviderTest(unittest.TestCase):
+    def ask(self, srv, model):
+        prof = Profile("local", "openai", model, key="local", base_url=f"http://{{pc}}:{srv.port}/v1")
+        with mock.patch.object(pc, "address", return_value="127.0.0.1"):
+            make(prof, "k").complete("s", [{"role": "user", "text": "hi"}], [], 10)
+        return srv.asked[-1]
+
+    def test_asks_for_the_right_model(self):
+        srv = FakeRouter()
+        try:
+            self.assertEqual(self.ask(srv, "local"), "gemma4-e4b")      # nothing picked: the one on the card
+            self.assertEqual(self.ask(srv, "qwen3.5-9b"), "qwen3.5-9b")  # picked in the panel
+            self.assertEqual(self.ask(srv, "deleted-one"), "gemma4-e4b")
+        finally:
+            srv.stop()
+
+
 class StatusTest(ServiceBase):
     def status(self, port, key):
         self.cfg.models["local"] = Profile("local", "openai", "local", key="local",
@@ -172,6 +288,61 @@ class StatusTest(ServiceBase):
         with mock.patch.object(config, "api_key", return_value=None):
             s = self.status(9, None)
         self.assertFalse(s["has_key"])
+
+    def router_ctl(self, srv):
+        self.cfg.models["local"] = Profile("local", "openai", "local", key="local",
+                                           base_url=f"http://{{pc}}:{srv.port}/v1", label="Local model on my PC")
+        return Controller(self.cfg, lambda *_: FakeClient([]))
+
+    def test_router_status_and_pick(self):
+        srv = FakeRouter()
+        try:
+            ctl = self.router_ctl(srv)
+            with mock.patch.object(pc, "address", return_value="127.0.0.1"), \
+                    mock.patch.dict(os.environ, {"UVMC_KEY_LOCAL": "k"}):
+                s = ctl.local_model()
+                self.assertTrue(s["router"])
+                self.assertEqual([(m["id"], m["status"]) for m in s["models"]],
+                                 [("qwen3.5-9b", "unloaded"), ("gemma4-e4b", "loaded")])
+                self.assertEqual(s["models"][0]["maker"], "Alibaba (China)")
+                self.assertEqual((s["in_use"], s["picked"], s["context"]), ("gemma4-e4b", "", 8192))
+                self.assertEqual(s["file"], "gemma-4-E4B_q4_0-it.gguf")
+                self.assertIn("qwen3.5-9b-uncensored", [m["id"] for m in s["offered"]])
+
+                s = ctl.set_local_model("qwen3.5-9b")
+                self.assertEqual((s["in_use"], s["picked"]), ("qwen3.5-9b", "qwen3.5-9b"))
+                self.assertEqual(srv.loads, ["qwen3.5-9b"])                       # warmed up on the card
+                self.assertEqual(ctl.cfg.models["local"].model, "qwen3.5-9b")     # what the next task asks for
+                self.assertEqual(Controller(self.cfg, lambda *_: FakeClient([])).settings.local_model(),
+                                 "qwen3.5-9b")                                     # kept across restarts
+
+                with self.assertRaises(Exception) as e:
+                    ctl.set_local_model("gemma4-12b")                              # not downloaded
+                self.assertIn("local-model -Add gemma4-12b", str(e.exception))
+                self.assertEqual(ctl.settings.local_model(), "qwen3.5-9b")         # unchanged
+
+                ctl.set_local_model("")
+                self.assertEqual(ctl.cfg.models["local"].model, "local")
+        finally:
+            srv.stop()
+
+    def test_pick_route(self):
+        srv = FakeRouter()
+        try:
+            ctl = self.router_ctl(srv)
+            from fastapi.testclient import TestClient
+            from uvmc.service import create_app
+            client = TestClient(create_app(ctl, "token"))
+            h = {"Authorization": "Bearer token"}
+            with mock.patch.object(pc, "address", return_value="127.0.0.1"), \
+                    mock.patch.dict(os.environ, {"UVMC_KEY_LOCAL": "k"}):
+                r = client.post("/api/local-model", json={"model": "qwen3.5-9b"}, headers=h)
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(r.json()["result"]["in_use"], "qwen3.5-9b")
+                r = client.post("/api/local-model", json={"model": "../../etc"}, headers=h)
+                self.assertEqual(r.status_code, 400)
+        finally:
+            srv.stop()
 
     def test_no_pc_profile(self):
         self.cfg.models.pop("local", None)   # e.g. you removed it from config.toml

@@ -1078,19 +1078,23 @@ class Controller:
                 for p in self.cfg.models.values()]
 
     def local_model(self) -> dict:
-        """The model running on your PC (windows\\local-model.cmd): found, running, which one."""
-        from . import pc
+        """The models on your PC (windows\\local-model.cmd): found, running, which ones, which one is used."""
+        from . import local_models, pc
         p = next((p for p in self.cfg.models.values() if pc.PLACEHOLDER in p.base_url), None)
+        picked = self.settings.local_model()
         out = {"profile": p.name if p else None, "label": p.label if p else "", "pc": pc.address(),
                "has_key": bool(p and config.has_key(p)), "running": False, "key_ok": None,
-               "model": "", "file": "", "context": 0, "build": "", "error": ""}
+               "model": "", "file": "", "context": 0, "build": "", "error": "",
+               "router": False, "models": [], "picked": picked, "in_use": "",
+               "offered": [local_models.info(k) for k in local_models.catalog()]}
         if not p or not out["pc"]:
             return out
         import httpx
         root = pc.resolve(p.base_url).rstrip("/").removesuffix("/v1")
         key = config.api_key(p.key)
+        auth = {"Authorization": f"Bearer {key}"} if key else {}
         try:
-            r = httpx.get(root + "/props", headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=3)
+            r = httpx.get(root + "/models", headers=auth, timeout=3)
         except httpx.HTTPError as e:
             out["error"] = f"Nothing answers at {root} ({type(e).__name__})."
             return out
@@ -1098,15 +1102,57 @@ class Controller:
         if r.status_code == 401:
             out["key_ok"] = False
             return out
+        out["key_ok"] = True
         try:
-            d = r.json()
+            rows = local_models.router_models(r.json()) if r.status_code == 200 else None
         except ValueError:
-            out["error"] = f"Unexpected answer from {root}."
+            rows = None
+        props_q = {}
+        if rows is not None:
+            # local-model 0.16 and later: llama.cpp's router, several models, one on the card at a time.
+            out["router"] = True
+            out["models"] = [{**local_models.info(m["id"]), "status": m["status"]} for m in rows]
+            out["in_use"] = out["model"] = local_models.choose(picked, rows)
+            loaded = [m["id"] for m in rows if m["status"] == "loaded"]
+            if not loaded:
+                return out
+            props_q = {"model": loaded[0]}
+        try:
+            r = httpx.get(root + "/props", headers=auth, params=props_q, timeout=3)
+            d = r.json()
+        except (httpx.HTTPError, ValueError):
+            if not out["router"]:
+                out["error"] = f"Unexpected answer from {root}."
             return out
-        out.update(key_ok=True, model=str(d.get("model_alias") or ""), build=str(d.get("build_info") or ""),
+        if not isinstance(d, dict):
+            return out
+        out.update(build=str(d.get("build_info") or ""),
                    file=str(d.get("model_path") or "").replace("\\", "/").rsplit("/", 1)[-1],
                    context=int((d.get("default_generation_settings") or {}).get("n_ctx") or 0))
+        if not out["router"]:
+            out["model"] = out["in_use"] = str(d.get("model_alias") or "")
         return out
+
+    def set_local_model(self, mid: str) -> dict:
+        """Picks the model on the PC UVMC asks for, from the next task on, and asks the PC to load it
+        now so the first answer doesn't wait for it."""
+        status = self.local_model()
+        if mid and status["router"] and mid not in [m["id"] for m in status["models"]]:
+            raise SettingsError(f"'{mid}' isn't downloaded on your PC: run local-model -Add {mid} there.")
+        self.settings.set_local_model(mid)
+        if mid and status["router"]:
+            from . import pc
+            import httpx
+            p = self.cfg.profile(status["profile"])
+            key = config.api_key(p.key)
+            try:   # loading takes a few seconds; the panel checks back
+                httpx.post(pc.resolve(p.base_url).rstrip("/").removesuffix("/v1") + "/models/load",
+                           json={"model": mid}, headers={"Authorization": f"Bearer {key}"} if key else {}, timeout=2)
+            except httpx.HTTPError:
+                pass
+        self.log.event("notice", text=f"The model on your PC is now {mid}." if mid
+                       else "The model on your PC: whichever local-model has loaded.")
+        return self.local_model()
 
     def set_model(self, name: str, cid: str | None = None, confirm: bool = False) -> None:
         """Switching model. To one at least as safe as the current: done. To a less safe one
@@ -2898,6 +2944,11 @@ def create_app(ctl: Controller, token: str | None):
     @app.get("/api/local-model")
     def local_model():
         return ctl.local_model()
+
+    @app.post("/api/local-model")
+    async def set_local_model(request: Request):
+        body = await request.json()
+        return settings_call(ctl.set_local_model, str(body.get("model", "") if isinstance(body, dict) else ""))
 
     @app.post("/api/model")
     async def model(request: Request):
