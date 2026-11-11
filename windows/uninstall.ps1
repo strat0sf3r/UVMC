@@ -100,6 +100,7 @@ try {
         Remove-Item -Force (Join-Path $dir 'UVMC Panel.lnk') -ErrorAction SilentlyContinue
     }
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-MultipassBootTask
 
     if ($mp -and (Test-Path (Join-Path $StateDir 'installed-multipass'))) {
         if ((Read-Host 'Multipass was installed by UVMC. Remove it too? [Y/n]') -notmatch '^[nN]') {

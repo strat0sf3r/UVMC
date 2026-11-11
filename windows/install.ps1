@@ -169,6 +169,13 @@ try {
 
     Step 'Waiting for Multipass to be ready'
     if (-not (Wait-Multipass $mp)) { if ($script:MultipassWaitError) { Fail $script:MultipassWaitError }; Fail 'Multipass is not responding. Restart the PC and run the installer again.' }
+    # ...and again after each start of Windows (see Register-MultipassBootTask).
+    try { Register-MultipassBootTask }
+    catch {
+        Write-Host "Could not add the task that starts Multipass after Windows starts: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor Yellow
+        Write-Host 'UVMC works meanwhile; after a restart of Windows, Multipass may need starting by hand.' -ForegroundColor Yellow
+    }
 
     # 3a. Multipass 1.17 deprecates its Hyper-V driver, and a PC that had 1.16 keeps it after the
     #     upgrade, so its machines are moved to the HCS driver (Multipass copies them, snapshots
@@ -376,5 +383,6 @@ try {
     Read-Host 'Press Enter to close' | Out-Null
 }
 catch {
-    Fail $_.Exception.Message
+    # Where it happened too: Windows' own messages ("The parameter is incorrect") don't say.
+    Fail ("$($_.Exception.Message)`n" + $_.InvocationInfo.PositionMessage)
 }

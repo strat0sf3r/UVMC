@@ -106,6 +106,29 @@ function Sync-MultipassServiceStorage {
     return $true
 }
 
+# Multipass 1.17.0 on Windows 10, at every start of Windows: Windows drops Multipass's networks
+# when it shuts down, and the service dies silently after making each one again (the shortened
+# adapter name, see Wait-Multipass), so it needs three starts. Windows doesn't count those as
+# crashes and doesn't restart it, so after a restart of the PC Multipass stayed stopped (found
+# 2026-11-11: tries 1 and 2 stopped, try 3 stayed up). A task at startup, run by the system,
+# starts it again whenever it has stopped, for two minutes. The command is in the task itself,
+# not a script file, so nothing in a folder the user can edit runs with system rights.
+$MultipassBootTask = 'UVMC - start Multipass after Windows starts'
+function Register-MultipassBootTask {
+    $cmd = 'for ($i = 0; $i -lt 8; $i++) { $s = Get-Service Multipass -ErrorAction SilentlyContinue; ' +
+           'if (-not $s) { break }; if ($s.Status -eq ''Stopped'') { Start-Service Multipass -ErrorAction SilentlyContinue }; ' +
+           'Start-Sleep -Seconds 15 }'
+    $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"$cmd`""
+    $trigger   = New-ScheduledTaskTrigger -AtStartup
+    $trigger.Delay = 'PT20S'
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    Register-ScheduledTask -TaskName $MultipassBootTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+}
+function Unregister-MultipassBootTask {
+    Unregister-ScheduledTask -TaskName $MultipassBootTask -Confirm:$false -ErrorAction SilentlyContinue
+}
+
 function Get-MultipassDriver([string]$mp) {
     $out = Invoke-Mp $mp @('get', 'local.driver')
     if ($LASTEXITCODE -ne 0) { return '' }
