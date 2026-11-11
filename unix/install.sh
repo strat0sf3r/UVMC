@@ -107,10 +107,11 @@ if [ ! -f "$HOME/.uvmc/asked-helper" ]; then
   step "The UVMC helper (optional)"
   echo "A small program that lets the panel do what only this computer can do: download, start,"
   echo "stop and delete the models on your graphics chip. It listens on this computer only."
-  read -rp "Start the UVMC helper each time you log in? [Y/n] " a
+  # No unless you say yes: nothing of UVMC's starts at login by itself.
+  read -rp "Start the UVMC helper each time you log in? unix/panel.sh starts it anyway. [y/N] " a
   touch "$HOME/.uvmc/asked-helper"
-  if [[ ! "$a" =~ ^[nN] ]]; then python3 unix/helper --autostart || true
-  else echo "Skipped. unix/panel.sh still starts it when you open the panel."; fi
+  if [[ "$a" =~ ^[yY] ]]; then python3 unix/helper --autostart || true
+  else echo "Not at login. unix/panel.sh starts it when you open the panel (helper --autostart if you change your mind)."; fi
 fi
 
 # Models on this computer's graphics chip (optional; unix/local-model.sh does it later)

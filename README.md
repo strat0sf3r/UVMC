@@ -174,7 +174,7 @@ The installer:
 1. asks for administrator rights once and turns on Virtual Machine Platform if needed (one restart, then it continues by itself);
 2. installs Multipass if it is missing, or upgrades an older one and moves the machine to its new driver (run it again to upgrade);
 3. creates the VM, installs the supervisor and takes a `clean` snapshot for factory resets;
-4. offers the UVMC helper (started at login) and a model on your graphics card;
+4. offers to start the UVMC helper at login (default no; the panel shortcut starts it anyway) and a model on your graphics card;
 5. on Windows, adds a **UVMC Panel** shortcut.
 
 The first install takes 5-10 minutes, mostly downloads.

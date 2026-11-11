@@ -64,14 +64,12 @@ if ($Stop) {
     if ((Stop-Helper) -gt 0) { Write-Host 'The UVMC helper is stopped.' } else { Write-Host 'The UVMC helper was not running.' }
     exit 0
 }
-if ($NoAutoStart) {
-    if (Test-Path $StartupLink) { Remove-Item $StartupLink; Write-Host 'The UVMC helper no longer starts when you log in.' }
-    else { Write-Host 'The UVMC helper was not starting at login.' }
-    exit 0
-}
-if ($AutoStart) {
-    # Only for you (your Startup folder, no administrator rights). Started through the shortcut, by
-    # Explorer, so it never runs with administrator rights even when an installer asks for it.
+# Start at login: only for you (a shortcut in your Startup folder, no administrator rights), and
+# only when you ask (helper -AutoStart, the installer's question, or the tray menu's checkmark).
+# Started through the shortcut, by Explorer, so it never runs with administrator rights even when
+# an installer asks for it.
+function Set-HelperAutoStart([bool]$on) {
+    if (-not $on) { Remove-Item $StartupLink -ErrorAction SilentlyContinue; return }
     $sh = New-Object -ComObject WScript.Shell
     $lnk = $sh.CreateShortcut($StartupLink)
     $lnk.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -80,7 +78,15 @@ if ($AutoStart) {
     $lnk.WindowStyle = 7
     $lnk.Description = 'UVMC helper: lets the UVMC panel manage the model on this PC'
     $lnk.Save()
-    Write-Host 'The UVMC helper now starts each time you log in (helper -NoAutoStart turns that off).'
+}
+if ($NoAutoStart) {
+    if (Test-Path $StartupLink) { Set-HelperAutoStart $false; Write-Host 'The UVMC helper no longer starts when you log in.' }
+    else { Write-Host 'The UVMC helper was not starting at login.' }
+    exit 0
+}
+if ($AutoStart) {
+    Set-HelperAutoStart $true
+    Write-Host 'The UVMC helper now starts each time you log in (helper -NoAutoStart, or the tray menu, turns that off).'
     $up = $false
     try { $c = New-Object Net.Sockets.TcpClient; $up = $c.ConnectAsync('127.0.0.1', $Port).Wait(500); $c.Close() } catch {}
     if (-not $up) { Start-Process explorer.exe -ArgumentList "`"$StartupLink`"" }
@@ -544,6 +550,18 @@ $null = $menu.Items.Add('Stop UVMC', $null, {
     if (-not (Confirm-OnPc 'Stop the UVMC machine? Whatever its agents are doing is interrupted. Everything inside is kept.')) { return }
     $null = Start-HelperJob 'vm-stop' 'Stopping UVMC' ('& cmd.exe /c ' + (Quote-Ps (Join-Path $PSScriptRoot 'stop.cmd'))) })
 $null = $menu.Items.Add('-')
+# Start at login, on or off; the checkmark shows how it is now (read again each time the menu opens).
+$loginItem = New-Object Windows.Forms.ToolStripMenuItem 'Start the helper when I log in'
+$loginItem.Add_Click({
+    try {
+        $on = -not (Test-Path $StartupLink)
+        Set-HelperAutoStart $on
+        $loginItem.Checked = (Test-Path $StartupLink)
+        Notify $(if ($loginItem.Checked) { 'The helper now starts each time you log in.' } else { 'The helper no longer starts when you log in.' })
+    } catch { Log "autostart: $($_.Exception.Message)" }
+})
+$null = $menu.Items.Add($loginItem)
+$menu.Add_Opening({ $loginItem.Checked = (Test-Path $StartupLink) })
 $null = $menu.Items.Add('Quit the helper', $null, { [Windows.Forms.Application]::Exit() })
 $icon.ContextMenuStrip = $menu
 $icon.Add_DoubleClick({ try { Open-PanelFromTray } catch { Log "open: $($_.Exception.Message)" } })

@@ -340,10 +340,11 @@ try {
         Step 'The UVMC helper (optional)'
         Write-Host 'A small program with a tray icon that lets the panel do what only this PC can do:'
         Write-Host 'download, start, stop and delete the models on your graphics card. It listens on this PC only.'
-        $a = Read-Host 'Add the UVMC tray icon, started each time you log in? [Y/n]'
+        # No unless you say yes: nothing of UVMC's starts with Windows by itself (the user, 2026-11-11).
+        $a = Read-Host 'Start the UVMC tray icon each time you log in? The panel shortcut starts it anyway. [y/N]'
         Set-Content -Path (Join-Path $StateDir 'asked-helper') -Value 'yes'
-        if ($a -notmatch '^[nN]') { & (Join-Path $PSScriptRoot 'helper.ps1') -AutoStart }
-        else { Write-Host 'Skipped. The UVMC Panel shortcut still starts it when you open the panel.' }
+        if ($a -match '^[yY]') { & (Join-Path $PSScriptRoot 'helper.ps1') -AutoStart }
+        else { Write-Host 'Not at login. The UVMC Panel shortcut starts it when you open the panel (helper -AutoStart if you change your mind).' }
     }
 
     # 6d. Models on this PC's graphics card (optional; local-model does it later)
