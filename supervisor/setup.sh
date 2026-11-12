@@ -542,7 +542,7 @@ chmod 640 /var/log/audit/audit.log 2>/dev/null || true
 # command (the agent's script) in journald, and its file operations name the files. UVMC's own
 # run logs already have them, and a private conversation's must not stay anywhere
 # (supervisor/uvmc/private.py checks this at every start). So sudo doesn't log only these
-# commands: the three that carry the agent's scripts and the file commands the supervisor runs
+# commands: the four that carry the agent's scripts (systemd-run, setpriv, env, unshare) and the file commands the supervisor runs
 # with paths (keep the list in step with root()/_run() calls in supervisor/uvmc). Every other
 # sudo use (package installs, editors, sudo -i, services, users) is logged as usual, and refused
 # calls always are. Later: the supervisor as its own user, so this applies to it alone (design.md 7o).
@@ -550,7 +550,7 @@ QUIET=/etc/sudoers.d/uvmc-quiet
 cat > "$QUIET.new" <<'QEOF'
 # Written by UVMC setup: these commands, as the supervisor runs them, carry the agent's scripts
 # or the names of a conversation's files, so sudo doesn't log them.
-Cmnd_Alias UVMC_QUIET = /usr/bin/systemd-run, /usr/bin/setpriv, /usr/bin/env, \
+Cmnd_Alias UVMC_QUIET = /usr/bin/systemd-run, /usr/bin/setpriv, /usr/bin/env, /usr/bin/unshare, \
     /usr/bin/install, /usr/bin/rm, /usr/bin/rmdir, /usr/bin/mv, /usr/bin/stat, /usr/bin/rsync, \
     /usr/bin/find, /usr/bin/chown, /usr/bin/chmod, /usr/bin/chgrp, /usr/bin/cat, \
     /usr/bin/setfacl, /usr/bin/test

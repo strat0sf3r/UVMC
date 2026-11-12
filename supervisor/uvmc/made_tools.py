@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .executor import no_sudo, root
+from .executor import no_sudo, private_view, root
 from .netproxy import Proxy, SiteList, valid_site
 from . import browser, privacy, reports
 
@@ -558,9 +558,10 @@ class ToolBox:
         inner = ["env", f"HOME={self.home(name)}", f"USER={user}", f"LOGNAME={user}", *inner]
         if os.path.isdir("/run/systemd/system"):
             return ["sudo", "-n", f"--preserve-env={keep}", "systemd-run", "--scope", "--quiet",
-                    f"--slice={SLICE}", "--", "setpriv", f"--reuid={user}", f"--regid={group}",
-                    "--clear-groups", "--", *inner]
-        return ["sudo", "-n", f"--preserve-env={keep}", "-u", user, "-g", group, "--", *inner]
+                    f"--slice={SLICE}", "--", *private_view(user, group), "setpriv", f"--reuid={user}",
+                    f"--regid={group}", "--clear-groups", "--", *inner]
+        return ["sudo", "-n", f"--preserve-env={keep}", *private_view(user, group), "setpriv", f"--reuid={user}",
+                f"--regid={group}", "--clear-groups", "--", *inner]
 
     def env(self, name: str, e: dict) -> dict:
         proxy = f"http://127.0.0.1:{e['port']}"

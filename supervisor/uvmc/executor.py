@@ -3,7 +3,10 @@
 Everything the agent does goes through one Executor. In the VM, each command:
 - runs as the agent user (no root),
 - inside the "uvmc-agent.slice" resource box (memory, CPU and process limits),
-- with the supervisor's proxy as its only way onto the internet.
+- with the supervisor's proxy as its only way onto the internet,
+- in a private view of its own (design.md 7p): a /proc that shows only its user's processes
+  and its own /tmp, /var/tmp and /dev/shm, so conversations, jobs and tools can't watch each
+  other's commands or read each other's temporary files.
 
 If the supervisor ever moves to the host, a MultipassExecutor
 (`multipass exec uvmc -- ...`) can replace these without touching tools or the loop.
@@ -19,6 +22,32 @@ from . import browser
 from .config import Config
 
 SLICE = "uvmc-agent.slice"
+
+# The private view (design.md 7p), set up as root in a mount namespace of the command's own,
+# just before it drops to its user. Mounts made later outside (shared folders) still reach it
+# (propagation slave); its own never leave it. /proc is a new instance with hidepid=invisible:
+# the user sees only its own processes, while the supervisor and the system keep the normal
+# /proc. Each temporary folder becomes the user's own folder in it (mode 700, on the same size-
+# limited memory disk), so files there are its alone, whatever path a program writes to.
+# If any step fails, the command doesn't run (exit 126): never without its view.
+PRIVATE_DIR = ".uvmc-tmp"
+VIEW_SCRIPT = r"""
+u=$1; g=$2; shift 2
+fail() { echo "UVMC: this command could not get its private view ($1), so it didn't run." >&2; exit 126; }
+mount -t proc -o nosuid,nodev,noexec,hidepid=invisible proc /proc || fail /proc
+for d in /tmp /var/tmp /dev/shm; do
+  [ -d "$d" ] || continue
+  install -d -m 711 -o root -g root "$d/%(dir)s" || fail "$d"
+  install -d -m 700 -o "$u" -g "$g" "$d/%(dir)s/$u" || fail "$d"
+  mount --bind "$d/%(dir)s/$u" "$d" || fail "$d"
+done
+exec "$@"
+""" % {"dir": PRIVATE_DIR}
+
+
+def private_view(user: str, group: str) -> list[str]:
+    """The start of a root command that gives what follows (setpriv ...) its private view."""
+    return ["unshare", "--mount", "--propagation", "slave", "--", "sh", "-c", VIEW_SCRIPT, "uvmc-view", user, group]
 
 
 def no_sudo() -> bool:
@@ -75,15 +104,19 @@ class SystemdExecutor(Executor):
         # --description: systemd would otherwise log the whole command line (the agent's script)
         # in the journal when the scope starts.
         return ["sudo", "-n", "systemd-run", "--scope", "--quiet", "--description=uvmc", f"--slice={self.slice}", "--",
+                *private_view(user, self.cfg.user),
                 "setpriv", f"--reuid={user}", f"--regid={self.cfg.user}", "--init-groups", "--reset-env", "--",
                 *self.inner(script, args, timeout)]
 
 
 class SudoExecutor(Executor):
-    """Fallback without systemd: agent user, no resource box."""
+    """Fallback without systemd: agent user and its private view, no resource box."""
 
     def command(self, script, args, timeout):
-        return ["sudo", "-n", "-u", self.user, "-H", "--", *self.inner(script, args, timeout)]
+        return ["sudo", "-n", *private_view(self.user, self.cfg.user),
+                "setpriv", f"--reuid={self.user}", f"--regid={self.cfg.user}", "--init-groups", "--reset-env", "--",
+                "env", f"HOME={os.path.join(self.cfg.homes_root, self.user)}", f"USER={self.user}",
+                *self.inner(script, args, timeout)]
 
 
 class LocalExecutor(Executor):
@@ -129,7 +162,8 @@ def slice_of_pid(pid: int | None) -> str | None:
 def clean_user(cfg: Config, user: str) -> list[str]:
     """When a conversation or a job ends: stops whatever its user still runs, empties its home
     folder (keeping the ~/shared link setup makes) and removes its files in /tmp, /var/tmp and
-    /dev/shm, so the next conversation with this user starts clean. Returns what couldn't be
+    /dev/shm (its private folders there, PRIVATE_DIR/<user>, and anything older it left in the
+    shared ones), so the next conversation with this user starts clean. Returns what couldn't be
     removed (empty when all went well)."""
     problems = []
     if not no_sudo():
