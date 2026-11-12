@@ -38,7 +38,7 @@ from .brain import Bridge
 from .audit import ExecFilter, ExecWatcher, set_quiet as audit_quiet
 from .checkpoints import Checkpoints
 from .executor import (agent_users, clean_user, conversation_slice, kill_all_agent_processes, kill_slice, make_executor,
-                       no_sudo, oom_kills, root, slice_of_pid, slice_usage)
+                       no_sudo, oom_kills, root, slice_of_pid, slice_usage, SessionExecutor)
 from .executor import SLICE as SLICE_AGENT
 from .lock import Lock, LockError
 from .log import ChildLog, RunLog, read_log
@@ -115,7 +115,38 @@ DISCARD_SPEC = {
     "input_schema": {"type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]},
 }
 
-JOB_ID = re.compile(r"^[0-9a-f]{8}w\d+$")   # a job's folder: its conversation's id, w, a number
+JOB_ID = re.compile(r"^[0-9a-f]{8}w\d+$")
+
+# An agent working inside a service's account (services.py, install sessions)
+PROFILE_SPEC = {
+    "name": "propose_profile",
+    "description": ("Propose the service's profile (its uvmc-app.toml: what to start, its memory, the web sites and SSH "
+                    "machines it needs when it runs, its settings) once you know it. The user approves it on a card; "
+                    "until then the current one applies. Keep the name as it is."),
+    "input_schema": {"type": "object", "properties": {"profile": {"type": "string", "description": "the whole profile, TOML"}},
+                     "required": ["profile"]},
+}
+INSIDE_RULES = """# Working inside a service's account
+
+You are installing or updating the app of the service "{name}" ({title}), inside its own account on
+this machine. Every command runs as that service's user, in its sandbox, in its app folder ({app}),
+which is writable only during this session (read-only when the app runs). Install the app the way
+its own README or documentation says, into this folder (for Python, a virtual environment here:
+python3 -m venv .venv). There is no root and no sudo; install_system_package doesn't exist here.
+The service's secrets are not available to you, and its data folder is hidden from you. Each
+command runs on its own: a program you start in the background ends when its command ends, so
+try the app in the foreground with a time limit (for example: timeout 20 python3 app.py).
+Web sites outside its profile are asked of the user one by one; if one is refused, don't try to get
+around it. When you know what the app needs to run, call propose_profile with the whole profile
+(the current one is below): its start command (run, from the app folder), memory, the sites and
+SSH machines it needs at run time (not the ones only needed for installing), and settings it
+reads (as APP_<NAME> variables; secrets as files in $CREDENTIALS_DIRECTORY). The user approves it.
+
+Its current profile:
+```toml
+{profile}
+```
+"""   # a job's folder: its conversation's id, w, a number
 
 
 class Conversation:
@@ -138,6 +169,7 @@ class Conversation:
         self.key = secrets.token_hex(16)        # Claude Code's tool calls name their conversation with this
         self.origin = origin                    # panel | api | claude-app
         self.model = model
+        self.service: str | None = None         # set: it works inside this service's account (services.py)
         self.private = False                    # erased when closed (private.py)
         self.opts = {k: False for k in PRIVATE_DEFAULTS}   # a private one's restrictions (private.py)
         self.keep_files = False                 # you chose to keep a sealed private conversation's files
@@ -1072,6 +1104,8 @@ class Controller:
         return ""
 
     def _save_meta(self, c: Conversation) -> None:
+        if c.service:   # not brought back after a restart: its install session ends then (services.start)
+            return
         try:
             d = self.copies.state / c.id
             d.mkdir(parents=True, exist_ok=True)
@@ -1148,6 +1182,8 @@ class Controller:
     def ensure_copy(self, c: Conversation) -> None:
         """A conversation's copy of the main work folder (what it may see of it), made at its
         first task. Its scratch project, if it has one, is made now."""
+        if c.service:   # it works in the service's app folder, never on a copy of the work folder
+            return
         if not self.copies.exists(c.id):
             if c.private:   # first, so a crash while copying still leaves it marked for erasing
                 self._save_meta(c)
@@ -1172,6 +1208,8 @@ class Controller:
     def unsaved(self, c: Conversation) -> int:
         """How many of its changes aren't in the main folder yet (held and blocked ones too:
         closing drops them)."""
+        if c.service:
+            return 0
         try:
             plan = self.copies.plan(c.id, self.scope(c))
         except OSError:
@@ -1209,6 +1247,13 @@ class Controller:
         c.session.close()
         if c.proxy is not None:
             c.proxy.stop()
+        if c.service:   # never the work copy's clean-up: its user is the service's (its data folder!)
+            self._stop_inside(c)
+            try:
+                self.services.end_session(c.service)
+            except (KeyError, ServiceError) as e:
+                print(f"Warning: closing conversation {c.id}: its install session of {c.service}: {e}")
+            return
         for jid in list(c.jobs):
             self._drop_job(c, jid)
         left = []
@@ -1267,6 +1312,7 @@ class Controller:
                         "created": c.created, "last_active": c.last_active, "current": c.id == self.current,
                         "projects": [{"name": n, "label": self._project_label(n)} for n in c.projects],
                         "level": c.level, "seen": c.seen, "private": c.private, "private_opts": dict(c.opts) if c.private else None, "sealed": c.sealed,
+                        "service": c.service,
                         "waits_for_unlock": c.model in self.cfg.models and not self.model_allowed(self.cfg.profile(c.model)),
                         "ceiling": self.cfg.models[c.model].level if c.model in self.cfg.models else "open"})
         return out
@@ -1523,6 +1569,9 @@ class Controller:
         """Sets the conversation up as a normal agent or as a coordinator with a worker."""
         c = c or self.conv()
         s = c.session
+        if c.service:
+            self._prepare_inside(c)
+            return
         if s.briefing is None:  # fixed for the whole conversation (Claude Code restarts on any change)
             b = self.settings.briefing()
             s.briefing = (b, self.cfg.house_rules, self._live_briefing(b, c=c) if b["enabled"] else "")
@@ -1544,6 +1593,78 @@ class Controller:
             if c.jobs:   # the worker was switched off with jobs not brought in: they can still be
                 s.extra_tools = s.extra_tools + job_specs
                 s.handlers = {**s.handlers, **job_handlers}
+
+    # --- an agent inside a service's account (services.py) ----------------------------------------
+
+    def new_conversation_inside(self, name: str, model: str | None = None) -> dict:
+        """A conversation whose commands run as the service, in its install session's walls: it
+        installs or updates the app in place. Opens the service's install session (snapshot,
+        service stopped, sites asked); closing the conversation ends it."""
+        e = self.services.get(name)   # KeyError if unknown
+        if not e["installed"] or not self.services.is_local(name):
+            raise ServiceError("An agent works inside apps installed in place (an empty account you approved).")
+        if e.get("session"):
+            raise ServiceError("An install session is already open for it; end it first (on its page).")
+        level = e.get("level", "open")
+        base = self.convs.get(self.current)
+        profile = self.cfg.profile(model or (base.model if base else self.cfg.model))
+        if privacy.rank(profile.level) < privacy.rank(level):
+            raise PrivacyError(f"{name} is {level} and {profile.label} is {profile.level}: pick a model that is at least "
+                               f"{level}, then try again.")
+        c = self.new_conversation(profile.name)   # its projects are cleared below: it never has a work copy
+        try:
+            app = str(self.services.app(name))
+            c.service, c.copy_dir, c.projects, c.level, c.seen, c.chosen = name, app, [], level, level, True
+            c.user = self.services.user(name) if not no_sudo() else c.user
+            c.title = f"Inside {e['manifest']['title']}"
+            c.tools = Tools(self.cfg, SessionExecutor(
+                self.cfg, c.slice, lambda n=name: self.services.session_properties(n, "agent"),
+                f"uvmc-s-{name}-agent", user=c.user, workdir=app, proxy_port=e["port"]))
+            c.session.tools = c.tools
+            self.services.start_session(name, "agent", conv=c.id)
+        except Exception:
+            with self.lock:
+                c.service = None   # a plain empty conversation, closed again
+                self.convs.pop(c.id, None)
+                if self.current == c.id:
+                    self.current = next(iter(self.convs), None)
+            raise
+        c.log.event("notice", text=f"This conversation works inside the service {e['manifest']['title']} ({name}): its "
+                                   f"commands run as that service, in its app folder, in an install session (a "
+                                   "snapshot was taken, the service is stopped, it has no secrets, sites outside its "
+                                   "profile are asked). Closing the conversation ends the session.")
+        self._broadcast({"kind": "conversations", "conv": c.id})
+        return {"conv": c.id, "name": name}
+
+    def _prepare_inside(self, c: Conversation) -> None:
+        s = c.session
+        e = self.services.get(c.service)
+        b = self.settings.briefing()
+        rules = self.cfg.house_rules + "\n\n" + INSIDE_RULES.format(
+            name=c.service, title=e["manifest"]["title"], app=self.services.app(c.service),
+            profile=self.services.profile_text(c.service)["text"].strip())
+        s.briefing = s.briefing or (b, rules, "")
+        s.tool_names = [n for n in ("run_command", "read_file", "write_file", "list_dir") if n in self.cfg.tools_enabled]
+        s.system = briefing_mod.compose(rules, b, "")
+        s.extra_tools = [PROFILE_SPEC]
+        s.handlers = {"propose_profile": lambda args, call_id, c=c: self._propose_profile(c, args)}
+        s.parallel_tools = set()
+
+    def _propose_profile(self, c: Conversation, args: dict) -> tuple[str, bool]:
+        try:
+            v = self.services.set_adapter(c.service, str(args.get("profile", "")))
+        except (ServiceError, KeyError) as err:
+            return str(err), True
+        p = v.get("proposal") or {}
+        c.log.event("notice", text=f"The agent proposed a profile for {c.service}"
+                                   f"{' that changes what it may reach' if p.get('walls_changed') else ''}: "
+                                   "approve it on its page (Services).")
+        return "Proposed. The user approves it on the service's page; until then the current profile applies.", False
+
+    def _stop_inside(self, c: Conversation) -> None:
+        """Stop: the agent's commands inside the service are units of their own."""
+        if not no_sudo():
+            root(["systemctl", "stop", f"uvmc-s-{c.service}-agent-*.service"], timeout=30)
 
     def _job_tools(self, c: Conversation) -> tuple[list[dict], dict]:
         return [BRING_IN_SPEC, DISCARD_SPEC], {
@@ -2181,10 +2302,11 @@ class Controller:
             except (SyncError, OSError) as e:
                 c.log.event("error", text=f"Could not make this conversation's copy of the work folder: {e}")
                 return
-            try:
-                c.log.event("checkpoint", id=self.copies.checkpoints(c.id).create())
-            except Exception as e:
-                c.log.event("notice", text=f"No undo point for this task: {e}")
+            if not c.service:   # inside a service: the snapshot taken when its session opened
+                try:
+                    c.log.event("checkpoint", id=self.copies.checkpoints(c.id).create())
+                except Exception as e:
+                    c.log.event("notice", text=f"No undo point for this task: {e}")
             c.session.provider = client
             self._prepare_session(c)
             c.session.run_task(text)
@@ -2196,7 +2318,7 @@ class Controller:
             c.last_active = time.time()
             c.task_sites.clear()
             try:
-                waiting = self.copies.resolving(c.id)
+                waiting = {} if c.service else self.copies.resolving(c.id)
             except OSError:
                 waiting = {}
             if waiting:   # an agent's proposed resolution, for you to review
@@ -2268,6 +2390,8 @@ class Controller:
             if all(self.convs[x].cancel.is_set() for x in p["convs"] if x in self.convs):
                 p["event"].set()
         kill_slice(c.slice)
+        if c.service:
+            self._stop_inside(c)
         for w in c.running_jobs():
             kill_slice(w.slice)
         if not [x for x in self.running() if x is not c]:
@@ -3923,6 +4047,19 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
     def services_add_sites(body: dict):
         """Sites a session used, added to the profile: a profile change waiting for your approval."""
         return svc(ctl.services.add_sites, str(body.get("name", "")), list(body.get("hosts") or []))
+
+    @app.post("/api/services/agent")
+    def services_agent(body: dict):
+        """A conversation that works inside the service (an install session with an agent)."""
+        try:
+            return svc(ctl.new_conversation_inside, str(body.get("name", "")), str(body.get("model", "")) or None)
+        except Busy as e:
+            fail(409, str(e))
+
+    @app.post("/api/services/level")
+    def services_level(body: dict):
+        svc(ctl.services.set_level, str(body.get("name", "")), str(body.get("level", "")))
+        return {"ok": True}
 
     @app.post("/api/services/rollback")
     def services_rollback(body: dict):
