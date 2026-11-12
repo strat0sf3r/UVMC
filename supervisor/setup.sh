@@ -166,6 +166,34 @@ install -d -m 750 -o "$OWNER" -g "$OWNER" /var/log/uvmc/tools
 getent group uvmc-services >/dev/null || groupadd --system uvmc-services
 SVC_GID="$(getent group uvmc-services | cut -d: -f3)"
 install -d -m 755 -o "$OWNER" -g "$OWNER" "$SVC_DIR"
+# uvmc-service-shell <service> [command...]: a shell (or one command) as a service's user, in its
+# walls, during an install session the supervisor opened (`uvmc shell <service>` on the PC opens
+# it, runs this, and closes it). The properties come from the supervisor (the running unit's own,
+# with the app folder writable and no secrets); without an open session it refuses.
+cat > /usr/local/sbin/uvmc-service-shell <<'SHEOF'
+#!/bin/bash
+set -euo pipefail
+name="${1:-}"
+[[ "$name" =~ ^[a-z][a-z0-9-]{1,31}$ ]] || { echo "usage: uvmc-service-shell <service> [command...]" >&2; exit 2; }
+shift
+marker="/run/uvmc/service-sessions/$name"
+props="@SVC_DIR@/$name/session-shell.properties"
+owner="$(stat -c %U /run/uvmc 2>/dev/null || true)"
+if [ ! -f "$marker" ] || [ "$(stat -c %U "$marker")" != "$owner" ] || [ ! -f "$props" ]; then
+  echo "No install session is open for $name. Start one with: uvmc shell $name (on your PC)." >&2
+  exit 1
+fi
+args=()
+while IFS= read -r line; do [ -n "$line" ] && args+=(-p "$line"); done < "$props"
+if [ "$#" -gt 0 ]; then
+  exec systemd-run --quiet --wait --collect --pipe --service-type=exec "${args[@]}" -- "$@"
+fi
+echo "A shell as $name, in its walls: the app folder is yours to change, the data folder is visible,"
+echo "no secrets; sites outside its profile are asked on its page in the panel. 'exit' ends it."
+exec systemd-run --quiet --wait --collect --pty --service-type=exec "${args[@]}" -- /bin/bash -l
+SHEOF
+sed -i "s|@SVC_DIR@|$SVC_DIR|" /usr/local/sbin/uvmc-service-shell
+chmod 755 /usr/local/sbin/uvmc-service-shell
 # Claude Code for the "my plan" models: installed by uvmc-install-claude, which update-claude
 # (on your PC) and the panel's "Update Claude Code" button also run.
 cat > /usr/local/sbin/uvmc-install-claude <<'CCEOF'

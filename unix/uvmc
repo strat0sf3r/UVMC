@@ -5,6 +5,9 @@
         Runs a task and shows its steps live; approvals are asked here (or refused with
         --no-ask). --json waits quietly and prints the result as JSON. Exit code 0 = done.
     uvmc status | stop | new | models | model <name> | open | url
+    uvmc shell <service> [--sites a,b] [command...]
+        An install session for a service installed in place: a shell (or one command) as the
+        service, in its walls; sites outside its profile are asked in the panel.
     uvmc mcp    the relay Claude Code / Claude Desktop start to use UVMC as a tool
                 (connect-claude-apps sets that up; it must be switched on in the panel)
 Set UVMC_URL and UVMC_TOKEN to skip looking them up through Multipass.
@@ -255,6 +258,10 @@ def main():
         sub.add_parser(name, help=text)
     m = sub.add_parser("model", help="switch the model")
     m.add_argument("name")
+    sh = sub.add_parser("shell", help="an install session: a shell as a service installed in place")
+    sh.add_argument("service")
+    sh.add_argument("--sites", default="", help="sites allowed without asking, like pypi.org,github.com")
+    sh.add_argument("command", nargs=argparse.REMAINDER)
     o = p.parse_args()
     if not o.cmd:
         p.print_help()
@@ -285,6 +292,21 @@ def main():
     elif o.cmd == "model":
         api(conn, "/api/model", {"name": o.name})
         print(f"Model: {o.name}")
+    elif o.cmd == "shell":
+        sites = [x for x in o.sites.replace(",", " ").split() if x]
+        api(conn, "/api/services/session/start", {"name": o.service, "who": "shell", "sites": sites})
+        print(f"Install session for {o.service} open: its app folder was saved (snapshot) and the service is stopped.")
+        code = 1
+        try:
+            # a real terminal: Multipass's exec needs one for an interactive shell
+            code = subprocess.call(["multipass", "exec", NAME, "--", "sudo", "/usr/local/sbin/uvmc-service-shell",
+                                    o.service, *o.command])
+        finally:
+            r = api(conn, "/api/services/session/end", {"name": o.service})
+            if r.get("new_sites"):
+                print(f"Sites it used that its profile doesn't list: {', '.join(r['new_sites'])}. Add them on its page in the panel.")
+            print(f"Install session for {o.service} closed; the service starts again if it was on.")
+        return code
     elif o.cmd == "url":
         print(f"Address: {conn[0]}\nToken:   {conn[1]}\nUse it as: Authorization: Bearer <token>. API reference: {conn[0]}/docs")
     return 0

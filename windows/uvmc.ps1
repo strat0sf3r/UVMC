@@ -3,6 +3,9 @@
 #       runs a task and shows its steps live; approvals are asked here (or refused with -NoAsk).
 #       -Json waits quietly and prints the result as JSON (for scripts). Exit code 0 = done.
 #   uvmc status | stop | new | models | model <name> | open | url
+#   uvmc shell <service> [-Sites a,b] [command...]
+#       an install session for a service installed in place: a shell (or one command) as the
+#       service, in its walls; sites outside its profile are asked in the panel (-Sites: allowed)
 #   uvmc mcp    the relay Claude Code / Claude Desktop start to use UVMC as a tool
 #               (connect-claude-apps sets that up; it must be switched on in the panel)
 #   Set UVMC_URL and UVMC_TOKEN to skip looking them up through Multipass.
@@ -13,7 +16,8 @@ param(
     [switch]$New,
     [switch]$NoAsk,
     [switch]$Json,
-    [int]$Timeout = 1800
+    [int]$Timeout = 1800,
+    [string]$Sites
 )
 
 $ErrorActionPreference = 'Stop'
@@ -229,6 +233,28 @@ switch ($Command) {
         Api (Connect) '/api/model' @{ name = $Rest[0] } | Out-Null
         Write-Host "Model: $($Rest[0])"
     }
+    'shell' {
+        if (-not $Rest) { Fail 'Usage: uvmc shell <service> [-Sites pypi.org,github.com] [command...]' }
+        $svc = $Rest[0]
+        $cmd = @($Rest | Select-Object -Skip 1)
+        $conn = Connect
+        $list = @()
+        if ($Sites) { $list = @($Sites -split '[,\s]+' | Where-Object { $_ }) }
+        Api $conn '/api/services/session/start' @{ name = $svc; who = 'shell'; sites = $list } | Out-Null
+        Write-Host "Install session for $svc open: its app folder was saved (snapshot) and the service is stopped."
+        $mp = Find-Multipass
+        $code = 1
+        try {
+            # A real terminal: Multipass's exec needs one (and hangs or spins without it).
+            & $mp exec $Name -- sudo /usr/local/sbin/uvmc-service-shell $svc @cmd
+            $code = $LASTEXITCODE
+        } finally {
+            $r = Api $conn '/api/services/session/end' @{ name = $svc }
+            if ($r.new_sites) { Write-Host "Sites it used that its profile doesn't list: $($r.new_sites -join ', '). Add them on its page in the panel." }
+            Write-Host "Install session for $svc closed; the service starts again if it was on."
+        }
+        exit $code
+    }
     'mcp' { Mcp-Relay; exit 0 }
     'open' { & (Join-Path $PSScriptRoot 'panel.ps1') }
     'url' {
@@ -249,5 +275,7 @@ switch ($Command) {
         Write-Host '  uvmc models          list the models;  uvmc model <name> to switch'
         Write-Host '  uvmc open            open the panel'
         Write-Host '  uvmc url             the address and token, for your own scripts'
+        Write-Host '  uvmc shell <service> [-Sites a,b] [command...]'
+        Write-Host '      An install session for a service installed in place: a shell as the service, in its walls.'
     }
 }

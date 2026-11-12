@@ -58,6 +58,10 @@ UVMC (the app's repository stays as it is) and works exactly like the repository
 the service's **profile**; it can also replace the repository's own. Changing it waits for your approval,
 like a new version.
 
+An app with no repository at all (a package, a download) can be **installed in place**: an empty account
+with a profile kept by UVMC, filled during install sessions (guide.md, Services). The app then still gets
+everything in section 2; while installing it gets no secrets.
+
 ## 2. What the app gets
 
 The same names on every host:

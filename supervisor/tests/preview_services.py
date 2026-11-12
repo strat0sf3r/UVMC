@@ -59,6 +59,15 @@ def main(port: int) -> None:
     repo(tmp / "other-app", MANIFEST.replace('name = "test-app"', 'name = "other-app"').replace('title = "Test app"', 'title = "Another app"'),
          {"main.py": "print('hi')\n", "README.md": "An app waiting for its first approval.\n"})
     ctl.services.add("file://" + str(tmp / "other-app"))
+    # an app installed in place, its install session open in a shell, one site waiting for your answer
+    import threading
+    from test_services import LOCAL_PROFILE
+    ctl.services.add_local(LOCAL_PROFILE)
+    ctl.services.approve("random-app", "local")
+    ctl.cfg.net_approval_timeout_s = 3600
+    ctl.services.start_session("random-app", "shell", ["pypi.org"])
+    ctl.services._used("random-app", "pypi.org")
+    threading.Thread(target=ctl.services._ask, args=("random-app", "files.pythonhosted.org", 443), daemon=True).start()
     print(f"Preview on port {port}: open /?token=token, then Services")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
