@@ -93,6 +93,15 @@ model = ""                        # fill in a model name from ai.google.dev/gemi
 key = "gemini"
 privacy = "open"                  # the free tier may use what it gets; paid tier: raise it
 
+[models.openrouter]
+label = "OpenRouter"
+provider = "openai"               # OpenRouter speaks the OpenAI-compatible API (uvmc/openrouter.py)
+base_url = "https://openrouter.ai/api/v1"
+model = ""                        # fill in a model id, e.g. "deepseek/deepseek-v4-pro": Settings › Models › Choose...
+key = "openrouter"
+privacy = "open"                  # paid: every request asks for providers that keep and collect nothing
+                                  # (zdr); free models (:free) can only be open
+
 [models.local]
 label = "Local model on my PC"
 provider = "openai"               # llama.cpp's server, set up by windows\local-model.cmd

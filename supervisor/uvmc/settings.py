@@ -91,7 +91,8 @@ class Settings:
             source = ("panel" if name not in self.base else "changed in panel") if name in panel else "config.toml"
             profiles.append({**asdict(p), "source": source, "has_key": config.has_key(p), "level": p.level,
                              "suggested_privacy": privacy.suggest(p.provider, p.base_url)})
-        return {"profiles": profiles, "default": self.cfg.model, "keys": self.keys(),
+        waiting = [w for w in getattr(self.cfg, "waiting_profiles", ()) if w["name"] not in self.cfg.models]
+        return {"profiles": profiles, "waiting": waiting, "default": self.cfg.model, "keys": self.keys(),
                 "mcp_enabled": self.mcp_enabled(),
                 "providers": list(ADAPTERS)}
 
@@ -114,6 +115,9 @@ class Settings:
         p["max_tokens_param"] = p["max_tokens_param"] or "max_tokens"
         if p["privacy"] and p["privacy"] not in privacy.LEVELS:
             raise SettingsError(f"Privacy must be one of: {', '.join(privacy.LEVELS)}.")
+        from . import openrouter
+        if openrouter.free_but_private(p["base_url"], p["model"], p["privacy"]):
+            raise SettingsError(openrouter.FREE_PRIVATE)
         self.data.setdefault("models", {})[name] = p
         self._save()
         self._apply()
@@ -227,7 +231,8 @@ class Settings:
         self._apply()
 
     def keys(self) -> list[dict]:
-        names = sorted({p.key for p in self.cfg.models.values() if p.key} | {"anthropic"})
+        names = sorted({p.key for p in self.cfg.models.values() if p.key} | {"anthropic"}
+                       | set(getattr(self.cfg, "waiting_keys", ())))
         out = []
         for n in names:
             k = config.api_key(n)

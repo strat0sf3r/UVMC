@@ -486,6 +486,8 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .addsite input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
 .pane h3 { font-size: 15px; margin: 18px 0 6px; }
 .profiles li, .keys li { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.pick-row { display: flex; gap: 6px; } .pick-row input { flex: 1; min-width: 0; }
+.orpick { max-height: 320px; overflow-y: auto; }
 .acts2 { display: flex; gap: 6px; flex-wrap: wrap; }
 .keyrow .addsite { flex-wrap: wrap; margin: 0; }
 .keyrow .addsite input { flex: 1 1 160px; }
@@ -829,7 +831,7 @@ const activity = { execs: [], nets: [] };  // this conversation, newest last
 
 function resetFeed() {
   thread.innerHTML = "";
-  view.lastSeq = 0; view.tools = {}; view.asks = {}; view.tokens = 0; view.steps = 0; view.checkpoint = null;
+  view.lastSeq = 0; view.tools = {}; view.asks = {}; view.tokens = 0; view.cost = 0; view.steps = 0; view.checkpoint = null;
   activity.execs = []; activity.nets = [];
   showTokens();
   showEmpty();
@@ -891,6 +893,7 @@ function showTokens() {
   t.className = "meta";
   t.title = "";
   t.textContent = view.tokens ? `${view.tokens.toLocaleString()} tokens this conversation` : "";
+  if (view.cost) t.textContent += `, about $${view.cost < 0.01 ? view.cost.toFixed(4) : view.cost.toFixed(2)}`;
   const c = ctxInfo;
   if (c && c.compact && c.tokens) {   // the model on the PC: how full its context is
     const share = c.size ? c.tokens / c.size : 0;
@@ -972,6 +975,7 @@ function apply(ev) {
     case "reply": {
       view.steps += 1;
       view.tokens += (ev.usage?.in || 0) + (ev.usage?.out || 0);
+      view.cost = (view.cost || 0) + (ev.usage?.cost || 0);   // when the provider says (OpenRouter)
       if (ctxInfo && !box && ev.usage?.in) { ctxInfo.tokens = ev.usage.in + (ev.usage.out || 0); ctxInfo.estimated = false; ctxInfo.can_trim = true; }
       showTokens();
       for (const b of ev.content || []) {
@@ -2622,7 +2626,7 @@ async function openRun(run) {
   renderConvs();
   setState(current);
   const events = await api(`/api/history/${encodeURIComponent(run.name)}`);
-  thread.innerHTML = ""; view.tools = {}; view.asks = {}; view.lastSeq = 0; view.tokens = 0;
+  thread.innerHTML = ""; view.tools = {}; view.asks = {}; view.lastSeq = 0; view.tokens = 0; view.cost = 0;
   $("thinking")?.remove();
   for (const ev of events) apply(ev);
   showEmpty();
@@ -2893,6 +2897,7 @@ const PRESETS = {
   "": { label: "", base_url: "" },
   openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: "openai", max_tokens_param: "max_completion_tokens", privacy: "paid" },
   deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com", key: "deepseek", privacy: "open" },
+  openrouter: { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", key: "openrouter", privacy: "open" },
   gemini: { label: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", key: "gemini", privacy: "open" },
   "on-pc": { label: "Model on my PC (llama.cpp)", base_url: "http://{pc}:8091/v1", model: "local", key: "local", privacy: "local" },
   "claude-plan": { label: "Claude (my plan)", provider: "claude-code", model: "sonnet", base_url: "", key: "claude-subscription", privacy: "paid" },
@@ -3053,11 +3058,25 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
     li.appendChild(acts);
     list.appendChild(li);
   }
+  // Profiles from config.toml still without a model (gpt, gemini, openrouter): not offered until one is chosen.
+  for (const w of set.waiting || []) {
+    const or = /openrouter\.ai/i.test(w.base_url);
+    const li = el("li", "profile", `<div><strong>${esc(w.label)}</strong> <span class="tag">no model chosen yet</span>
+      <div class="sub">${PROVIDER_TEXT[w.provider] || esc(w.base_url)}, key <strong>${esc(w.key)}</strong>${or ? ": pick from OpenRouter's list" : ""}</div></div>`);
+    const acts = el("div", "acts2");
+    const pick = el("button", "btn", "Choose a model"); pick.type = "button";
+    pick.addEventListener("click", () => {
+      profileForm({ ...w, waiting: true });
+    });
+    acts.appendChild(pick);
+    li.appendChild(acts);
+    list.appendChild(li);
+  }
   $("addProfile").addEventListener("click", () => profileForm(null));
 
   const keys = $("keys");
   for (const k of set.keys) {
-    const li = el("li", "keyrow", `<div><strong>${esc(k.name)}</strong> <span class="sub">${k.set ? esc(k.hint) : "not set"}${k.used_by.length ? `, for ${k.used_by.map(esc).join(", ")}` : ""}</span></div>`);
+    const li = el("li", "keyrow", `<div><strong>${esc(k.name)}</strong> <span class="sub">${k.set ? esc(k.hint) : "not set"}${k.used_by.length ? `, for ${k.used_by.map(esc).join(", ")}` : ", for a model not picked yet"}</span></div>`);
     const f = el("form", "addsite");
     const plan = k.name === "claude-subscription";   // set only by the sign-in above, never pasted here
     f.innerHTML = plan ? `<span class="sub">Set by "Sign in with your Claude plan" above.</span>`
@@ -3073,6 +3092,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
     }
     li.appendChild(f);
     keys.appendChild(li);
+    if (k.set && k.name === "openrouter") showOpenRouterCredit(li);
   }
 
   const ul = $("learnedSites");
@@ -3396,24 +3416,105 @@ async function loadLocalModel() {
   } else localPolls = 0;
 }
 
+// --- OpenRouter (openrouter.py): the models that can use tools, and the key's credit ---------
+function openRouterQuery(f) {
+  const q = new URLSearchParams();
+  if (f?.base_url.value.trim()) q.set("base_url", f.base_url.value.trim());
+  if (f?.key.value.trim()) q.set("key", f.key.value.trim());
+  return q.toString() ? "?" + q : "";
+}
+const money = (v) => v == null ? "?" : v === 0 ? "free" : "$" + (v < 1 ? v.toFixed(3) : v.toFixed(2));
+// The Model field's dropdown, filled from OpenRouter as soon as the form has its address (and the key
+// is set); typing narrows it. Loaded once per address and key; "Choose..." adds prices and a filter.
+async function fillOpenRouterList(f, on) {
+  const list = f.querySelector("#orModels"), note = f.querySelector("[data-orlist]");
+  if (!on) { list.innerHTML = ""; note.hidden = true; f.dataset.orLoaded = ""; return; }
+  const want = openRouterQuery(f);
+  if (f.dataset.orLoaded === want) return;
+  f.dataset.orLoaded = want;
+  note.hidden = false; note.classList.remove("bad"); note.textContent = "Loading OpenRouter's models...";
+  try {
+    const rows = (await api("/api/openrouter/models" + want)).models;
+    if (f.dataset.orLoaded !== want) return;   // the address or key changed meanwhile
+    list.innerHTML = rows.map((r) => `<option value="${esc(r.id)}">${esc(r.name)}, ${r.free ? "free" : `${money(r.in)} / ${money(r.out)}`}</option>`).join("");
+    note.textContent = `${rows.length} models that can use tools (${rows.filter((r) => r.free).length} free): click Model name or start typing.`;
+    if (!f.model.value) f.model.placeholder = "click or type to pick from the list";
+  } catch (e) {
+    f.dataset.orLoaded = "";
+    note.textContent = "OpenRouter's list couldn't be loaded: " + e.message; note.classList.add("bad");
+  }
+}
+async function openRouterPicker(f) {
+  const box = f.querySelector("[data-picker]");
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<p class="small">Loading OpenRouter's models...</p>`;
+  let rows;
+  try { rows = (await api("/api/openrouter/models" + openRouterQuery(f))).models; }
+  catch (e) { box.innerHTML = `<p class="small bad">${esc(e.message)}</p>`; return; }
+  box.innerHTML = `<input type="search" placeholder="Search ${rows.length} models that can use tools" aria-label="Search OpenRouter's models">
+    <label class="told-switch"><input type="checkbox" data-free> Free ones only</label>
+    <p class="small">Price per million tokens, in / out. Free models are limited (50 requests a day until you've bought 10 dollars of credit) and can only be open.</p>
+    <ul class="alist orpick"></ul>`;
+  const search = box.querySelector("input[type=search]"), free = box.querySelector("[data-free]"), ul = box.querySelector("ul");
+  const draw = () => {
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = rows.filter((r) => (!free.checked || r.free) && words.every((w) => (r.id + " " + r.name).toLowerCase().includes(w)));
+    ul.innerHTML = "";
+    for (const r of hits.slice(0, 80)) {
+      const li = el("li", "", `<div><strong>${esc(r.name)}</strong> <span class="sub">${esc(r.id)}</span>
+        <div class="sub">${money(r.in)} / ${money(r.out)}${r.context ? `, ${Number(r.context).toLocaleString()} tokens of context` : ""}</div></div>`);
+      const b = el("button", "btn", "Use"); b.type = "button";
+      b.addEventListener("click", () => {
+        f.model.value = r.id;
+        if (!f.label.value || f.label.value === "OpenRouter") f.label.value = r.name;
+        if (r.free && f.privacy.value !== "open") f.privacy.value = "open";
+        box.hidden = true;
+      });
+      li.appendChild(b); ul.appendChild(li);
+    }
+    if (hits.length > 80) ul.appendChild(el("li", "sub", `${hits.length - 80} more: search to narrow it down.`));
+    if (!hits.length) ul.appendChild(el("li", "sub", "None match."));
+  };
+  search.addEventListener("input", draw); free.addEventListener("change", draw);
+  draw(); search.focus();
+}
+async function showOpenRouterCredit(li) {
+  const p = el("p", "small", "Checking OpenRouter's credit...");
+  li.appendChild(p);
+  try {
+    const c = await api("/api/openrouter/credit?key=openrouter");
+    const parts = [];
+    // limit is the spending limit set on the key, not money on the account
+    if (c.limit != null) parts.push(`the key may spend ${money(c.limit)}${c.remaining != null ? `, ${money(c.remaining)} of it not used yet` : ""}`);
+    else parts.push("no spending limit set on the key");
+    if (c.usage_monthly != null) parts.push(`${money(c.usage_monthly)} used this month`);
+    if (c.free_requests?.limit != null) parts.push(`free models: ${c.free_requests.used ?? 0} of ${c.free_requests.limit} requests today`);
+    p.textContent = "OpenRouter: " + (parts.join(", ") || "no details given") + (c.free_tier ? " (no credit bought yet: free models only)" : "") + ".";
+  } catch (e) { p.textContent = "OpenRouter: " + e.message; p.classList.add("bad"); }
+}
+
 function profileForm(p) {
   const box = $("profileForm");
   const isNew = !p;
   p = p || { name: "", label: "", provider: "openai", model: "", base_url: "", key: "", max_tokens_param: "max_tokens" };
   box.innerHTML = `<form class="pform">
-    <h3>${isNew ? "Add a model" : `Edit ${esc(p.label)}`}</h3>
+    <h3>${isNew ? "Add a model" : p.waiting ? `Set up ${esc(p.label)}` : `Edit ${esc(p.label)}`}</h3>
     ${isNew ? `<label>Start from <select name="preset">${Object.entries(PRESETS).map(([k, v]) => `<option value="${k}">${k ? esc(v.label) : "Nothing"}</option>`).join("")}</select></label>` : ""}
     <label>Name (short, for the picker's id) <input name="name" value="${esc(p.name)}" ${isNew ? "" : "readonly"} required pattern="[a-z0-9][a-z0-9_-]{0,40}" placeholder="my-model"></label>
     <label>Label <input name="label" value="${esc(p.label)}" placeholder="My model"></label>
     <label>Kind of API <select name="provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI-compatible</option><option value="claude-code">Claude Code on my plan</option></select></label>
     <label>Address (base URL) <input name="base_url" value="${esc(p.base_url)}" placeholder="https://..."></label>
-    <label>Model name <input name="model" value="${esc(p.model)}" required placeholder="as the provider names it"></label>
+    <label>Model name <span class="pick-row"><input name="model" value="${esc(p.model)}" required placeholder="as the provider names it" list="orModels" autocomplete="off"><button class="btn" type="button" data-pick hidden>Choose...</button></span></label>
+    <datalist id="orModels"></datalist><p class="small" data-orlist hidden></p>
+    <div data-picker hidden></div>
     <label>Key name <input name="key" value="${esc(p.key)}" placeholder="empty if no key is needed"></label>
     <label>Privacy: the most private files it may see <select name="privacy">
       <option value="local">local: it runs on my PC</option>
       <option value="paid">paid: I trust this provider by contract</option>
       <option value="open">open: it may log or train on what it gets</option></select></label>
     <p class="small">Read the provider's terms before choosing paid. Suggested from the address and kind: <span data-suggest></span>.</p>
+    <p class="small" data-ornote hidden>OpenRouter passes each request to one of many providers. With <strong>paid</strong>, every request asks for providers that keep and collect nothing (zero data retention); if a model has none, it's refused rather than sent elsewhere. Free models (<code>:free</code>) can only be open. Also see your account's own settings at openrouter.ai/settings/privacy.</p>
     <details><summary>Advanced</summary><label>Length setting the API expects <input name="max_tokens_param" value="${esc(p.max_tokens_param)}"></label></details>
     <p class="small form-msg"></p>
     <div class="actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-cancel>Cancel</button></div></form>`;
@@ -3422,7 +3523,18 @@ function profileForm(p) {
   // The same suggestion as the supervisor's (privacy.suggest)
   const suggest = () => /\{pc\}|^http:\/\/(localhost|127\.0\.0\.1)/.test(f.base_url.value) ? "local"
     : ["anthropic", "claude-code"].includes(f.provider.value) ? "paid" : "open";
-  const showSuggest = () => { f.querySelector("[data-suggest]").textContent = suggest(); };
+  const isOR = () => /^https?:\/\/([a-z0-9-]+\.)*openrouter\.ai(\/|:|$)/i.test(f.base_url.value.trim());
+  const showSuggest = () => {
+    f.querySelector("[data-suggest]").textContent = suggest();
+    f.querySelector("[data-ornote]").hidden = !isOR();
+    f.querySelector("[data-pick]").hidden = !isOR();
+    if (!isOR()) f.querySelector("[data-picker]").hidden = true;
+    fillOpenRouterList(f, isOR());
+  };
+  f.key.addEventListener("change", () => fillOpenRouterList(f, isOR()));
+  // A free model typed or picked from the list can only be open (openrouter.py)
+  f.model.addEventListener("change", () => { if (isOR() && /:free(:|$)/.test(f.model.value) && f.privacy.value !== "open") f.privacy.value = "open"; });
+  f.querySelector("[data-pick]").addEventListener("click", () => openRouterPicker(f));
   f.privacy.value = p.privacy || suggest();
   showSuggest();
   f.base_url.addEventListener("input", showSuggest);

@@ -74,7 +74,7 @@ UVMC runs an Ubuntu virtual machine on your PC ([Multipass](https://canonical.co
 
 | Feature | Description | Guide |
 | --- | --- | --- |
-| Provider adapters | `anthropic` (Claude and compatible endpoints) and `openai` (OpenAI, DeepSeek, Gemini, Mistral, Groq, OpenRouter, llama.cpp). Same tools, rules and panel whatever the model. | [Models](docs/guide.md#models) |
+| Provider adapters | `anthropic` (Claude and compatible endpoints) and `openai` (OpenAI, DeepSeek, Gemini, Mistral, Groq, OpenRouter, llama.cpp). OpenRouter has a model picker, privacy routing (providers that keep nothing for `paid` profiles) and cost per conversation. Same tools, rules and panel whatever the model. | [Models](docs/guide.md#models) |
 | Claude on your plan | Claude Code signed in with your Pro/Max plan acts as the model, with all its built-in tools switched off. Shows usage per window in the header. | [Claude on your plan](docs/guide.md#claude-on-your-plan-instead-of-the-api) |
 | A model on your PC | `local-model` installs llama.cpp (Vulkan or Metal) and a model sized to your card. A curated list of 8 models in 30 sizes (Qwen, Gemma 4, Ministral 3, Devstral, gpt-oss, uncensored builds), each with a pinned SHA-256, a description and strengths/weaknesses. Your own GGUF files work too. | [A model on your PC](docs/guide.md#a-model-on-your-pc) |
 | The helper on your PC | A tray app (Windows) or background program (macOS/Linux) on `127.0.0.1` only. From the panel it downloads, selects, deletes, tests and starts/stops local models, updates llama.cpp, and opens the panel already signed in. | [The helper on your PC](docs/guide.md#the-helper-on-your-pc) |
