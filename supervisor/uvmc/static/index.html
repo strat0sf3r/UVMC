@@ -515,10 +515,28 @@ details summary { cursor: pointer; margin: 14px 0 6px; font-weight: 700; font-si
 
 /* The Reports view (in place of the conversation), and the report blocks it shows */
 .left.reports-on .folderbar, .left.reports-on #feed, .left.reports-on .composer,
-.left.reports-on #keyBanner, .left.reports-on #pastBanner { display: none; }
-.left.reports-on { grid-template-rows: auto auto 1fr; }
-.reports { display: grid; grid-template-rows: 1fr; min-height: 0; }
-.reports[hidden] { display: none; }
+.left.reports-on #keyBanner, .left.reports-on #pastBanner,
+.left.services-on .folderbar, .left.services-on #feed, .left.services-on .composer,
+.left.services-on #keyBanner, .left.services-on #pastBanner { display: none; }
+.left.reports-on, .left.services-on { grid-template-rows: auto auto 1fr; }
+.reports, .services { display: grid; grid-template-rows: 1fr; min-height: 0; }
+.reports[hidden], .services[hidden] { display: none; }
+/* The Services page */
+#svcpage { overflow-wrap: anywhere; min-width: 0; }
+#svcpage .rephead, #svcpage .repgrid { min-width: 0; }
+.svcsec { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px 14px; margin-top: 14px; }
+.svcsec h3 { margin: 0 0 8px; font-size: 16px; }
+.svcsec.ask { border-color: var(--warn, #b7791f); }
+.svcsec .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 14px; }
+.svcsec .kv dt { color: var(--muted); }
+.svcsec .kv dd { margin: 0; }
+.svcsec table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.svcsec td, .svcsec th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.svcsec tr.deny td { color: var(--bad); }
+.svcsec pre.log { max-height: 420px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+.svcsec .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.svcsec textarea { width: 100%; min-height: 70px; font-family: var(--mono, monospace); font-size: 12px; }
+.svcsec .warn { background: #fff4e5; color: #7a4b00; padding: 6px 10px; border-radius: 6px; font-size: 14px; }
 .repgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; }
 .repcard { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px 14px; display: grid; gap: 8px; align-content: start; }
 .repcard.bad { border-color: var(--bad); }
@@ -674,6 +692,7 @@ pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; ove
     <nav class="convs" aria-label="Conversations">
       <div class="convlist" id="convs" role="tablist" aria-label="Open conversations"></div>
       <button class="btn newconv" id="reportsBtn" type="button" title="Reports from the tools the agent built">Reports <span class="badge" hidden></span></button>
+      <button class="btn newconv" id="servicesBtn" type="button" title="Your own apps that UVMC runs (installed from git when you approve them)">Services <span class="badge" hidden></span></button>
       <button class="btn newconv" id="newBtn" type="button" title="Opens another conversation next to these; they can work at the same time.">New conversation</button>
     </nav>
     <div class="folderbar" id="folderbar" hidden></div>
@@ -686,6 +705,9 @@ pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; ove
     <div id="feed" tabindex="-1"><div class="thread" id="thread"></div></div>
     <section class="reports" id="reports" aria-label="Reports" hidden>
       <div class="reppage" id="reppage"></div>
+    </section>
+    <section class="services" id="services" aria-label="Services" hidden>
+      <div class="reppage" id="svcpage"></div>
     </section>
     <div class="composer">
       <form id="form">
@@ -1537,10 +1559,14 @@ function runBody(res) {
 // The Reports button opens it as a tab beside the conversations. A run counts as new until
 // you look at it here; a browser notification comes when the tool's setting asks for one.
 const reports = { open: false, active: false, tools: [], programs: [], tool: null, program: null, run: null, timer: null };
+// The Services page (further down) shares this place.
+const services = { open: false, active: false, list: [], name: null, timer: null, poll: null };
+try { services.open = localStorage.getItem("uvmc.services") === "1"; } catch {}
 try { reports.open = localStorage.getItem("uvmc.reports") === "1"; } catch {}
 const NOTIFY = [["asks", "When it asks, fails or reports a problem"], ["always", "After every run"], ["never", "Never"]];
 
 function setReportsView(on) {
+  if (on && services.active) setServicesView(false, true);
   reports.active = on;
   if (on && !reports.open) { reports.open = true; try { localStorage.setItem("uvmc.reports", "1"); } catch {} }
   document.querySelector("section.left").classList.toggle("reports-on", on);
@@ -1846,6 +1872,328 @@ function programNotice(name, body) {
 }
 $("reportsBtn").addEventListener("click", () => openReports());
 
+// --- The Services page: your own apps that UVMC runs (services.py, docs/app-contract.md) -----
+// Full width, in the same place as Reports. Nothing is installed or updated without your
+// approval: a new app or a new version shows as a card with what it runs and reaches.
+const svcWaiting = () => services.list.filter((x) => x.proposal || x.status?.state === "failed").length;
+function setServicesView(on, quiet) {
+  if (on && reports.active) setReportsView(false);
+  services.active = on;
+  if (on && !services.open) { services.open = true; try { localStorage.setItem("uvmc.services", "1"); } catch {} }
+  document.querySelector("section.left").classList.toggle("services-on", on);
+  $("services").hidden = !on;
+  clearInterval(services.poll);
+  if (!quiet) renderConvs();
+  if (on) loadServices();
+}
+function openServices(name) {
+  services.name = name || null;
+  if (!services.active) setServicesView(true); else loadServices();
+}
+function closeServices() {
+  services.open = false;
+  try { localStorage.removeItem("uvmc.services"); } catch {}
+  if (services.active) setServicesView(false); else renderConvs();
+}
+function servicesTab() {
+  const tab = el("div", "conv reptab");
+  const n = svcWaiting();
+  tab.setAttribute("aria-selected", String(services.active));
+  tab.innerHTML = `<button type="button" class="pick" role="tab" aria-selected="${services.active}" title="Your services">
+      <span class="title">Services</span>${n ? `<span class="badge">${n}<span class="visually-hidden"> waiting</span></span>` : ""}</button>
+    <button type="button" class="close" aria-label="Close Services" title="Close Services (the button next to Reports opens it again)">&times;</button>`;
+  tab.querySelector(".pick").addEventListener("click", () => { if (!services.active) setServicesView(true); });
+  tab.querySelector(".close").addEventListener("click", closeServices);
+  return tab;
+}
+function showServiceCounts() {
+  const n = svcWaiting(), b = $("servicesBtn");
+  b.querySelector(".badge").textContent = n || "";
+  b.querySelector(".badge").hidden = !n;
+  b.title = n ? `${n} service${n > 1 ? "s" : ""} waiting for you (an approval, or one that stopped)` : "Your own apps that UVMC runs (installed from git when you approve them)";
+  if (services.open) renderConvs();
+}
+async function refreshServices() {
+  try { services.list = await api("/api/services"); } catch { return; }
+  showServiceCounts();
+  if (services.active && !services.name) showServicesOverview();
+  if (services.active && services.name) updateServicePage();
+}
+function refreshServicesSoon() { clearTimeout(services.timer); services.timer = setTimeout(refreshServices, 400); }
+async function loadServices() {
+  try { services.list = await api("/api/services"); } catch (e) { $("svcpage").innerHTML = `<p class="small bad">${esc(e.message)}</p>`; return; }
+  showServiceCounts();
+  if (services.name && !services.list.some((x) => x.name === services.name)) services.name = null;
+  if (services.name) showServicePage(); else showServicesOverview();
+}
+function serviceNotice(name, body) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (!document.hidden && document.hasFocus()) return;
+  const n = new Notification(`UVMC: ${name}`, { body, tag: `uvmc-service-${name}` });
+  n.onclick = () => { window.focus(); openServices(name); n.close(); };
+}
+const svcState = (x) => !x.installed ? ["Waiting for your approval", "need"] : x.proposal ? ["New version waiting", "need"]
+  : x.status?.state === "active" ? ["Running", "on"] : x.status?.state === "failed" ? ["Stopped", "bad"]
+  : x.missing?.length ? ["Needs settings", "need"] : x.enabled ? [x.status?.words || "On", ""] : ["Off", ""];
+function showServicesOverview() {
+  const page = $("svcpage");
+  const keep = page.scrollTop;
+  page.innerHTML = `<h2>Services</h2><p class="small">Your own long-running apps, installed from a git repository when you approve them, and run by UVMC: each as its own user, from a read-only copy of the version you approved, reaching only the sites and SSH machines its manifest declares. New versions wait for your approval. How to make an app for it: docs/app-contract.md.</p>`;
+  const add = el("button", "btn primary", "Add a service"); add.type = "button";
+  add.addEventListener("click", () => addServiceForm(page));
+  page.appendChild(add);
+  if (!services.list.length) page.appendChild(el("p", "small", "No services yet."));
+  const grid = el("div", "repgrid");
+  for (const x of services.list) {
+    const [label, kind] = svcState(x);
+    const card = el("div", `repcard${kind === "bad" ? " bad" : ""}`);
+    card.innerHTML = `<div class="top"><strong>${esc(x.title)}</strong>${x.proposal ? `<span class="badge">approve</span>` : ""}</div>
+      <div class="rstatus ${kind === "on" ? "ok" : kind === "bad" ? "bad" : kind === "need" ? "warn" : "info"}"><span>${esc(label)}</span></div>
+      <p class="small">${esc(x.description || "")}</p>
+      <div class="when">${esc(x.url)} (${esc(x.branch)})${x.commit ? `, version ${esc(x.commit.slice(0, 8))}` : ""}${x.refused ? `. <span class="bad">${x.refused} refused connection${x.refused > 1 ? "s" : ""}</span>` : ""}</div>
+      <div class="row"></div>`;
+    const open = el("button", "btn primary", x.proposal ? "Review" : "Open"); open.type = "button";
+    open.addEventListener("click", () => openServices(x.name));
+    card.querySelector(".row").appendChild(open);
+    grid.appendChild(card);
+  }
+  page.appendChild(grid);
+  page.scrollTop = keep;
+}
+function addServiceForm(page) {
+  page.querySelector(".svcadd")?.remove();
+  const f = el("form", "svcsec svcadd", `<h3>Add a service</h3>
+    <p class="small">UVMC fetches the repository and reads its uvmc-app.toml. You then see what it would run and reach, and decide. Nothing is installed or run before you approve.</p>
+    <label>Repository <input data-url required placeholder="https://github.com/owner/repo" style="width:100%"></label>
+    <label>Branch <input data-branch value="main"></label>
+    <label>Folder in the repository (empty for the top) <input data-path placeholder="optional"></label>
+    <label>Token to read it (only for a private repository; kept by UVMC, never given to the app) <input data-token type="password" autocomplete="off" style="width:100%"></label>
+    <div class="row"><button class="btn primary" type="submit">Fetch and show me</button> <button class="btn" type="button" data-cancel>Cancel</button></div>
+    <p class="small form-msg"></p>`);
+  f.querySelector("[data-cancel]").addEventListener("click", () => f.remove());
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = f.querySelector(".form-msg"), btn = f.querySelector("[type=submit]");
+    btn.disabled = true; msg.classList.remove("bad"); msg.textContent = "Fetching...";
+    try {
+      const v = await api("/api/services/add", { url: f.querySelector("[data-url]").value, branch: f.querySelector("[data-branch]").value,
+        path: f.querySelector("[data-path]").value, token: f.querySelector("[data-token]").value });
+      openServices(v.name);
+    } catch (err) { msg.textContent = err.message; msg.classList.add("bad"); btn.disabled = false; }
+  });
+  page.insertBefore(f, page.querySelector(".repgrid"));
+  f.querySelector("[data-url]").focus();
+}
+// What a manifest asks for, in plain words (for the approval card and the page).
+function manifestWords(m) {
+  const set = m.settings.map((s) => `${esc(s.label)} <span class="small">(${esc(s.type)}${s.required ? "" : ", optional"})</span>`).join("<br>") || "none";
+  return `<dl class="kv"><dt>Runs</dt><dd><code>${esc(m.run)}</code> (restarts ${esc(m.restart)})</dd>
+    ${m.health ? `<dt>Health check</dt><dd><code>${esc(m.health)}</code></dd>` : ""}
+    <dt>Memory</dt><dd>${esc(m.memory)}</dd>
+    <dt>Web sites</dt><dd>${m.sites.map(esc).join(", ") || "none"}</dd>
+    <dt>SSH machines</dt><dd>${m.machines.map((x) => `${esc(x.name)}: ${esc(x.user)}@${esc(x.host)} (key: ${esc(x.key)})`).join("<br>") || "none"}</dd>
+    <dt>Settings and secrets</dt><dd>${set}</dd></dl>`;
+}
+function wallsChanges(old, m) {
+  const out = [];
+  const diff = (label, a, b) => {
+    const added = b.filter((v) => !a.includes(v)), gone = a.filter((v) => !b.includes(v));
+    if (added.length) out.push(`${label} added: ${added.map(esc).join(", ")}`);
+    if (gone.length) out.push(`${label} removed: ${gone.map(esc).join(", ")}`);
+  };
+  diff("Web sites", old.sites, m.sites);
+  diff("SSH machines", old.machines.map((x) => `${x.name} (${x.user}@${x.host})`), m.machines.map((x) => `${x.name} (${x.user}@${x.host})`));
+  diff("Settings", old.settings.map((s) => `${s.name} (${s.type})`), m.settings.map((s) => `${s.name} (${s.type})`));
+  if (old.memory !== m.memory) out.push(`Memory: ${esc(old.memory)} → ${esc(m.memory)}`);
+  if (old.run !== m.run) out.push(`Run command: <code>${esc(old.run)}</code> → <code>${esc(m.run)}</code>`);
+  if (old.health !== m.health) out.push(`Health check: <code>${esc(old.health || "none")}</code> → <code>${esc(m.health || "none")}</code>`);
+  return out;
+}
+let svcDetail = null;
+async function showServicePage() {
+  const page = $("svcpage");
+  const name = services.name;
+  let x;
+  try { x = await api(`/api/services/${encodeURIComponent(name)}`); } catch (e) { page.innerHTML = `<p class="small bad">${esc(e.message)}</p>`; return; }
+  if (services.name !== name) return;
+  svcDetail = x;
+  page.innerHTML = "";
+  const back = el("button", "linkish repback", "← All services"); back.type = "button";
+  back.addEventListener("click", () => { services.name = null; clearInterval(services.poll); showServicesOverview(); });
+  page.appendChild(back);
+  const head = el("div", "rephead");
+  head.innerHTML = `<div class="who"><h2>${esc(x.title)}</h2><p class="small">${esc(x.description || "")}</p>
+    <p class="small">From ${esc(x.url)}, branch ${esc(x.branch)}${x.path ? `, folder ${esc(x.path)}` : ""}${x.commit ? `. Running version ${esc(x.commit.slice(0, 12))}: ${esc(x.subject || "")}` : ""}.</p></div><div class="ctrls"></div>`;
+  page.appendChild(head);
+  const msg = el("p", "small svcmsg");
+  page.appendChild(msg);
+  const act = async (path, body, okText) => {
+    msg.classList.remove("bad"); msg.textContent = "Working...";
+    try { const r = await api(path, body); msg.textContent = okText || ""; await showServicePage(); return r; }
+    catch (e) { msg.textContent = e.message; msg.classList.add("bad"); return null; }
+  };
+  if (x.proposal) page.appendChild(proposalSection(x, act));
+  if (x.installed) {
+    const ctrls = head.querySelector(".ctrls");
+    const sw = el("button", "btn primary", x.enabled ? "Switch off" : "Switch on"); sw.type = "button";
+    sw.title = x.enabled ? "Stops it, and it no longer starts with the machine" : "Starts it now and with the machine";
+    if (!x.enabled && x.missing.length) { sw.disabled = true; sw.title = "Fill in first: " + x.missing.join(", "); }
+    sw.addEventListener("click", () => act("/api/services/enable", { name, on: !x.enabled }));
+    const rs = el("button", "btn", "Restart"); rs.type = "button"; rs.disabled = !x.enabled;
+    rs.addEventListener("click", () => act("/api/services/restart", { name }, "Restarted."));
+    const up = el("button", "btn", "Look for a new version"); up.type = "button";
+    up.addEventListener("click", async () => { const r = await act("/api/services/check", { name }); if (r && !r.found.length) msg.textContent = x.check_error ? "" : "No new version."; });
+    ctrls.append(sw, rs, up);
+    if (x.manifest.health) {
+      const hc = el("button", "btn", "Run its health check"); hc.type = "button";
+      hc.addEventListener("click", () => act("/api/services/health", { name }));
+      ctrls.appendChild(hc);
+    }
+    const st = el("div", "svcsec svcstatus");
+    page.appendChild(st);
+    fillStatus(st, x);
+    if (x.missing.length) page.appendChild(el("p", "warn", `Before it can run, fill in: ${x.missing.map(esc).join(", ")}.`));
+    page.appendChild(settingsSection(x, act));
+    if (x.manifest.machines.length) page.appendChild(machinesSection(x, act));
+    const what = el("div", "svcsec", `<h3>What it may run and reach</h3>${manifestWords(x.manifest)}`);
+    page.appendChild(what);
+    const net = el("div", "svcsec svcnet");
+    page.appendChild(net);
+    fillNet(net, x);
+    const logs = el("div", "svcsec", `<h3>Log</h3><pre class="log svclog"></pre>`);
+    page.appendChild(logs);
+    fillLog(logs, x);
+    const rm = el("div", "svcsec", `<h3>Remove</h3><p class="small">Stops it and removes its user, code, secrets and program entry.</p>
+      <label class="told-switch"><input type="checkbox" data-keep> Keep its data folder</label><div class="row"><button class="btn" type="button" data-rm>Remove ${esc(x.title)}</button></div>`);
+    rm.querySelector("[data-rm]").addEventListener("click", async () => {
+      if (!confirm(`Remove ${x.title}? It stops now; its code, secrets and program entry are deleted${rm.querySelector("[data-keep]").checked ? " (its data folder is kept)" : ", and its data folder too"}.`)) return;
+      try { await api("/api/services/remove", { name, keep_data: rm.querySelector("[data-keep]").checked }); services.name = null; loadServices(); }
+      catch (e) { msg.textContent = e.message; msg.classList.add("bad"); }
+    });
+    page.appendChild(rm);
+    clearInterval(services.poll);
+    services.poll = setInterval(() => { if (services.active && services.name === name && !document.hidden) updateServicePage(); }, 5000);
+  }
+}
+async function updateServicePage() {   // status, connections and log only: never your half-typed settings
+  const name = services.name;
+  let x;
+  try { x = await api(`/api/services/${encodeURIComponent(name)}`); } catch { return; }
+  if (services.name !== name) return;
+  const page = $("svcpage");
+  if (!!x.proposal !== !!svcDetail?.proposal || x.installed !== svcDetail?.installed || x.commit !== svcDetail?.commit) { showServicePage(); return; }
+  svcDetail = x;
+  const st = page.querySelector(".svcstatus"), net = page.querySelector(".svcnet"), log = page.querySelector(".svclog")?.parentElement;
+  if (st) fillStatus(st, x);
+  if (net) fillNet(net, x);
+  if (log) fillLog(log, x);
+}
+function fillStatus(st, x) {
+  const s = x.status || {};
+  const mem = s.memory != null ? `${Math.round(s.memory / 1048576)} MB of ${esc(s.memory_max)}` : "";
+  st.innerHTML = `<h3>Status</h3><dl class="kv"><dt>Now</dt><dd class="${s.state === "failed" ? "bad" : ""}">${esc(s.words || "")}</dd>
+    ${s.since ? `<dt>Since</dt><dd>${esc(s.since)}</dd>` : ""}
+    ${s.restarts ? `<dt>Restarts</dt><dd>${esc(s.restarts)}</dd>` : ""}
+    ${mem ? `<dt>Memory</dt><dd>${mem}</dd>` : ""}
+    ${x.health ? `<dt>Health</dt><dd class="${x.health.ok ? "" : "bad"}">${x.health.ok ? "healthy" : "not healthy"}, ${esc(fmtWhen(x.health.at))}</dd>` : ""}
+    <dt>New versions</dt><dd>${x.checked ? `looked ${esc(fmtWhen(x.checked))}` : "not looked yet"}${x.check_error ? ` <span class="bad">(${esc(x.check_error)})</span>` : ""}</dd></dl>`;
+}
+function fillNet(net, x) {
+  const rows = (x.net || []).slice(0, 50);
+  net.innerHTML = `<h3>Connections</h3>${rows.length ? `<table><tr><th>When</th><th>Where</th><th>What happened</th></tr>${rows.map((n) =>
+    `<tr class="${n.verdict === "deny" ? "deny" : ""}"><td>${esc(fmtWhen(n.t))}</td><td>${esc(n.host)}:${esc(n.port)}</td><td>${n.verdict === "deny" ? "Refused: " : n.verdict === "allow" ? "Allowed: " : ""}${esc(n.reason || n.verdict)}</td></tr>`).join("")}</table>`
+    : `<p class="small">None since UVMC last started.</p>`}`;
+}
+function fillLog(box, x) {
+  const pre = box.querySelector("pre");
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+  pre.textContent = x.log || "(nothing yet)";
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+}
+function proposalSection(x, act) {
+  const p = x.proposal;
+  const sec = el("div", "svcsec ask");
+  const commit = `<p class="small">Version ${esc(p.commit.slice(0, 12))} by ${esc(p.author)}, ${esc(p.date)}: <strong>${esc(p.subject)}</strong></p>`;
+  if (p.kind === "install") {
+    sec.innerHTML = `<h3>Install ${esc(p.manifest.title)}?</h3>${commit}<p class="small">This is everything it would run and reach. Nothing is installed until you approve.</p>
+      ${manifestWords(p.manifest)}
+      <details><summary>Its files (${p.files.length})</summary><pre class="log">${esc(p.files.join("\n"))}</pre></details>`;
+  } else {
+    const changes = p.manifest ? wallsChanges(x.manifest, p.manifest) : [];
+    sec.innerHTML = `<h3>A new version is waiting</h3>${commit}
+      ${p.problem ? `<p class="warn">It can't be installed: ${esc(p.problem)}</p>` : ""}
+      ${changes.length ? `<p class="warn"><strong>It changes what the app may run or reach:</strong><br>${changes.join("<br>")}</p>` : p.manifest ? `<p class="small">What it may run and reach stays the same.</p>` : ""}
+      <details open><summary>Commits since the running version (${p.log.length})</summary><ul>${p.log.map((c) => `<li><code>${esc(c.short)}</code> ${esc(c.date)} ${esc(c.author)}: ${esc(c.subject)}</li>`).join("")}</ul></details>
+      <details><summary>Files changed</summary><pre class="log">${esc(p.stat || "")}</pre></details>
+      <details class="svcdiff"><summary>The full changes (diff)</summary><pre class="log">Loading...</pre></details>`;
+    sec.querySelector(".svcdiff").addEventListener("toggle", async (e) => {
+      const pre = e.target.querySelector("pre");
+      if (!e.target.open || pre.dataset.loaded) return;
+      try { pre.textContent = (await api(`/api/services/${encodeURIComponent(x.name)}/diff`)).text || "(no changes)"; pre.dataset.loaded = "1"; }
+      catch (err) { pre.textContent = err.message; }
+    });
+  }
+  const row = el("div", "row");
+  const ok = el("button", "btn primary", p.kind === "install" ? "Approve and install" : "Approve this version"); ok.type = "button";
+  ok.disabled = !p.manifest;
+  ok.addEventListener("click", () => {
+    const sure = p.kind === "install" ? `Install ${p.manifest.title}, version ${p.commit.slice(0, 12)}?` : `Install version ${p.commit.slice(0, 12)}${x.enabled ? " and restart it" : ""}?`;
+    if (confirm(sure)) act("/api/services/approve", { name: x.name, commit: p.commit }, "Installed.");
+  });
+  const no = el("button", "btn", p.kind === "install" ? "Don't install" : "Not this version"); no.type = "button";
+  no.addEventListener("click", async () => {
+    await act("/api/services/discard", { name: x.name });
+    if (p.kind === "install") { services.name = null; loadServices(); }
+  });
+  row.append(ok, no);
+  sec.appendChild(row);
+  return sec;
+}
+function settingsSection(x, act) {
+  const sec = el("form", "svcsec pform");
+  sec.innerHTML = `<h3>Settings</h3>${x.settings.length ? x.settings.map((st) => {
+    const id = `svcset-${esc(st.name)}`;
+    if (st.type === "secret") return `<label for="${id}">${esc(st.label)}${st.required ? "" : " (optional)"}</label><input id="${id}" data-set="${esc(st.name)}" type="password" autocomplete="off" placeholder="${st.set ? "set (type to replace)" : "not set"}">`;
+    if (st.type === "long text") return `<label for="${id}">${esc(st.label)}${st.required ? "" : " (optional)"}</label><textarea id="${id}" data-set="${esc(st.name)}" placeholder="${st.set ? "set (type to replace)" : "not set"}"></textarea>`;
+    if (st.type === "yes/no") return `<label class="told-switch"><input type="checkbox" data-set="${esc(st.name)}" data-bool ${st.value === "yes" ? "checked" : ""}> ${esc(st.label)}</label>`;
+    return `<label for="${id}">${esc(st.label)}</label><input id="${id}" data-set="${esc(st.name)}" value="${esc(st.value || "")}" ${st.type === "number" ? 'inputmode="decimal"' : ""}>`;
+  }).join("") : `<p class="small">It has no settings.</p>`}
+  <p class="small">Secrets and long texts are kept where only UVMC reads them and handed to the app as files while it runs; they're never shown again. ${x.enabled ? "Saving restarts it." : ""}</p>
+  <div class="row"><button class="btn primary" type="submit">Save</button></div>`;
+  sec.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const values = {};
+    sec.querySelectorAll("[data-set]").forEach((i) => { values[i.dataset.set] = i.dataset.bool !== undefined ? (i.checked ? "yes" : "no") : i.value; });
+    act("/api/services/settings", { name: x.name, values }, "Saved.");
+  });
+  if (!x.settings.length) sec.querySelector(".row").remove();
+  return sec;
+}
+function machinesSection(x, act) {
+  const sec = el("div", "svcsec");
+  sec.innerHTML = `<h3>SSH machines</h3><p class="small">Their host keys, so the app only ever talks to the real machine. Paste the lines from your known_hosts, or read them from the machine and compare the fingerprints with what you know before saving.</p>`;
+  for (const m of x.manifest.machines) {
+    const box = el("div", "", `<p><strong>${esc(m.name)}</strong>: ${esc(m.user)}@${esc(m.host)}</p>
+      <textarea data-hk placeholder="${esc(m.host)} ssh-ed25519 AAAA...">${esc(x.host_keys[m.name] || "")}</textarea>
+      <p class="small fp"></p>
+      <div class="row"><button class="btn" type="button" data-scan>Read from the machine</button><button class="btn primary" type="button" data-save>Save host key</button></div>`);
+    box.querySelector("[data-scan]").addEventListener("click", async () => {
+      const fp = box.querySelector(".fp");
+      fp.classList.remove("bad"); fp.textContent = "Reading...";
+      try {
+        const r = await api("/api/services/keyscan", { name: x.name, machine: m.name });
+        box.querySelector("[data-hk]").value = r.lines;
+        fp.innerHTML = `Compare before saving: ${r.fingerprints.map(esc).join("<br>")}`;
+      } catch (e) { fp.textContent = e.message; fp.classList.add("bad"); }
+    });
+    box.querySelector("[data-save]").addEventListener("click", () => act("/api/services/hostkey", { name: x.name, machine: m.name, text: box.querySelector("[data-hk]").value }, "Saved."));
+    sec.appendChild(box);
+  }
+  return sec;
+}
+$("servicesBtn").addEventListener("click", () => openServices());
+refreshServices();
+
 let toolsOpen = null;   // the tool whose details are open
 let toolsTimer = null;
 function loadToolsSoon() {   // not while you type in a tool's settings
@@ -1866,7 +2214,9 @@ async function loadTools() {
   let list;
   try { list = await api("/api/made-tools"); } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; return; }
   const keep = pane.scrollTop;
-  pane.innerHTML = `<h2>Tools</h2><p class="small">Programs the agent built and you approved. They keep working after the conversation, on a schedule or when you run them. Each runs as its own user, from a copy the agent can't change, and reaches only its own sites.</p>`;
+  pane.innerHTML = `<h2>Tools</h2><p class="small">Programs the agent built and you approved. They keep working after the conversation, on a schedule or when you run them. Each runs as its own user, from a copy the agent can't change, and reaches only its own sites.</p>
+    <p class="small">Your own long-running apps, installed from git: <button class="linkish" type="button" data-open-services>the Services page</button>.</p>`;
+  pane.querySelector("[data-open-services]").addEventListener("click", () => openServices());
   if (!list.length) {
     pane.appendChild(el("p", "small", `No tools yet. Ask the agent to build one, for example: <em>"every morning, check this site and write what changed into a file"</em>. You see its code and settings before anything is installed.`));
     return;
@@ -2064,7 +2414,7 @@ function renderConvs() {
     const state = c.waiting ? "waiting" : c.state;
     const tab = el("div", "conv");
     tab.dataset.state = state;
-    const selected = c.id === view.conv && view.live && !reports.active;   // none while a past run or Reports is on screen
+    const selected = c.id === view.conv && view.live && !reports.active && !services.active;   // none while a past run, Reports or Services is on screen
     tab.setAttribute("aria-selected", String(selected));
     const words = { idle: "", running: ", working", waiting: ", waiting for you", stopping: ", stopping" };
     const title = c.title || "New conversation";
@@ -2076,6 +2426,7 @@ function renderConvs() {
         <span class="visually-hidden">${words[state] || ""}</span></button>
       <button type="button" class="close" data-close="${esc(c.id)}" aria-label="Close ${esc(title)}" title="${c.private ? "Close and erase this private conversation" : "Close this conversation (it stays under Runs)"}" ${c.state !== "idle" || convs.length < 2 ? "hidden" : ""}>&times;</button>`;
     tab.querySelector(".pick").addEventListener("click", () => {
+      if (services.active) { setServicesView(false); if (c.id === view.conv && view.live) return; }
       if (reports.active) { setReportsView(false); if (c.id === view.conv && view.live) return; }
       if (c.id !== view.conv || !view.live) selectConv(c.id);
     });
@@ -2084,6 +2435,7 @@ function renderConvs() {
     if (c.id === focused) tab.querySelector(".pick").focus();
   }
   if (reports.open) list.prepend(reportsTab());
+  if (services.open) list.prepend(servicesTab());
   list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
   showTitle();
 }
@@ -2419,6 +2771,9 @@ function connect() {
     if (ev.kind === "projects") { if (!$("pane-projects").hidden) loadProjects(); refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); refreshReportsSoon(); return; }
     if (ev.kind === "tool_run") { toolRunEnded(ev); return; }
+    if (ev.kind === "services") { refreshServicesSoon(); return; }
+    if (ev.kind === "service_update") { refreshServicesSoon(); serviceNotice(ev.name, `A new version of ${ev.title} is waiting for your approval.`); return; }
+    if (ev.kind === "service_refused") { refreshServicesSoon(); return; }
     if (ev.kind === "programs") { refreshReportsSoon(); if ($("programsList") && !$("pane-settings").hidden) loadPrograms(); return; }
     if (ev.kind === "program_report") { programReported(ev); return; }
     if (ev.kind === "program_silent") { programSilent(ev); return; }
@@ -3057,6 +3412,15 @@ async function loadPrograms() {
       ${PROGRAM_PERMS.map(([v, l]) => `<div class="sub"><label class="told-switch"><input type="checkbox" data-perm="${v}" ${p.permissions.includes(v) ? "checked" : ""}> ${esc(l)}</label></div>`).join("")}
       <div class="sub"><label>Tell me if it's silent for more than <input type="number" min="0" max="10080" step="1" data-silent value="${esc(p.silent_after || 0)}" style="width:5em" aria-label="Minutes"> minutes (0: never)</label></div></div>`);
     const acts = el("div", "acts2");
+    if (p.kind === "service") {
+      li.querySelector("strong").insertAdjacentHTML("afterend", ` <span class="tag">service</span>`);
+      const go = el("button", "btn", "Open its service"); go.type = "button";
+      go.addEventListener("click", () => openServices(p.name));
+      acts.appendChild(go);
+      li.appendChild(acts);
+      list.appendChild(li);
+      continue;
+    }
     const key = el("button", "btn", "New key"); key.type = "button";
     key.title = "Makes a new key and shows it once; the old one stops working at once.";
     key.addEventListener("click", async () => {
