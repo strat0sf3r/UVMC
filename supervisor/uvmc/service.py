@@ -43,6 +43,7 @@ from .executor import SLICE as SLICE_AGENT
 from .lock import Lock, LockError
 from .log import ChildLog, RunLog, read_log
 from .made_tools import GET_CODE_SPEC, PROPOSE_SPEC, ToolBox, ToolError
+from .programs import KEY_PREFIX as PROGRAM_KEY_PREFIX, ProgramError, Programs
 from .workcopies import CONTEXT_DIR, MERGE_DIR, SyncError, WorkCopies
 from .transcript import transcript
 from .netproxy import Proxy, SiteList
@@ -254,6 +255,12 @@ class Controller:
         self.made = ToolBox(cfg, notify=lambda: self._broadcast({"kind": "made_tools"}),   # tools the agent built
                             on_run=lambda name, record: self._broadcast(
                                 {"kind": "tool_run", **self.made.result(name, record["id"])}))
+        # programs that use UVMC with a key of their own (programs.py)
+        self.programs = Programs(cfg, notify=lambda: self._broadcast({"kind": "programs"}),
+                                 on_report=lambda name, rid: self._broadcast(
+                                     {"kind": "program_report", **self.programs.result(name, rid)}),
+                                 on_silent=lambda name, info: self._broadcast(
+                                     {"kind": "program_silent", "name": name, **info}))
         # newer versions of UVMC's parts, for Settings > Updates (a notice the first time one is seen)
         # The lock: the VM closed to the PC, only the model on the PC used (lock.py)
         self.vm_lock = Lock(cfg.state_dir)
@@ -350,6 +357,7 @@ class Controller:
                 self.made.start()
             except Exception as e:  # the tools must never keep the supervisor from starting
                 print(f"Warning: the agent's tools could not start: {e}")
+        self.programs.start()
         # Who may read each shared folder: set now (closing what an earlier run left open), and
         # again every half minute, for a folder shared meanwhile (set_access skips unchanged ones).
         def share_loop():
@@ -2960,6 +2968,10 @@ def signin_target(path: str | None) -> str:
     return "/" + (path or "/").translate({9: None, 10: None, 13: None}).lstrip("/\\")
 
 
+PROGRAM_SELF = "/api/programs/self"     # the only routes a program's key reaches
+MAX_PROGRAM_BODY = 8_200_000            # a program's report, inline images included
+
+
 def create_app(ctl: Controller, token: str | PanelToken | None):
     app = FastAPI(title="UVMC supervisor", version=__version__, docs_url="/docs", redoc_url=None,
                   description="The API behind the UVMC panel. Sign in with the panel token: "
@@ -2993,6 +3005,9 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
             return resp
         auth_header = request.headers.get("authorization", "")
         bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+        program_route = (request.url.path.rstrip("/") + "/").startswith(PROGRAM_SELF + "/")
+        if bearer.startswith(PROGRAM_KEY_PREFIX) or program_route:
+            return await program_auth(request, call_next, bearer, program_route)
         if bearer:  # scripts and other programs
             if not hmac.compare_digest(bearer, token):
                 return PlainTextResponse("Wrong access token.", 401)
@@ -3001,6 +3016,27 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
         if request.method == "POST" and "application/json" not in request.headers.get("content-type", ""):
             return PlainTextResponse("Expected JSON.", 415)
         return await call_next(request)
+
+    async def program_auth(request: Request, call_next, bearer: str, program_route: bool):
+        """A program's key (programs.py) reaches only /api/programs/self/..., and those routes
+        take nothing else: not the panel token, not the panel's cookie. Refused while locked."""
+        path = request.url.path.rstrip("/")
+        if not program_route:
+            return PlainTextResponse(f"A program's key only reaches {PROGRAM_SELF}/.", 403)
+        if not bearer.startswith(PROGRAM_KEY_PREFIX):
+            return PlainTextResponse("These routes are for programs, with a key of their own "
+                                     "(Settings > Programs in the panel).", 403)
+        name = ctl.programs.identify(bearer)
+        if name is None:
+            return PlainTextResponse("Wrong or old program key.", 401)
+        if ctl.vm_lock.locked:
+            return PlainTextResponse("UVMC is locked: no program gets in until it's unlocked.", 423)
+        if request.method == "POST" and "application/json" not in request.headers.get("content-type", ""):
+            return PlainTextResponse("Expected JSON.", 415)
+        request.state.program = name
+        resp = await call_next(request)
+        ctl.programs.called(name, path, resp.status_code)
+        return resp
 
     def fail(status: int, message: str):
         raise HTTPException(status, message)
@@ -3696,6 +3732,108 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
             fail(404, str(e.args[0]))
         except ToolError as e:
             fail(409, str(e))
+
+    # --- programs that use UVMC (programs.py) ------------------------------------------------
+    # What a program calls, with its own key (the middleware set request.state.program):
+
+    def program_of(request: Request, permission: str | None = None) -> str:
+        name = getattr(request.state, "program", None)
+        if name is None:
+            fail(403, "These routes are for programs, with a key of their own.")
+        if permission and not ctl.programs.allowed(name, permission):
+            fail(403, f"This program may not do that ({permission}); allow it in Settings > Programs.")
+        return name
+
+    @app.get(PROGRAM_SELF)
+    def program_self(request: Request):
+        """Who am I: the program's name, what it may do and UVMC's version."""
+        name = program_of(request)
+        return {"name": name, "permissions": ctl.programs.view(name)["permissions"], "uvmc": __version__}
+
+    @app.post(PROGRAM_SELF + "/heartbeat")
+    def program_heartbeat(request: Request):
+        """Still alive (any call counts; this one does nothing else)."""
+        program_of(request)
+        return {"ok": True}
+
+    @app.post(PROGRAM_SELF + "/reports")
+    async def program_report(request: Request):
+        """A report in the tools' block format, images inline as base64 (reports.FORMAT_HELP)."""
+        name = program_of(request, "reports")
+        size = request.headers.get("content-length", "")
+        if size.isdigit() and int(size) > MAX_PROGRAM_BODY:
+            fail(413, f"A report is at most {MAX_PROGRAM_BODY // 1_000_000} MB.")
+        body = await request.body()
+        if len(body) > MAX_PROGRAM_BODY:
+            fail(413, f"A report is at most {MAX_PROGRAM_BODY // 1_000_000} MB.")
+        try:
+            return ctl.programs.receive_report(name, body)
+        except ProgramError as e:
+            fail(429 if "a minute" in str(e) else 422, str(e))
+
+    # What the panel does with them:
+
+    def program_call(fn, *args, **kw):
+        try:
+            return fn(*args, **kw)
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ProgramError as e:
+            fail(409, str(e))
+
+    @app.get("/api/programs")
+    def programs_list():
+        return ctl.programs.view()
+
+    @app.post("/api/programs/add")
+    async def programs_add(request: Request):
+        """A new program; its key is in the answer, once."""
+        body = await request.json()
+        name = str(body.get("name", "")).strip().lower()
+        key = program_call(ctl.programs.add, name, str(body.get("description", "")))
+        return {"key": key, "program": ctl.programs.view(name)}
+
+    @app.post("/api/programs/key")
+    async def programs_key(request: Request):
+        """A new key for a program (the old one stops working); in the answer, once."""
+        body = await request.json()
+        return {"key": program_call(ctl.programs.new_key, str(body.get("name", "")))}
+
+    @app.post("/api/programs/update")
+    async def programs_update(request: Request):
+        body = await request.json()
+        program_call(ctl.programs.update, str(body.get("name", "")), description=body.get("description"),
+                     permissions=body.get("permissions"), silent_after=body.get("silent_after"),
+                     notify=body.get("notify"))
+        return {"ok": True}
+
+    @app.post("/api/programs/remove")
+    async def programs_remove(request: Request):
+        body = await request.json()
+        program_call(ctl.programs.remove, str(body.get("name", "")))
+        return {"ok": True}
+
+    @app.post("/api/programs/seen")
+    async def programs_seen(request: Request):
+        body = await request.json()
+        program_call(ctl.programs.mark_seen, str(body.get("name", "")), str(body.get("id", "")) or None)
+        return {"ok": True}
+
+    @app.get("/api/programs/{name}")
+    def programs_one(name: str):
+        return program_call(ctl.programs.view, name)
+
+    @app.get("/api/programs/{name}/reports/{report_id}")
+    def programs_report(name: str, report_id: str):
+        return program_call(ctl.programs.result, name, report_id)
+
+    @app.get("/api/programs/{name}/reports/{report_id}/images/{n}")
+    def programs_image(name: str, report_id: str, n: int):
+        data, kind = program_call(ctl.programs.image, name, report_id, n)
+        # As for the tools' images: only ever drawn as a picture, nothing in it may run.
+        return Response(data, media_type=kind, headers={
+            "Content-Security-Policy": "default-src 'none'; sandbox", "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=86400"})
 
     @app.get("/api/made-tools")
     def made_tools():
