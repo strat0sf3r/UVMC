@@ -59,6 +59,27 @@ class ServiceError(Exception):
     """Something that can't be done; the message says why (for you, in plain words)."""
 
 
+class NoManifest(ServiceError):
+    """The repository has no uvmc-app.toml: you can write one for it, kept by UVMC."""
+
+
+# Every key this version knows. Keys planned for later contract versions are refused with a
+# clear message (silently ignoring a build step or a config file would run the app wrong);
+# keys nobody knows are kept and shown as a warning on the card. A higher contract number is
+# refused: it needs a newer UVMC. So an app written for a later version never runs half-set-up.
+KNOWN_KEYS = {"contract", "name", "title", "description", "run", "health", "restart", "memory",
+              "runtime", "network", "ssh", "settings"}
+RESERVED_KEYS = {
+    "build": "a build step (installing dependencies, compiling)",
+    "files": "config files written from the settings",
+    "env": "settings mapped to environment variables of the app's choosing",
+    "web": "a web page shown in the panel",
+    "image": "a container image", "container": "a container",
+    "volumes": "extra data folders", "ports": "ports it listens on", "depends": "other services it needs",
+}
+RUNTIMES = ("process",)            # later: "container" (rootless Podman as the service's user)
+
+
 # --- the manifest --------------------------------------------------------------------------
 
 def parse_manifest(text: str) -> dict:
@@ -70,8 +91,17 @@ def parse_manifest(text: str) -> dict:
     problems: list[str] = []
     bad = problems.append
 
-    if raw.get("contract") != CONTRACT:
+    contract = raw.get("contract")
+    if isinstance(contract, int) and contract > CONTRACT:
+        raise ServiceError(f"This app follows version {contract} of the app contract; this UVMC knows version "
+                           f"{CONTRACT}. Update UVMC first.")
+    if contract != CONTRACT:
         bad(f"contract = {CONTRACT} is required (the version of the app contract it follows).")
+    for key in sorted(set(raw) & set(RESERVED_KEYS)):
+        bad(f"{key}: {RESERVED_KEYS[key]} isn't supported by this UVMC yet.")
+    runtime = raw.get("runtime", "process")
+    if runtime not in RUNTIMES:
+        bad(f'runtime: "{runtime}" isn\'t supported by this UVMC (only "process").')
     name = str(raw.get("name", ""))
     if not NAME_RE.match(name):
         bad("name: 2-32 lowercase letters, digits and dashes, starting with a letter.")
@@ -135,16 +165,35 @@ def parse_manifest(text: str) -> dict:
         machines.append({"name": m, "host": host.lower(), "user": user, "key": key})
     if problems:
         raise ServiceError(f"{MANIFEST} has problems:\n- " + "\n- ".join(problems))
-    return {"contract": CONTRACT, "name": name, "title": str(raw.get("title", name))[:120],
+    return {"contract": CONTRACT, "runtime": runtime, "unknown": sorted(set(raw) - KNOWN_KEYS - set(RESERVED_KEYS)),
+            "name": name, "title": str(raw.get("title", name))[:120],
             "description": str(raw.get("description", ""))[:1000], "run": run.strip(),
             "health": health.strip() if isinstance(health, str) else None, "restart": restart,
             "memory": memory, "sites": [s.lower() for s in sites], "machines": machines, "settings": settings}
 
 
 def walls(m: dict) -> dict:
-    """The parts of a manifest that decide what the service may reach and hold."""
-    return {"sites": m["sites"], "machines": m["machines"], "memory": m["memory"],
+    """The parts of a manifest that decide what the service may reach, hold and run."""
+    return {"sites": m["sites"], "machines": m["machines"], "memory": m["memory"], "runtime": m.get("runtime", "process"),
             "settings": [(s["name"], s["type"]) for s in m["settings"]], "run": m["run"], "health": m["health"]}
+
+
+TEMPLATE = """contract = 1
+name = "my-app"                       # 2-32 lowercase letters, digits, dashes
+title = "My app"
+description = "What it does"
+run = "python3 main.py"               # starts it, from the repository's folder
+memory = "256M"
+
+[network]
+sites = []                            # web sites it needs, like "api.example.com"
+ssh = []                              # SSH machines by name, each with an [ssh.<name>] table
+
+# [[settings]]
+# name = "api_key"
+# label = "API key"
+# type = "secret"                     # text, secret, number, yes/no or long text
+"""
 
 
 # --- the registry ----------------------------------------------------------------------------
@@ -235,8 +284,50 @@ class Services:
         rel = f"{path.strip('/')}/{MANIFEST}" if path.strip("/") else MANIFEST
         p = subprocess.run(["git", "--git-dir", str(repo), "show", f"{commit}:{rel}"], capture_output=True)
         if p.returncode != 0:
-            raise ServiceError(f"There's no {rel} in that commit: the app needs one (docs/app-contract.md).")
+            raise NoManifest(f"There's no {rel} in that commit. Write one for it (kept by UVMC, the repository "
+                             "stays as it is), or add one to the repository (docs/app-contract.md).")
         return parse_manifest(p.stdout.decode("utf-8", "replace"))
+
+    def _manifest_for(self, name: str, commit: str) -> dict:
+        """The manifest that applies: the one you wrote for it in UVMC if any, else the repository's."""
+        e = self.get(name)
+        return parse_manifest(e["adapter"]) if e.get("adapter") else self._manifest_at(self.repo(name), commit, e["path"])
+
+    def profile_text(self, name: str) -> dict:
+        """The profile as text, for editing: the one kept by UVMC, else the repository's file as it is."""
+        e = self.get(name)
+        if e.get("adapter"):
+            return {"text": e["adapter"], "from": "uvmc"}
+        commit = e["commit"] or (e.get("proposal") or {}).get("commit")
+        rel = f"{e['path']}/{MANIFEST}" if e["path"] else MANIFEST
+        p = subprocess.run(["git", "--git-dir", str(self.repo(name)), "show", f"{commit}:{rel}"], capture_output=True)
+        if p.returncode == 0:
+            return {"text": p.stdout.decode("utf-8", "replace"), "from": "repository"}
+        return {"text": TEMPLATE.replace('"my-app"', f'"{name}"'), "from": "none"}
+
+    def set_adapter(self, name: str, text: str | None) -> dict:
+        """You write (or change, or drop with None) the manifest UVMC keeps for this app. Like a
+        new version, it only applies once you approve it: a proposal for the running commit."""
+        with self.lock:
+            e = self.get(name)
+            if text is not None and not text.strip():
+                text = None
+            if text is None:
+                commit = e["commit"] or e["proposal"]["commit"]
+                manifest = self._manifest_at(self.repo(name), commit, e["path"])   # back to the repository's
+            else:
+                manifest = parse_manifest(text)
+            if manifest["name"] != name:
+                raise ServiceError(f"The manifest's name must stay {name}.")
+            if not e["installed"]:   # still waiting for its first approval: the card shows the new one
+                e["adapter"] = text
+                e["proposal"]["manifest"] = manifest
+            else:
+                e["proposal"] = {**self._summary(self.repo(name), e["commit"]), "kind": "manifest", "manifest": manifest,
+                                 "adapter": text, "walls_changed": walls(manifest) != walls(e["manifest"]), "problem": None}
+            self._save()
+        self.notify()
+        return self.view(name)
 
     def _files(self, repo: Path, commit: str) -> list[str]:
         return self._git(repo, "ls-tree", "-r", "--name-only", commit).splitlines()[:2000]
@@ -247,8 +338,9 @@ class Services:
 
     # --- adding one (you, in the panel) -------------------------------------------------------
 
-    def add(self, url: str, branch: str = "main", path: str = "", token: str = "") -> dict:
-        """Fetches the repository and reads its manifest: a proposal for you to approve. Nothing runs."""
+    def add(self, url: str, branch: str = "main", path: str = "", token: str = "", manifest_text: str = "") -> dict:
+        """Fetches the repository and reads its manifest (or takes the one you wrote for it, kept by
+        UVMC): a proposal for you to approve. Nothing runs."""
         url, branch, path = url.strip(), (branch or "main").strip(), (path or "").strip().strip("/")
         if not URL_RE.match(url):
             raise ServiceError("The repository's address: https://github.com/owner/repo (or file:///path for a local one).")
@@ -259,7 +351,8 @@ class Services:
         incoming = self.base / ".incoming" / secrets_mod.token_hex(6)
         try:
             commit = self._fetch(incoming / "repo.git", url, branch, token)
-            manifest = self._manifest_at(incoming / "repo.git", commit, path)
+            adapter = manifest_text.strip() or None
+            manifest = parse_manifest(adapter) if adapter else self._manifest_at(incoming / "repo.git", commit, path)
             name = manifest["name"]
             with self.lock:
                 if name in self.registry:
@@ -270,7 +363,8 @@ class Services:
                 os.chmod(self.base / name, 0o755)
                 shutil.move(str(incoming / "repo.git"), str(self.repo(name)))
                 self.registry[name] = {
-                    "name": name, "url": url, "branch": branch, "path": path, "created": time.time(),
+                    "name": name, "source": {"kind": "git", "url": url, "ref": branch}, "adapter": adapter,
+                    "url": url, "branch": branch, "path": path, "created": time.time(),
                     "installed": False, "commit": None, "manifest": None, "enabled": False,
                     "values": {}, "host_keys": {}, "port": None, "checked": time.time(),
                     "proposal": {**self._summary(self.repo(name), commit), "manifest": manifest,
@@ -302,7 +396,7 @@ class Services:
                 e["checked"], e["check_error"] = time.time(), None
                 if head != e["commit"] and (e.get("proposal") or {}).get("commit") != head and e.get("dismissed") != head:
                     try:
-                        manifest = self._manifest_at(self.repo(n), head, e["path"])
+                        manifest = self._manifest_for(n, head)
                         problem = None
                     except ServiceError as err:
                         manifest, problem = None, str(err)
@@ -359,6 +453,8 @@ class Services:
             manifest = p["manifest"]
             if manifest["name"] != name:
                 raise ServiceError(f"This version renames the app to {manifest['name']}; add it as a new service instead.")
+            if p["kind"] == "manifest":
+                e["adapter"] = p.get("adapter")
             old = e.get("commit")
             self._checkout(name, commit)
             first = not e["installed"]
@@ -828,6 +924,7 @@ class Services:
             item = {"name": n, "title": (m or (e.get("proposal") or {}).get("manifest") or {}).get("title", n),
                     "description": (m or (e.get("proposal") or {}).get("manifest") or {}).get("description", ""),
                     "url": e["url"], "branch": e["branch"], "path": e["path"], "installed": e["installed"],
+                    "adapter": e.get("adapter"), "manifest_from": "uvmc" if e.get("adapter") else "repository",
                     "commit": e["commit"], "subject": e.get("subject", ""), "enabled": e["enabled"],
                     "manifest": m, "proposal": e.get("proposal"), "checked": e.get("checked"),
                     "check_error": e.get("check_error"), "missing": self.missing(n) if m else [],

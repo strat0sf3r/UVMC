@@ -1975,11 +1975,22 @@ function addServiceForm(page) {
     e.preventDefault();
     const msg = f.querySelector(".form-msg"), btn = f.querySelector("[type=submit]");
     btn.disabled = true; msg.classList.remove("bad"); msg.textContent = "Fetching...";
+    const prof = f.querySelector("[data-profile]");
     try {
       const v = await api("/api/services/add", { url: f.querySelector("[data-url]").value, branch: f.querySelector("[data-branch]").value,
-        path: f.querySelector("[data-path]").value, token: f.querySelector("[data-token]").value });
+        path: f.querySelector("[data-path]").value, token: f.querySelector("[data-token]").value, manifest: prof ? prof.value : "" });
       openServices(v.name);
-    } catch (err) { msg.textContent = err.message; msg.classList.add("bad"); btn.disabled = false; }
+    } catch (err) {
+      msg.textContent = err.message; msg.classList.add("bad"); btn.disabled = false;
+      if (/^There's no .*uvmc-app\.toml/.test(err.message) && !prof) {   // a repository that doesn't follow the app contract
+        const t = (await api("/api/services-template").catch(() => ({ text: "" }))).text;
+        const box = el("div", "", `<p class="small">Write its profile here: what to start, the sites and SSH machines it needs, its settings. UVMC keeps it; the repository stays as it is. You still approve everything before it runs.</p>
+          <textarea data-profile spellcheck="false" style="min-height:260px"></textarea>`);
+        box.querySelector("textarea").value = t;
+        f.insertBefore(box, f.querySelector(".row"));
+        btn.textContent = "Fetch and show me, with this profile";
+      }
+    }
   });
   page.insertBefore(f, page.querySelector(".repgrid"));
   f.querySelector("[data-url]").focus();
@@ -1992,7 +2003,8 @@ function manifestWords(m) {
     <dt>Memory</dt><dd>${esc(m.memory)}</dd>
     <dt>Web sites</dt><dd>${m.sites.map(esc).join(", ") || "none"}</dd>
     <dt>SSH machines</dt><dd>${m.machines.map((x) => `${esc(x.name)}: ${esc(x.user)}@${esc(x.host)} (key: ${esc(x.key)})`).join("<br>") || "none"}</dd>
-    <dt>Settings and secrets</dt><dd>${set}</dd></dl>`;
+    <dt>Settings and secrets</dt><dd>${set}</dd></dl>
+    ${m.unknown?.length ? `<p class="warn">It also names ${m.unknown.map(esc).join(", ")}, which this UVMC doesn't know; they're ignored.</p>` : ""}`;
 }
 function wallsChanges(old, m) {
   const out = [];
@@ -2055,7 +2067,21 @@ async function showServicePage() {
     if (x.missing.length) page.appendChild(el("p", "warn", `Before it can run, fill in: ${x.missing.map(esc).join(", ")}.`));
     page.appendChild(settingsSection(x, act));
     if (x.manifest.machines.length) page.appendChild(machinesSection(x, act));
-    const what = el("div", "svcsec", `<h3>What it may run and reach</h3>${manifestWords(x.manifest)}`);
+    const what = el("div", "svcsec", `<h3>Its profile: what it may run and reach</h3>
+      <p class="small">${x.manifest_from === "uvmc" ? "Kept by UVMC (written for it here)." : "From the repository's uvmc-app.toml."} A change that touches what it may reach waits for your approval.</p>
+      ${manifestWords(x.manifest)}<div class="row"><button class="btn" type="button" data-edit>Edit the profile</button>
+      ${x.manifest_from === "uvmc" ? `<button class="btn" type="button" data-repo>Use the repository's again</button>` : ""}</div>`);
+    what.querySelector("[data-edit]").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      let t;
+      try { t = await api(`/api/services/${encodeURIComponent(name)}/profile`); } catch (err) { msg.textContent = err.message; msg.classList.add("bad"); return; }
+      const ed = el("div", "", `<p class="small">${t.from === "repository" ? "This starts from the repository's file; once saved, UVMC keeps it and uses it instead." : "UVMC's copy."} The name stays ${esc(name)}.</p>
+        <textarea spellcheck="false" style="min-height:300px"></textarea><div class="row"><button class="btn primary" type="button">Propose this profile</button></div>`);
+      ed.querySelector("textarea").value = t.text;
+      ed.querySelector("button").addEventListener("click", () => act("/api/services/profile", { name, text: ed.querySelector("textarea").value }, "Proposed: approve it above."));
+      what.appendChild(ed);
+    });
+    what.querySelector("[data-repo]")?.addEventListener("click", () => act("/api/services/profile", { name, text: null }, "Proposed: approve it above."));
     page.appendChild(what);
     const net = el("div", "svcsec svcnet");
     page.appendChild(net);
@@ -2114,7 +2140,13 @@ function proposalSection(x, act) {
   const p = x.proposal;
   const sec = el("div", "svcsec ask");
   const commit = `<p class="small">Version ${esc(p.commit.slice(0, 12))} by ${esc(p.author)}, ${esc(p.date)}: <strong>${esc(p.subject)}</strong></p>`;
-  if (p.kind === "install") {
+  if (p.kind === "manifest") {
+    const changes = wallsChanges(x.manifest, p.manifest);
+    sec.innerHTML = `<h3>A change to its profile is waiting</h3>
+      <p class="small">${p.adapter ? "A profile kept by UVMC" : "Back to the repository's own uvmc-app.toml"}, for the running version ${esc(p.commit.slice(0, 12))}.</p>
+      ${changes.length ? `<p class="warn"><strong>It changes what the app may run or reach:</strong><br>${changes.join("<br>")}</p>` : `<p class="small">What it may run and reach stays the same.</p>`}
+      ${manifestWords(p.manifest)}`;
+  } else if (p.kind === "install") {
     sec.innerHTML = `<h3>Install ${esc(p.manifest.title)}?</h3>${commit}<p class="small">This is everything it would run and reach. Nothing is installed until you approve.</p>
       ${manifestWords(p.manifest)}
       <details><summary>Its files (${p.files.length})</summary><pre class="log">${esc(p.files.join("\n"))}</pre></details>`;
@@ -2134,13 +2166,14 @@ function proposalSection(x, act) {
     });
   }
   const row = el("div", "row");
-  const ok = el("button", "btn primary", p.kind === "install" ? "Approve and install" : "Approve this version"); ok.type = "button";
+  const ok = el("button", "btn primary", p.kind === "install" ? "Approve and install" : p.kind === "manifest" ? "Approve this profile" : "Approve this version"); ok.type = "button";
   ok.disabled = !p.manifest;
   ok.addEventListener("click", () => {
-    const sure = p.kind === "install" ? `Install ${p.manifest.title}, version ${p.commit.slice(0, 12)}?` : `Install version ${p.commit.slice(0, 12)}${x.enabled ? " and restart it" : ""}?`;
+    const sure = p.kind === "install" ? `Install ${p.manifest.title}, version ${p.commit.slice(0, 12)}?`
+      : p.kind === "manifest" ? `Use this profile${x.enabled ? " and restart it" : ""}?` : `Install version ${p.commit.slice(0, 12)}${x.enabled ? " and restart it" : ""}?`;
     if (confirm(sure)) act("/api/services/approve", { name: x.name, commit: p.commit }, "Installed.");
   });
-  const no = el("button", "btn", p.kind === "install" ? "Don't install" : "Not this version"); no.type = "button";
+  const no = el("button", "btn", p.kind === "install" ? "Don't install" : p.kind === "manifest" ? "Keep the current profile" : "Not this version"); no.type = "button";
   no.addEventListener("click", async () => {
     await act("/api/services/discard", { name: x.name });
     if (p.kind === "install") { services.name = null; loadServices(); }

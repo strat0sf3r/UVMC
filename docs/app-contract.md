@@ -41,6 +41,23 @@ required = true                            # default true
 
 Nothing else is reachable: no site, port or machine that isn't declared here.
 
+### Versions of the contract
+
+- `contract` is the version the manifest is written for. A manifest for a higher version than this
+  UVMC knows is refused with "update UVMC first": never run half set up.
+- Keys planned for later versions are refused with a clear message, not ignored: `build` (a build
+  step), `files` (config files from settings), `env` (settings under names of the app's choosing),
+  `web` (a page shown in the panel), `image`/`container`, `volumes`, `ports`, `depends`.
+- `runtime` is `"process"` (the default, the only one in version 1); `"container"` is planned.
+- Any other key is kept, shown on the approval card as unknown, and ignored.
+
+### Apps without a manifest
+
+Most apps on git don't have a `uvmc-app.toml`. You can write one for such an app in UVMC: it's kept by
+UVMC (the app's repository stays as it is) and works exactly like the repository's own. UVMC calls it
+the service's **profile**; it can also replace the repository's own. Changing it waits for your approval,
+like a new version.
+
 ## 2. What the app gets
 
 The same names on every host:

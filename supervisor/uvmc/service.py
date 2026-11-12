@@ -3868,7 +3868,19 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
     def services_add(body: dict):
         """Fetches a repository and reads its uvmc-app.toml: a proposal; nothing is installed or run."""
         return svc(ctl.services.add, str(body.get("url", "")), str(body.get("branch", "") or "main"),
-                   str(body.get("path", "")), str(body.get("token", "")))
+                   str(body.get("path", "")), str(body.get("token", "")), str(body.get("manifest", "")))
+
+    @app.get("/api/services-template")
+    def services_template():
+        """A profile to start from, for a repository without its own uvmc-app.toml."""
+        from .services import TEMPLATE
+        return {"text": TEMPLATE}
+
+    @app.post("/api/services/profile")
+    def services_profile(body: dict):
+        """A new profile kept by UVMC (or null: back to the repository's): waits for your approval."""
+        text = body.get("text")
+        return svc(ctl.services.set_adapter, str(body.get("name", "")), None if text is None else str(text))
 
     @app.post("/api/services/approve")
     def services_approve(body: dict):
@@ -3922,6 +3934,10 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
     @app.get("/api/services/{name}")
     def services_one(name: str):
         return svc(ctl.services.view, name, True)
+
+    @app.get("/api/services/{name}/profile")
+    def services_profile_text(name: str):
+        return svc(ctl.services.profile_text, name)
 
     @app.get("/api/services/{name}/diff")
     def services_diff(name: str):

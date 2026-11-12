@@ -247,6 +247,55 @@ class ServicesTest(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.s.approve("test-app", bad)
 
+    # --- a profile kept by UVMC (for apps without their own uvmc-app.toml) -------------------
+
+    def test_a_repository_without_a_manifest(self):
+        from uvmc.services import NoManifest
+        (self.repo / "uvmc-app.toml").unlink()
+        self.commit({"main.py": "print('a random app')\n"}, "a random app")
+        with self.assertRaises(NoManifest):
+            self.s.add(self.url)
+        v = self.s.add(self.url, manifest_text=MANIFEST)                # you write one for it
+        self.assertEqual(v["manifest_from"], "uvmc")
+        self.assertEqual(v["proposal"]["manifest"]["name"], "test-app")
+        v = self.s.approve("test-app", v["proposal"]["commit"])
+        self.assertEqual(v["manifest"]["run"], "python3 app.py --loop")
+        self.assertEqual(self.s.profile_text("test-app"), {"text": MANIFEST.strip(), "from": "uvmc"})
+        # its updates use the profile kept by UVMC
+        new = self.commit({"main.py": "print('v2')\n"}, "v2")
+        self.s.check_updates()
+        p = self.s.view("test-app")["proposal"]
+        self.assertEqual((p["commit"], p["walls_changed"]), (new, False))
+
+    def test_changing_the_profile_waits_for_you(self):
+        first = self.install()
+        self.assertEqual(self.s.profile_text("test-app")["from"], "repository")
+        wider = MANIFEST.replace('sites = ["example.com"]', 'sites = ["example.com", "pypi.org"]')
+        v = self.s.set_adapter("test-app", wider)
+        p = v["proposal"]
+        self.assertEqual((p["kind"], p["commit"], p["walls_changed"]), ("manifest", first["commit"], True))
+        self.assertEqual(self.s.get("test-app")["manifest"]["sites"], ["example.com"])   # not yet
+        with self.assertRaises(ServiceError):
+            self.s.set_adapter("test-app", MANIFEST.replace('name = "test-app"', 'name = "renamed"'))
+        v = self.s.approve("test-app", first["commit"])
+        self.assertEqual(v["manifest"]["sites"], ["example.com", "pypi.org"])
+        self.assertEqual(v["manifest_from"], "uvmc")
+        self.s.set_adapter("test-app", None)                             # back to the repository's
+        v = self.s.approve("test-app", first["commit"])
+        self.assertEqual((v["manifest_from"], v["manifest"]["sites"]), ("repository", ["example.com"]))
+
+    def test_versions_of_the_contract(self):
+        with self.assertRaises(ServiceError) as e:
+            parse_manifest(MANIFEST.replace("contract = 1", "contract = 2"))
+        self.assertIn("Update UVMC", str(e.exception))
+        with self.assertRaises(ServiceError) as e:
+            parse_manifest(MANIFEST.replace("contract = 1", 'contract = 1\nbuild = "pip install -r requirements.txt"'))
+        self.assertIn("build", str(e.exception))                           # planned keys aren't silently ignored
+        with self.assertRaises(ServiceError):
+            parse_manifest(MANIFEST.replace("contract = 1", 'contract = 1\nruntime = "container"'))
+        m = parse_manifest(MANIFEST.replace("contract = 1", 'contract = 1\nhomepage = "https://example.com"'))
+        self.assertEqual((m["runtime"], m["unknown"]), ("process", ["homepage"]))   # unknown keys: shown, not fatal
+
     def test_remove(self):
         self.install()
         self.s.remove("test-app")
