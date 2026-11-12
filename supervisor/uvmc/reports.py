@@ -9,6 +9,8 @@ that's partly wrong is still shown: the bad parts are dropped and listed as prob
 
 from __future__ import annotations
 
+import base64
+import binascii
 import difflib
 import json
 import math
@@ -83,10 +85,12 @@ def _num(v):
 
 
 class _Parser:
-    def __init__(self):
+    def __init__(self, inline: bool = False):
         self.problems: list[str] = []
         self.count = 0
         self.images: list[str] = []      # the files the report names, in order
+        self.inline = inline             # images come in the report itself (programs), not as files
+        self.data: dict[str, bytes] = {}  # inline images by the name given to them here
 
     def bad(self, where: str, msg: str) -> None:
         self.problems.append(f"{where}: {msg}")
@@ -190,6 +194,8 @@ class _Parser:
             else:
                 text = _s(b.get("text"), 100_000)
             return {"type": "diff", "text": text}
+        if kind == "image" and self.inline:
+            return self.inline_image(b, bad)
         if kind == "image":
             name = _s(b.get("file"), 200).strip()
             if not re.match(r"^[A-Za-z0-9._/-]+$", name) or name.startswith("/") or ".." in name.split("/"):
@@ -222,20 +228,50 @@ class _Parser:
         return None
 
 
-def parse(data: bytes | str) -> tuple[dict | None, list[str]]:
+    def inline_image(self, b: dict, bad) -> dict | None:
+        """A program's image: base64 in "data". Decoded and kept by a name of our own
+        (inline-1, ...), so attach_images checks and copies it like a tool's file."""
+        raw = b.get("data")
+        if not isinstance(raw, str) or not raw:
+            bad('image: a program sends the picture itself, base64 in "data".')
+            return None
+        if len(raw) > MAX_IMAGE * 4 // 3 + 8:
+            bad(f"image: over {MAX_IMAGE // 1_000_000} MB.")
+            return None
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (ValueError, binascii.Error):
+            bad('image: "data" is not valid base64.')
+            return None
+        if len(self.images) >= MAX_IMAGES:
+            bad(f"at most {MAX_IMAGES} images.")
+            return None
+        name = f"inline-{len(self.images) + 1}"
+        self.images.append(name)
+        self.data[name] = data
+        return {"type": "image", "file": name, "alt": _s(b.get("alt"), 300)}
+
+
+MAX_PROGRAM_REPORT = 8_000_000   # bytes of JSON from a program, its inline images included
+
+
+def parse(data: bytes | str, inline: bool = False) -> tuple[dict | None, list[str]]:
     """The report the panel can draw, and what was wrong with it. None if there's nothing to show.
-    report["images"] lists the files it names; the caller copies them out (see attach_images)."""
+    report["images"] lists the files it names; the caller copies them out (see attach_images).
+    inline=True (reports from programs): images come base64 in the report; they are in
+    report["inline"] ({name: bytes}), which the caller pops and hands to attach_images."""
     if isinstance(data, str):
         data = data.encode("utf-8", "replace")
-    if len(data) > MAX_REPORT:
-        return None, [f"The report is over {MAX_REPORT // 1000} KB."]
+    limit = MAX_PROGRAM_REPORT if inline else MAX_REPORT
+    if len(data) > limit:
+        return None, [f"The report is over {limit // 1000} KB."]
     try:
         raw = json.loads(data.decode("utf-8", "replace"))
     except ValueError as e:
         return None, [f"The report is not valid JSON: {e}"]
     if not isinstance(raw, dict):
         return None, ['The report must be a JSON object: {"title", "status", "blocks"}.']
-    p = _Parser()
+    p = _Parser(inline)
     status = raw.get("status")
     if isinstance(status, dict) and status.get("state") in STATES:
         status = {"state": status["state"], "text": _s(status.get("text"), 300)}
@@ -248,6 +284,8 @@ def parse(data: bytes | str) -> tuple[dict | None, list[str]]:
     ask = raw.get("notify")   # the tool asks for a notification: its text ("" = it doesn't ask)
     ask = ask.strip()[:200] if isinstance(ask, str) else (title or "New result") if ask is True else ""
     report = {"title": title, "status": status, "blocks": blocks, "images": p.images, "notify": ask}
+    if inline:
+        report["inline"] = p.data
     if not blocks and not status and not report["title"]:
         return None, p.problems or ["The report is empty."]
     return report, p.problems
