@@ -223,8 +223,6 @@ def mcp_relay():
                     with urllib.request.urlopen(req, timeout=1000) as r:
                         data = r.read()
                 except urllib.error.HTTPError as e:
-                    if e.code == 401:   # locking UVMC changes the panel's key: look it up again
-                        raise OSError("the panel's key changed (UVMC was locked)")
                     data = e.read()
                 reply = data.decode("utf-8", "replace").strip() or None
                 break

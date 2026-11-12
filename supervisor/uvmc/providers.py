@@ -44,7 +44,6 @@ class Reply:
     output_tokens: int = 0
     native: object = None          # the provider's own form, for exact replay
     extra: dict = field(default_factory=dict)
-    cost: float | None = None      # what the reply cost, when the provider says (OpenRouter)
 
     def blocks(self) -> list[dict]:
         """The reply as content blocks, the shape the log and the panel use."""
@@ -147,8 +146,6 @@ class OpenAIProvider(Provider):
         self.http = httpx.Client(base_url=base, headers=headers, timeout=timeout)
         self.root = base.removesuffix("/v1")
         self._pc_model: str | None = None
-        from . import openrouter
-        self.openrouter = openrouter.is_openrouter(base)
 
     def model_name(self) -> str:
         """The model to ask for. On the PC, llama.cpp's router serves several models: the one picked
@@ -181,12 +178,6 @@ class OpenAIProvider(Provider):
                 out.append({"role": "user", "content": m["text"]})
             elif m["role"] == "assistant":
                 msg = {"role": "assistant", "content": m.get("text") or None}
-                # OpenRouter's reasoning blocks go back to the same profile only (some models need them
-                # with tool calls); any other model gets the generic form.
-                nat = (m.get("native") or {}).get(self.kind)
-                if (self.openrouter and isinstance(nat, dict) and nat.get("profile") == self.profile.name
-                        and nat.get("reasoning_details")):
-                    msg["reasoning_details"] = nat["reasoning_details"]
                 if m.get("tool_calls"):
                     msg["tool_calls"] = [{"id": c.id, "type": "function",
                                           "function": {"name": c.name, "arguments": json.dumps(c.input)}}
@@ -206,27 +197,18 @@ class OpenAIProvider(Provider):
             body["tools"] = self.tools(tools)
             body["tool_choice"] = "auto"
         body[self.profile.max_tokens_param or "max_tokens"] = max_tokens
-        route = {}
-        if self.openrouter:
-            from . import openrouter
-            route = openrouter.routing(self.profile.level, bool(tools))
-            if route:
-                body["provider"] = route
         try:
             resp = self.http.post("/chat/completions", json=body)
         except Exception as e:
             hint = " Is the model running on your PC? Run windows\\local-model.cmd -Start." if self.on_pc else ""
             raise ProviderError(f"{self.profile.name}: could not reach {self.http.base_url}: {e}.{hint}") from e
         if resp.status_code >= 400:
-            detail, err = resp.text[:500], None
+            detail = resp.text[:500]
             try:
                 err = resp.json().get("error")
                 detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
-            except (ValueError, AttributeError):
+            except ValueError:
                 pass
-            if self.openrouter:
-                from . import openrouter
-                detail = f"{detail}{openrouter.hint(resp.status_code, err, resp.headers.get('Retry-After'), body['model'], route)}"
             if self.on_pc and resp.status_code == 401:
                 detail += " (the key doesn't match: run windows\\local-model.cmd again to reconnect UVMC)"
             elif self.on_pc and "context" in str(detail).lower():
@@ -255,15 +237,9 @@ class OpenAIProvider(Provider):
         finish = choice.get("finish_reason")
         stop = "tool_use" if calls else ("max_tokens" if finish == "length" else "end")
         usage = data.get("usage") or {}
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning")   # OpenRouter says "reasoning"
-        extra = {"reasoning": reasoning} if isinstance(reasoning, str) and reasoning else {}
-        native = None
-        if self.openrouter and isinstance(msg.get("reasoning_details"), list) and msg["reasoning_details"]:
-            native = {"profile": self.profile.name, "reasoning_details": msg["reasoning_details"]}
-        cost = usage.get("cost")
+        extra = {"reasoning": msg["reasoning_content"]} if msg.get("reasoning_content") else {}
         return Reply((content or "").strip(), calls, stop, int(usage.get("prompt_tokens") or 0),
-                     int(usage.get("completion_tokens") or 0), native=native, extra=extra,
-                     cost=float(cost) if isinstance(cost, (int, float)) else None)
+                     int(usage.get("completion_tokens") or 0), native=None, extra=extra)
 
 
 # --- Claude Code on your Claude plan ------------------------------------------------

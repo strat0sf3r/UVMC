@@ -74,8 +74,6 @@ class Config:
     conv_proxy_port: int = 3300                      # its proxy: this port + its slot
     files_group: str = "uvmc-files"                  # the main folder and the copies: only the supervisor's group
     privacy_general: str = "local"                   # the General project's level until you choose one
-    waiting_keys: tuple = ()                         # keys of [models.*] still without a model (gpt, openrouter...),
-                                                     # listed in Settings › API keys so they can be added first
     # folders shared from the PC (shares.py): writable mounts, the agents' read-only views, and the
     # closed folder each view sits in
     shares_rw: str = os.environ.get("UVMC_SHARES_RW", "/srv/uvmc-host")
@@ -190,20 +188,7 @@ def load(path: Path = DEFAULT_PATH) -> Config:
         updates_every_hours=max(1.0, float(raw.get("updates", {}).get("every_hours", 24))),
         files_group=str(raw.get("privacy", {}).get("files_group", "uvmc-files")),
         privacy_general=str(raw.get("privacy", {}).get("general", "local")),
-        waiting_keys=_waiting_keys(raw.get("models", {})),
     )
-
-
-def _waiting_keys(section: dict) -> tuple:
-    """Key names of profiles not offered yet (no model name): the key may come before the model,
-    and OpenRouter's model picker needs the key."""
-    out = set()
-    for name, m in section.items():
-        if isinstance(m, dict) and not m.get("model") and KEY_NAME.match(str(name)):
-            key = str(m.get("key", name))
-            if key and KEY_NAME.match(key) and m.get("provider", "anthropic") != "claude-code":
-                out.add(key)
-    return tuple(sorted(out))
 
 
 def _load_models(section: dict, agent: dict) -> dict[str, Profile]:
@@ -226,9 +211,6 @@ def _load_models(section: dict, agent: dict) -> dict[str, Profile]:
         )
         if models[name].privacy and models[name].privacy not in ("local", "paid", "open"):
             raise ValueError(f"[models.{name}] privacy must be local, paid or open.")
-        from . import openrouter
-        if openrouter.free_but_private(models[name].base_url, models[name].model, models[name].privacy):
-            raise ValueError(f"[models.{name}]: {openrouter.FREE_PRIVATE}")
     if not models:  # older config: [agent] model = "<Claude model id>"
         models["claude"] = Profile("claude", "anthropic", str(agent.get("model", "claude-sonnet-5-5")),
                                    key="anthropic", label="Claude")

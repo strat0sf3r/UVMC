@@ -81,8 +81,7 @@ class Session:
                 if reply.input_tokens:
                     self.context_tokens, self.context_estimated = reply.input_tokens + reply.output_tokens, False
                 rec = self.log.event("reply", step=step, stop=reply.stop, model=self.provider.profile.name,
-                                     usage={"in": reply.input_tokens, "out": reply.output_tokens,
-                                            **({"cost": reply.cost} if reply.cost is not None else {})},
+                                     usage={"in": reply.input_tokens, "out": reply.output_tokens},
                                      content=reply.blocks(), **reply.extra)
                 self.messages.append({"role": "assistant", "text": reply.text, "tool_calls": reply.tool_calls,
                                       "native": {self.provider.kind: reply.native} if reply.native is not None else {},

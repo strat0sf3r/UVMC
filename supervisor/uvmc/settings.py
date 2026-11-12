@@ -114,9 +114,6 @@ class Settings:
         p["max_tokens_param"] = p["max_tokens_param"] or "max_tokens"
         if p["privacy"] and p["privacy"] not in privacy.LEVELS:
             raise SettingsError(f"Privacy must be one of: {', '.join(privacy.LEVELS)}.")
-        from . import openrouter
-        if openrouter.free_but_private(p["base_url"], p["model"], p["privacy"]):
-            raise SettingsError(openrouter.FREE_PRIVATE)
         self.data.setdefault("models", {})[name] = p
         self._save()
         self._apply()
@@ -230,8 +227,7 @@ class Settings:
         self._apply()
 
     def keys(self) -> list[dict]:
-        names = sorted({p.key for p in self.cfg.models.values() if p.key} | {"anthropic"}
-                       | set(getattr(self.cfg, "waiting_keys", ())))
+        names = sorted({p.key for p in self.cfg.models.values() if p.key} | {"anthropic"})
         out = []
         for n in names:
             k = config.api_key(n)
