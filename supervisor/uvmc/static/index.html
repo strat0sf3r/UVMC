@@ -2075,7 +2075,8 @@ async function closeConv(id, discard = false, erase = false) {
   add(el("div", "item err", `<div class="box">${esc(r.error || r.detail || "Closing failed.")}</div>`));
 }
 
-// The lock (lock.py): the VM closed to the PC, only the model on the PC. A PIN to lock and to unlock.
+// The lock (lock.py): the VM closed to the PC, only the model on the PC. No PIN: it keeps programs out, not you;
+// locking gives this panel a new token, so programs holding the old one can't unlock.
 let lockState = null;
 function showLock(lv) {
   if (!lv) return;
@@ -2084,7 +2085,7 @@ function showLock(lv) {
   b.hidden = !lv.available;
   b.textContent = lv.locked ? "Locked" : "Lock";
   b.setAttribute("aria-pressed", String(lv.locked));
-  b.title = lv.locked ? "UVMC is locked. Click to unlock it (your PIN)." : "Close the VM to every program on your PC, and use only the model on your PC (your PIN)";
+  b.title = lv.locked ? "UVMC is locked. Click to unlock it." : "Close the VM to every program on your PC, and use only the model on your PC";
   $("lockBanner").hidden = !lv.locked;
   if (lv.released_by_restart) {
     add(el("div", "item line", "The VM was restarted, which released the lock: UVMC is unlocked."));
@@ -2095,30 +2096,26 @@ function showLock(lv) {
 function lockCard() {
   $("lockCard")?.remove();
   const lv = lockState || {};
-  const on = !lv.locked, first = on && !lv.pin_set;
+  const on = !lv.locked;
   const n = el("div", "item ask");
   n.id = "lockCard";
   n.innerHTML = `<div class="box"><h3>${on ? "Lock UVMC?" : "Unlock UVMC?"}</h3>
-    <p class="why">${on ? "No program on your PC will reach the VM (Multipass, update, scripts, AI agents, you in a terminal), and only the model on your PC will work: tasks on other models stop. The panel and the model on your PC keep working. Restarting the VM unlocks it."
-      : "Programs on your PC can reach the VM again, and every model works again."}</p>
+    <p class="why">${on ? "No program on your PC will reach the VM (Multipass, update, scripts, AI agents, you in a terminal), and only the model on your PC will work: tasks on other models stop. The panel gets a new key, so programs that read the old one lose access; this panel and the model on your PC keep working. Restarting the VM unlocks it."
+      : "Every program on your PC can reach the VM again (Multipass, scripts, the Claude apps, other AI agents), and every model works again."}</p>
     <form class="inline-form" data-form>
-      <label>${first ? "Choose a PIN" : "PIN"} <input type="password" data-pin autocomplete="off" minlength="4" maxlength="64" required></label>
-      ${first ? '<label>The same PIN again <input type="password" data-pin2 autocomplete="off" required></label>' : ""}
-      <p class="small form-msg">${first ? "You'll need it to lock and to unlock. It's kept only as a hash in the VM; if you forget it, restart the VM to unlock." : ""}</p>
+      <p class="small form-msg"></p>
       <div class="actions"><button type="submit" class="btn primary">${on ? "Lock" : "Unlock"}</button><button type="button" class="btn" data-cancel>Cancel</button></div>
     </form></div>`;
   n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
   n.querySelector("[data-form]").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const msg = n.querySelector(".form-msg"), pin = n.querySelector("[data-pin]").value;
-    if (first && pin !== n.querySelector("[data-pin2]").value) { msg.classList.add("bad"); msg.textContent = "The two PINs differ."; return; }
-    const btn = n.querySelector("button[type=submit]");
+    const msg = n.querySelector(".form-msg"), btn = n.querySelector("button[type=submit]");
     btn.disabled = true;
-    try { showLock(await api("/api/lock", { on, pin })); n.remove(); refreshConvsSoon(); }
+    try { showLock(await api("/api/lock", { on })); n.remove(); refreshConvsSoon(); }
     catch (err) { msg.classList.add("bad"); msg.textContent = err.message; btn.disabled = false; }
   });
   add(n);
-  n.querySelector("[data-pin]").focus();
+  n.querySelector("button[type=submit]").focus();
 }
 $("lockBtn").addEventListener("click", lockCard);
 

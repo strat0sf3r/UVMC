@@ -110,6 +110,8 @@ function Mcp-Relay {
                 $bytes = [Text.Encoding]::UTF8.GetBytes($line)
                 $s = $req.GetRequestStream(); $s.Write($bytes, 0, $bytes.Length); $s.Close()
                 try { $resp = $req.GetResponse() } catch [Net.WebException] { $resp = $_.Exception.Response; if (-not $resp) { throw } }
+                # Locking UVMC changes the panel's key: look it up again (the catch below)
+                if ([int]$resp.StatusCode -eq 401) { $resp.Close(); throw "the panel's key changed (UVMC was locked)" }
                 $reader = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
                 $reply = $reader.ReadToEnd().Trim()
                 $reader.Close(); $resp.Close()
