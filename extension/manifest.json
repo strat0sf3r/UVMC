@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "uvmc",
   "display_name": "UVMC",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Hand tasks to the AI agent in your UVMC machine (a sandboxed Ubuntu VM).",
   "long_description": "Lets Claude Desktop give tasks to the agent inside your UVMC machine and read the files it makes. The machine must be installed and running, and 'Allow Claude apps on my PC to use UVMC' must be on in the UVMC panel (Settings). Tasks run with the machine's usual rules; anything that needs approval waits for you in the UVMC panel.",
   "author": {
