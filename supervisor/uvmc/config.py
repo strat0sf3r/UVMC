@@ -88,6 +88,11 @@ class Config:
     made_tools_group: str = "uvmc-tools"
     made_tools_port: int = 3200                       # each tool's proxy: this port and up
     made_tools_keep_runs: int = 30
+    # services you add from git (see services.py)
+    services_dir: str = "/var/lib/uvmc-services"
+    services_group: str = "uvmc-services"
+    services_port: int = 3400                         # each service's proxy: this port and up
+    services_check_minutes: int = 10                  # how often UVMC looks for new commits
     # checking for newer versions of UVMC's parts (updates.py)
     updates_check: bool = True
     updates_every_hours: float = 24
@@ -188,6 +193,9 @@ def load(path: Path = DEFAULT_PATH) -> Config:
         made_tools_dir=str(raw.get("made_tools", {}).get("dir", "/var/lib/uvmc-tools")),
         made_tools_port=int(raw.get("made_tools", {}).get("proxy_port", 3200)),
         made_tools_keep_runs=max(1, int(raw.get("made_tools", {}).get("keep_runs", 30))),
+        services_dir=str(raw.get("services", {}).get("dir", "/var/lib/uvmc-services")),
+        services_port=int(raw.get("services", {}).get("proxy_port", 3400)),
+        services_check_minutes=max(1, int(raw.get("services", {}).get("check_minutes", 10))),
         updates_check=bool(raw.get("updates", {}).get("check", True)),
         updates_every_hours=max(1.0, float(raw.get("updates", {}).get("every_hours", 24))),
         files_group=str(raw.get("privacy", {}).get("files_group", "uvmc-files")),

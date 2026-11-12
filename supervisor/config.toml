@@ -154,6 +154,16 @@ dir = "/var/lib/uvmc-tools"
 proxy_port = 3200   # tool proxies use this port and the next 99
 keep_runs = 30      # logs kept per tool
 
+[services]
+# Your own long-running programs, installed from git when you approve them (Services page; see
+# docs/app-contract.md). Each runs as its own user, reaches only the sites and SSH machines its
+# manifest declares, through its own proxy, inside the services' resource box.
+dir = "/var/lib/uvmc-services"
+proxy_port = 3400   # service proxies use this port and the next 99
+check_minutes = 10  # how often UVMC looks for new commits (they wait for your approval)
+memory = "768M"     # all services together
+cpu_percent = 100   # all services together; 100 = one full core
+
 [workspace]
 user = "agent"                    # every tool runs as this Linux user
 dir = "/home/agent/work"          # where commands start

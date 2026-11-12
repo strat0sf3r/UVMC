@@ -213,6 +213,60 @@ It never makes the program fail because of UVMC: a call that doesn't get through
 
 **Walls:** a program's key reaches only `/api/programs/self/...`; on any other route (the panel's, conversations, files, settings) it gets 403, and those routes take no other key or cookie. UVMC keeps only a hash of the key and shows the key once. While UVMC is locked, program keys are refused (423) like every other program. Each call is listed on the program's page (time, route, result; never its content). Agents, conversations' users, tools and Claude Code can't reach the API at all: the firewall refuses them port 8080, as before. Reports go only to the panel, never to an agent.
 
+## Services
+
+A **service** is your own long-running app that UVMC runs for you: started with the machine, restarted when it fails, inside walls you see and approve. The app itself is standalone (it runs on any similar Linux without UVMC) and follows the [app contract](app-contract.md): a manifest, `uvmc-app.toml`, in its git repository says what to run and what it needs. Tools are programs an agent built; services are yours.
+
+UVMC manages the **account** the app lives in (its user, its walls, its secrets, its start and stop), not the app's insides; its **profile** says what it may run and reach. Here the account is filled from git, pinned to the commit you approve; installing an app in place (by an agent working inside the account, or by you in a shell as it) is planned (design.md 7s, slice 2b). For an app that needs more than an account can give (root, system-wide packages), see [Running an app alongside UVMC](#running-an-app-alongside-uvmc).
+
+**Adding one:** the **Services** button next to Reports opens the Services page (full width, in the conversation's place). **Add a service**: the repository's address (`https://...`, or `file:///...` for one on the machine), the branch, the folder in it if the app isn't at the top, and a token if the repository is private (UVMC keeps it to read the repository; the app never gets it). UVMC fetches the repository and shows an **approval card**: what it would run, its memory, the web sites and SSH machines (with user and address) it would reach, the settings and secrets it will ask for, the commit and its files. Nothing is installed or run before you approve, and you approve exactly the commit you saw.
+
+**A repository without a `uvmc-app.toml`:** UVMC says so and offers a profile to fill in (what to start, the sites and SSH machines it needs, its settings); it's kept by UVMC and the repository stays as it is. On a service's page, **Edit the profile** proposes a new one (from the repository's file, or UVMC's copy), and **Use the repository's again** goes back; both wait for your approval, and the card says when what the app may reach changes. Keys this UVMC doesn't know are listed on the card; keys planned for later versions of the contract (a build step, config files, ...) are refused rather than ignored.
+
+**Then:** fill in its settings (secrets are typed here once and never shown again), the host key of each SSH machine (paste your known_hosts lines, or **Read from the machine** and compare the fingerprints before saving), and **Switch on**. Its page shows its status in plain words (running, restarting, stopped and why: an exit code, a signal, out of memory), restarts, memory against its limit, the result of its health check if it has one, every connection it made or that was refused and why ("port 22 to 10.0.0.5 isn't declared"), and its log.
+
+**New versions:** UVMC looks at the branch every 10 minutes (`[services] check_minutes`) and shows a new commit with its commit messages, the changed files and the full diff. If it changes what the app may run or reach (sites, machines, settings, memory, its commands), that's shown first, in a warning. Nothing changes until you approve; **Not this version** sets it aside until a newer commit comes.
+
+**Its walls:**
+
+- its own Linux user (`uvmc-s-<name>`, group `uvmc-services`), from a read-only copy of the approved commit; its own data folder (`APP_DATA`), kept between restarts and updates;
+- a systemd service (`uvmc-s-<name>.service`) with systemd's sandbox (`ProtectSystem=strict`, `PrivateTmp`, `ProtectProc=invisible`, `NoNewPrivileges`, no capabilities, ...) inside the services' resource box (`uvmc-services.slice`, `[services] memory` and `cpu_percent`), with its own memory limit from the manifest;
+- a proxy of its own: only its declared web sites (80/443), and port 22 only to its declared SSH machines' addresses; the firewall gives its user nothing but that proxy and UVMC's API; the PC itself is never reachable;
+- its secrets as systemd credentials: files in `$CREDENTIALS_DIRECTORY` that only it can read while it runs, never in its environment;
+- its `~/.ssh/config`, written by UVMC: each machine by name, through its proxy, with your pinned host keys (`StrictHostKeyChecking yes`), so the app just runs `ssh <name>`;
+- a program key of its own (see Programs that use UVMC): its reports appear in Reports, and "tell me if it's silent" works with no setup; it's listed in Settings › Programs as a service.
+
+Agents and tools can't see a service's files, can't reach its proxy, and (since 7p) can't see its processes. The service keeps running when the supervisor restarts or is updated; its proxy is part of the supervisor, so its network pauses for those few seconds.
+
+**Removing** a service stops it and removes its unit, user, code, secrets and program entry; its data folder too, unless you tick **Keep its data folder**.
+
+## Running an app alongside UVMC
+
+Some apps need what a service's account deliberately withholds: root, packages installed system-wide, system services of their own, any network. If you trust such an app, run it next to UVMC in the machine, the normal way, and give it the **bridge**: a program key (Settings › Programs that use UVMC) and the client library, so its reports and "tell me if it's silent" work.
+
+A systemd unit for it, as a user of its own (here `myapp`, made with `sudo useradd --system --create-home myapp`):
+
+```
+[Unit]
+Description=My app (alongside UVMC)
+After=network-online.target
+
+[Service]
+User=myapp
+WorkingDirectory=/home/myapp/app
+ExecStart=/usr/bin/python3 main.py
+Restart=on-failure
+Environment=UVMC_URL=http://127.0.0.1:8080 APP_DATA=/home/myapp/data
+LoadCredential=uvmc-key:/etc/myapp/uvmc-key
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The key file (`/etc/myapp/uvmc-key`, readable by root only) holds the key the panel showed once; systemd hands it to the app as `$CREDENTIALS_DIRECTORY/uvmc-key`, where the client library looks.
+
+What changes compared to a service: UVMC doesn't start, stop or wall it, doesn't hold its secrets, and only knows it through its key: its reports, its heartbeats and the calls it makes (listed on its program's page). It reaches whatever its user can reach. Agents can't see its processes or files (7p, its own user), and can't reach its local ports either (each agent user has its own network, 7t). Rule of thumb: run apps inside, as services, by default; alongside only when they need what the walls withhold and you trust them.
+
 ## The headless browser
 
 For pages that only work with JavaScript, or that need clicking through, the agents and the tools they build have a headless browser (a browser with no window): [Playwright](https://playwright.dev) with Chromium's headless shell, installed by `update` (since 0.16.1). The version is pinned in [browser-requirements.txt](../supervisor/browser-requirements.txt); changing that line makes the next `update` install that version.
