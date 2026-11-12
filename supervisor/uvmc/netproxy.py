@@ -94,7 +94,10 @@ Reporter = Callable[[dict], None]
 
 class Proxy:
     def __init__(self, port: int, allowed_ports: list[int], sites: SiteList,
-                 decide: Decider, report: Reporter, host: str = "127.0.0.1", offline: bool = False):
+                 decide: Decider, report: Reporter, host: str = "127.0.0.1", offline: bool = False,
+                 listener: socket.socket | None = None):
+        """listener: a socket already listening (an agent user's own network, netns.py); else it
+        listens on host:port itself."""
         from . import pc
         self.sites, self.decide, self.report = sites, decide, report
         self.offline = offline   # a private conversation's: every site refused, allowed ones too
@@ -110,7 +113,13 @@ class Proxy:
             daemon_threads = True
             allow_reuse_address = True
 
-        self.server = Server((host, port), Handler)
+        if listener is None:
+            self.server = Server((host, port), Handler)
+        else:
+            self.server = Server(listener.getsockname(), Handler, bind_and_activate=False)
+            self.server.socket.close()
+            self.server.socket = listener
+            self.server.server_address = listener.getsockname()
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, name="uvmc-proxy", daemon=True)
 

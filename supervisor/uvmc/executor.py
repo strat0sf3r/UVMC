@@ -6,7 +6,9 @@ Everything the agent does goes through one Executor. In the VM, each command:
 - with the supervisor's proxy as its only way onto the internet,
 - in a private view of its own (design.md 7p): a /proc that shows only its user's processes
   and its own /tmp, /var/tmp and /dev/shm, so conversations, jobs and tools can't watch each
-  other's commands or read each other's temporary files.
+  other's commands or read each other's temporary files,
+- in its user's own network (design.md 7t, netns.py): only its own loopback, where its own
+  servers and its proxy are; no other user's servers, no other program of the VM, no DNS.
 
 If the supervisor ever moves to the host, a MultipassExecutor
 (`multipass exec uvmc -- ...`) can replace these without touching tools or the loop.
@@ -29,10 +31,12 @@ SLICE = "uvmc-agent.slice"
 # the user sees only its own processes, while the supervisor and the system keep the normal
 # /proc. Each temporary folder becomes the user's own folder in it (mode 700, on the same size-
 # limited memory disk), so files there are its alone, whatever path a program writes to.
+# Last, a conversation's or job's command enters its user's own network (netns.py): $3 names
+# it, "-" keeps the VM's (tools the agent builds).
 # If any step fails, the command doesn't run (exit 126): never without its view.
 PRIVATE_DIR = ".uvmc-tmp"
 VIEW_SCRIPT = r"""
-u=$1; g=$2; shift 2
+u=$1; g=$2; n=$3; shift 3
 fail() { echo "UVMC: this command could not get its private view ($1), so it didn't run." >&2; exit 126; }
 mount -t proc -o nosuid,nodev,noexec,hidepid=invisible proc /proc || fail /proc
 for d in /tmp /var/tmp /dev/shm; do
@@ -41,13 +45,24 @@ for d in /tmp /var/tmp /dev/shm; do
   install -d -m 700 -o "$u" -g "$g" "$d/%(dir)s/$u" || fail "$d"
   mount --bind "$d/%(dir)s/$u" "$d" || fail "$d"
 done
+if [ "$n" != - ]; then
+  mountpoint -q "/run/netns/$n" || fail "its network"
+  exec nsenter --net="/run/netns/$n" -- "$@"
+fi
 exec "$@"
 """ % {"dir": PRIVATE_DIR}
 
 
-def private_view(user: str, group: str) -> list[str]:
-    """The start of a root command that gives what follows (setpriv ...) its private view."""
-    return ["unshare", "--mount", "--propagation", "slave", "--", "sh", "-c", VIEW_SCRIPT, "uvmc-view", user, group]
+def netns_name(user: str) -> str:
+    """The name of a user's own network namespace (/run/netns/<name>, netns.py)."""
+    return f"uvmc-{user}"
+
+
+def private_view(user: str, group: str, own_network: bool = True) -> list[str]:
+    """The start of a root command that gives what follows (setpriv ...) its private view,
+    in its user's own network unless own_network is False (tools the agent builds)."""
+    return ["unshare", "--mount", "--propagation", "slave", "--", "sh", "-c", VIEW_SCRIPT, "uvmc-view", user, group,
+            netns_name(user) if own_network else "-"]
 
 
 def no_sudo() -> bool:

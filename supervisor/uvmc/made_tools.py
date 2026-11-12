@@ -558,9 +558,9 @@ class ToolBox:
         inner = ["env", f"HOME={self.home(name)}", f"USER={user}", f"LOGNAME={user}", *inner]
         if os.path.isdir("/run/systemd/system"):
             return ["sudo", "-n", f"--preserve-env={keep}", "systemd-run", "--scope", "--quiet",
-                    f"--slice={SLICE}", "--", *private_view(user, group), "setpriv", f"--reuid={user}",
+                    f"--slice={SLICE}", "--", *private_view(user, group, own_network=False), "setpriv", f"--reuid={user}",
                     f"--regid={group}", "--clear-groups", "--", *inner]
-        return ["sudo", "-n", f"--preserve-env={keep}", *private_view(user, group), "setpriv", f"--reuid={user}",
+        return ["sudo", "-n", f"--preserve-env={keep}", *private_view(user, group, own_network=False), "setpriv", f"--reuid={user}",
                 f"--regid={group}", "--clear-groups", "--", *inner]
 
     def env(self, name: str, e: dict) -> dict:
