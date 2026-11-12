@@ -380,6 +380,14 @@ aside { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: 
 .runs li.viewing button { border-color: var(--you); }
 .runs .task { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .runs .when { font-size: 13px; color: var(--muted); }
+/* Delete beside a file or a past run: small and quiet until pointed at */
+.files li, .runs li { display: flex; align-items: center; gap: 4px; }
+.files li button.del, .runs li button.del {
+  all: unset; box-sizing: border-box; flex: none; width: auto; display: inline-block;
+  padding: 4px 8px; border-radius: 6px; font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.files li button.del:hover, .runs li button.del:hover { color: var(--bad); background: var(--bg); }
+.files li button.del:focus-visible, .runs li button.del:focus-visible { outline: 2px solid var(--focus); }
 
 .meter { margin: 0 0 16px; }
 .meter .row { display: flex; justify-content: space-between; font-size: 15px; }
@@ -2643,10 +2651,23 @@ async function loadRuns(viewing) {
       b.type = "button";
       b.innerHTML = `<div class="task">${esc(r.first_task || "No tasks yet")}</div><div class="when">${r.conv ? (r.conv === view.conv && view.live ? "This conversation" : "Open") : fmtWhen(r.last)}${r.tasks > 1 ? `, ${r.tasks} tasks` : ""}</div>`;
       b.addEventListener("click", () => openRun(r));
-      li.appendChild(b); list.appendChild(li);
+      li.appendChild(b);
+      if (!r.conv && !r.current) {   // an open conversation is closed first (its tab's ×)
+        const d = el("button", "del", "Delete"); d.type = "button";
+        d.setAttribute("aria-label", `Delete the run "${r.first_task || "No tasks yet"}"`);
+        d.addEventListener("click", () => deleteRun(r, viewing));
+        li.appendChild(d);
+      }
+      list.appendChild(li);
     }
     pane.appendChild(list);
   } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
+}
+async function deleteRun(r, viewing) {
+  if (!window.confirm("Delete this run for good? Its messages and steps can't be brought back. Files already in the main folder stay.")) return;
+  try { await api("/api/history/delete", { name: r.name }); }
+  catch (e) { window.alert(e.message); return; }
+  if (viewing === r.name) backToLive(); else loadRuns(viewing);
 }
 
 // --- Files -------------------------------------------------------------------
@@ -2699,12 +2720,45 @@ async function loadFiles(path) {
       const note = f.hidden ? ` <span class="small">hidden from this conversation</span>` : f.given ? ` <span class="small">given</span>` : "";
       b.innerHTML = `<span class="fname">${esc(f.name)}${lvl}${note}</span><span class="fmeta">${f.dir ? "" : fmtBytes(f.size) + ", "}${ago(f.mtime)}</span>`;
       b.addEventListener("click", () => f.dir ? loadFiles(`${data.path}/${f.name}`) : showFile(`${data.path}/${f.name}`));
-      li.appendChild(b); list.appendChild(li);
+      li.appendChild(b);
+      if (deletable(data.path)) {
+        const d = el("button", "del", "Delete"); d.type = "button";
+        d.setAttribute("aria-label", `Delete ${f.name}`);
+        d.addEventListener("click", () => deleteFile(`${data.path}/${f.name}`, f.dir, data.where));
+        li.appendChild(d);
+      }
+      list.appendChild(li);
     }
     pane.appendChild(list);
   } catch (e) {
     pane.innerHTML = `<p class="small">${esc(e.message)}</p>`;
     const b = el("button", "btn", "Go to the work folder"); b.type = "button"; b.addEventListener("click", () => loadFiles(".")); pane.appendChild(b);
+  }
+}
+// Delete: in this conversation's copy or the main folder, never in the read-only shared folders.
+// The machine checks the place again (inside the copy or the main folder only).
+const deletable = (path) => !String(path).startsWith("/mnt/shared") && !String(path).startsWith("/srv/");
+async function deleteFile(path, dir, where) {
+  const name = path.split("/").pop();
+  const what = dir ? `the folder ${name} and everything in it` : name;
+  const ask = (where || fileWhere) === "shared"
+    ? `Delete ${what} from the main folder? Conversations get the change at their next bring-in. You can undo it right after.`
+    : `Delete ${what} from this conversation's copy? It counts as one of its changes: the main folder loses it only when you bring them in.`;
+  if (!window.confirm(ask)) return;
+  let r;
+  try { r = await api("/api/files/delete", { path, conv: view.conv, where: fileWhere }); }
+  catch (e) { window.alert(e.message); return; }
+  await loadFiles(filePath);   // the folder it was in (an open file's folder too)
+  refreshFolderSoon();
+  if (r.undo) {   // the main folder: one click back
+    const n = el("div", "small undo-row", `Deleted ${esc(name)} from the main folder. `);
+    const u = el("button", "btn small", "Undo"); u.type = "button";
+    u.addEventListener("click", async () => {
+      try { await api("/api/files/undo-delete", { checkpoint: r.undo }); n.remove(); loadFiles(filePath); refreshFolderSoon(); }
+      catch (e) { window.alert(e.message); }
+    });
+    n.appendChild(u);
+    $("pane-files").prepend(n);
   }
 }
 // A folder's level, and changing it: its own level (a zone), or a General folder made a project.
@@ -2772,6 +2826,11 @@ async function showFile(path) {
     head.appendChild(back);
     head.appendChild(el("strong", "", esc(path.split("/").pop())));
     head.appendChild(el("span", "small", fmtBytes(f.size)));
+    if (deletable(path)) {
+      const d = el("button", "btn", "Delete"); d.type = "button";
+      d.addEventListener("click", () => deleteFile(path, false, f.where));
+      head.appendChild(d);
+    }
     pane.appendChild(head);
     if (f.level) pane.appendChild(filePrivacy(f, path));
     if (f.binary) pane.appendChild(el("p", "small", "This is a binary file, so it can't be shown as text."));

@@ -2734,6 +2734,57 @@ class Controller:
             raise KeyError("No such run.")
         return read_log(path)
 
+    def delete_run(self, name: str) -> None:
+        """You delete a closed conversation's log from Runs, for good. An open one is closed first."""
+        with self.lock:
+            path = (self.cfg.log_dir / f"{name}.jsonl").resolve()
+            if path.parent != self.cfg.log_dir.resolve() or not path.exists():
+                raise KeyError("No such run.")
+            if path.stem == self.log.name or any(c.log.name == path.stem for c in self.convs.values()):
+                raise Busy("This conversation is still open. Close it first, then delete it here.")
+            path.unlink()
+
+    def delete_file(self, path: str, conv: str | None = None, where: str = "copy") -> dict:
+        """You delete a file or folder: in a conversation's copy (it then counts as one of its
+        changes, brought in like the agent's own), or in the main folder (a checkpoint first, so
+        it can be undone)."""
+        with self.lock:
+            in_copy = self._where(conv, where) == "copy"
+            c = self.conv(conv) if in_copy else None
+            top = os.path.realpath(c.copy_dir if c is not None else self.cfg.workdir)
+            full = os.path.normpath(path if os.path.isabs(path) else os.path.join(top, path))
+            # The folder it's in, links followed; the name itself isn't (rm takes a link away, never its target).
+            full = os.path.join(os.path.realpath(os.path.dirname(full)), os.path.basename(full))
+            if not full.startswith(top + os.sep):
+                raise ValueError("Only files inside the work folder or a conversation's copy can be deleted here.")
+            rel = os.path.relpath(full, top).replace(os.sep, "/")
+            if rel.split("/", 1)[0] in (MERGE_DIR, CONTEXT_DIR):
+                raise ValueError("UVMC keeps this folder itself; it goes away by itself when it's done.")
+            if not os.path.lexists(full):
+                raise FileNotFoundError(f"{rel} is not there any more.")
+            undo = None
+            if c is not None:
+                if c.busy:
+                    raise Busy("This conversation is working. Stop it first.")
+                p = c.tools._as_agent(': uvmc-panel; rm -rf -- "$1"', full, timeout=120)
+                if p.returncode != 0:
+                    raise RuntimeError(p.stderr.decode(errors="replace").strip() or f"Could not delete {rel}.")
+            else:
+                if "/" not in rel and self.projects.has(rel):
+                    raise ValueError(f"{rel} is a project's folder. Delete the files in it instead.")
+                undo = self.copies.main_undo.create()
+                self.copies._run(["rm", "-rf", "--", full], f"deleting {rel}")
+        self._broadcast({"kind": "shared_folder", "conv": conv})
+        return {"ok": True, "path": rel, "where": "copy" if in_copy else "shared", "undo": undo}
+
+    def undo_delete(self, checkpoint: str) -> None:
+        """The main folder back to how it was before a delete (later bring-ins are undone too)."""
+        with self.lock:
+            if self.anything_running():
+                raise Busy("Wait until no conversation is working: the main folder is theirs too.")
+            self.copies.undo_bring_in(checkpoint)
+        self._broadcast({"kind": "shared_folder"})
+
     def _files_as(self, conv: str | None, where: str):
         """Who looks: a conversation's user in its copy, or the agent user in the main folder."""
         if where == "shared" or not conv:
@@ -3753,6 +3804,50 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
             return ctl.history_events(name)
         except KeyError as e:
             fail(404, str(e.args[0]))
+
+    @app.post("/api/history/delete")
+    async def history_delete(request: Request):
+        """Deletes a closed conversation's log from Runs, for good."""
+        body = await request.json()
+        try:
+            ctl.delete_run(str(body.get("name", "")))
+        except Busy as e:
+            fail(409, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        return {"ok": True}
+
+    @app.post("/api/files/delete")
+    async def files_delete(request: Request):
+        """Deletes a file or folder in a conversation's copy (where=copy, the default) or in the
+        main folder (where=shared; the answer's "undo" is a checkpoint for /api/files/undo-delete)."""
+        body = await request.json()
+        try:
+            return await run_in_threadpool(ctl.delete_file, str(body.get("path", "")),
+                                           body.get("conv") or None, str(body.get("where", "copy")))
+        except Busy as e:
+            fail(409, str(e))
+        except FileNotFoundError as e:
+            fail(404, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
+        except (RuntimeError, SyncError) as e:
+            fail(500, str(e))
+
+    @app.post("/api/files/undo-delete")
+    async def files_undo_delete(request: Request):
+        body = await request.json()
+        try:
+            await run_in_threadpool(ctl.undo_delete, str(body.get("checkpoint", "")))
+        except Busy as e:
+            fail(409, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except RuntimeError as e:
+            fail(500, f"Undo failed: {e}")
+        return {"ok": True}
 
     @app.get("/api/files")
     def files(path: str = ".", conv: str = "", where: str = "copy"):
