@@ -98,6 +98,9 @@ def main():
             probe_ok(outs, "real agent")
             api("/api/conversations/close", {"conv": conv})
             check("closing its conversation ends the session", api(f"/api/services/{NAME}")["session"] is None)
+            convs = api("/api/conversations")
+            convs = convs if isinstance(convs, list) else convs.get("conversations", convs)
+            check("and the conversation is gone", conv not in [c["id"] for c in convs])
             check("its data folder survived (never cleaned like an agent's home)",
                   subprocess.run(["sudo", "-n", "test", "-d", f"/var/lib/uvmc-services/{NAME}/data"]).returncode == 0)
     finally:

@@ -70,6 +70,7 @@ class InsideTest(ServiceBase):
         self.assertIn("inside its own account", c.session.system)
         # closing ends the session and leaves the service's folders alone
         ctl.close_conversation(c.id)
+        self.assertNotIn(c.id, ctl.convs)                                   # gone from the panel too
         self.assertIsNone(ctl.services.get("random-app")["session"])
         self.assertEqual((data / "keep.db").read_text(), "the app's data\n")
         self.assertTrue((app / "installed.txt").exists())

@@ -1253,7 +1253,18 @@ class Controller:
                 self.services.end_session(c.service)
             except (KeyError, ServiceError) as e:
                 print(f"Warning: closing conversation {c.id}: its install session of {c.service}: {e}")
-            return
+        else:
+            self._close_copy_and_user(c)
+        self.convs.pop(c.id, None)
+        self._share_access()
+        if self.mcp_conv == c.id:
+            self.mcp_conv = None
+        if self.current == c.id:
+            rest = sorted(self.convs.values(), key=lambda x: x.last_active)
+            self.current = rest[-1].id if rest else ""
+
+    def _close_copy_and_user(self, c: Conversation) -> None:
+        """A normal conversation's leftovers: its jobs, its copy, its user's files, a private one's traces."""
         for jid in list(c.jobs):
             self._drop_job(c, jid)
         left = []
@@ -1290,13 +1301,6 @@ class Controller:
                     self.projects.remove(scratch)
             except (SyncError, OSError):
                 pass
-        self.convs.pop(c.id, None)
-        self._share_access()
-        if self.mcp_conv == c.id:
-            self.mcp_conv = None
-        if self.current == c.id:
-            rest = sorted(self.convs.values(), key=lambda x: x.last_active)
-            self.current = rest[-1].id if rest else ""
 
     def focus(self, cid: str) -> None:
         self.conv(cid)
