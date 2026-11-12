@@ -60,9 +60,9 @@ A web page served by the supervisor inside the VM, opened in your normal browser
 - **Approvals:** an amber card appears, the header (and the conversation's tab) turns amber, and the agent waits for you. Two kinds: a tool your rules mark "ask" (such as a system package install) gets Allow / Deny; a site that isn't on the allowed list gets **Allow for this task / Always allow / Deny** (unanswered site requests are refused after 2 minutes). Each conversation has its own proxy, so the question appears in the conversation that asked, on the step that asked.
 - **What each step did:** every tool call shows which programs it started and which sites it contacted; click it to see them with the output.
 - **Undo this task:** under each of your tasks, puts this conversation's copy of the work folder back to how it was before it. Other conversations and the main folder aren't touched.
-- **Files:** the agent's work folder, updated as it works. Click a file to read it.
+- **Files:** the agent's work folder, updated as it works. Click a file to read it. **Delete** beside a file or folder (or above an open file) asks first. In **This conversation**, it deletes from the conversation's copy only: that counts as one of its changes, and the main folder loses the file when you bring them in (Undo this task doesn't cover it). In **Main folder**, it deletes there straight away, after an undo point: **Undo** right after puts the main folder back (along with anything brought in since). Conversations get the change at their next bring-in. A project's own top folder, `.uvmc-merge` and `.uvmc-context` can't be deleted this way, and neither can anything under the shared folders from your PC (they're read-only).
 - **Activity:** every program the agent started and every site it contacted in this conversation.
-- **Runs:** every past conversation, replayable step by step.
+- **Runs:** every past conversation, replayable step by step. **Delete** beside a closed one removes its log for good, after you confirm. A conversation that's still open is closed first with its tab's ×. Copies made elsewhere stay: the PC's `logs` folder (from stop or reset), transcripts handed to another conversation, and the audit log's record of commands.
 - **Machine:** processor, memory and disk; the agent's own limits; the programs it's running, each with a Stop button.
 - **Settings:** models (add, edit, make default), API keys (paste one; it's never shown again, only its last characters), allowed sites, and a snippet to copy panel changes into config.toml. Panel changes are kept in the VM on top of config.toml, so `update` doesn't undo them.
 
@@ -93,11 +93,24 @@ The supervisor isn't tied to Claude. The loop talks to a **provider interface**,
 | `anthropic` | Claude, and Anthropic-compatible endpoints |
 | `openai` | OpenAI and any OpenAI-compatible API: DeepSeek, Gemini (through Google's compatibility endpoint, beta), Mistral, Groq, OpenRouter, and llama.cpp's server on your PC (`local`, below) |
 
-Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`.
+Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`, `openrouter` (below).
 
 - Add keys in the panel: **Settings › API keys** (the profile's `key` name, e.g. `deepseek`). Keys stay in the VM where the agent can't read them. (The `set-key` scripts were removed in 0.12.6: piping a key into `multipass exec` hangs with Multipass on Windows (1.16, still in 1.17.0); the installer no longer asks for one either.)
 - Pick the model per conversation in the panel's header, even mid-conversation; from a terminal, `uvmc ask --model deepseek "..."`.
 - Tools, rules, walls, logs and the panel are the same whatever the model. How well a model uses the tools varies a lot, so try a new one on small tasks first.
+
+### OpenRouter
+
+[OpenRouter](https://openrouter.ai) gives one key for hundreds of models (Claude, GPT, Gemini, DeepSeek, Qwen, Llama and more) and passes each request to one of the providers that serve the model. It speaks the OpenAI-compatible API, so it goes through the `openai` adapter; what is particular to it is in [openrouter.py](../supervisor/uvmc/openrouter.py).
+
+- **Key:** make one at openrouter.ai/settings/keys and paste it in **Settings › API keys** as `openrouter` (the key's row then shows its credit and, for free models, today's requests).
+- **Model:** edit the `openrouter` profile (or **Add a model › Start from OpenRouter**) and click **Choose...** next to Model name: a searchable list of the models that can use tools, with price per million tokens and context. Ids look like `deepseek/deepseek-v4-pro`. For several OpenRouter models at once, add one profile each with the same key.
+- **Privacy:** the profile starts `open`. Set it to `paid` and every request asks OpenRouter for providers that keep and collect nothing (`provider: {zdr: true, data_collection: "deny"}`); a model with no such provider is refused rather than sent elsewhere. OpenRouter's own account settings (openrouter.ai/settings/privacy) apply as well; read them before choosing `paid`. Every request with tools also asks only for providers that support every parameter (`require_parameters`), so a request never lands where tools are ignored.
+- **Free models** (ids ending `:free`) can only be `open`: their providers may keep or train on what they get. They allow 20 requests a minute, and 50 a day until you have bought 10 dollars of credit (1000 after). A task can take up to 40 model turns, so a few tasks use a day's allowance.
+- **Cost:** OpenRouter says what each reply cost; the header adds it up per conversation next to the tokens.
+- **Reasoning models:** their reasoning blocks are sent back to the same profile on the next turn (some models, Claude among them, need that with tool calls), and kept in memory only, never in the log. Another model gets the plain conversation.
+- **Errors** say what to do: no credit (402), the limit and when to try again (429), no provider that keeps nothing (paid profiles).
+- Not sent: attribution headers (`HTTP-Referer`, `X-OpenRouter-Title`); UVMC doesn't announce itself. While UVMC is locked, the model list and the credit check aren't asked either.
 
 ### A model on your PC
 
@@ -269,12 +282,12 @@ A conversation that leaves nothing behind in UVMC once you close it ([private.py
 
 The **Lock** button in the panel's header closes the VM to every program on your PC and keeps every conversation on the model on your PC ([lock.py](../supervisor/uvmc/lock.py), step 7q in design.md). Use it with private conversations when nothing should get in or out.
 
-- **A PIN to lock and to unlock.** You choose it the first time you lock; it's kept only as a hash in the VM, and wrong PINs are slowed down (after 3, each try waits longer, up to 5 minutes). If you forget it, restart the VM.
+- **No PIN: it keeps programs out, not you.** Locking gives the panel a new key (token) and hands it only to the browser that clicked Lock, in its cookie. Every key a program on the PC read before (the Claude apps, scripts, anything that copied it) stops working at once, for the whole panel API, and open event streams end. So while locked only that panel can do anything, unlocking included; the new key is written to `/etc/uvmc/panel_token`, which the PC can't read until SSH is open again. After unlocking (or a restart) the PC's programs read the new key the way they always do; the Claude apps' relays look it up again by themselves.
 - **While locked, no program on your PC gets in:** Multipass (`exec`, `shell`, `transfer`, new `mount`s), `update` (it says the VM is locked), the PC's other scripts, the Claude apps' UVMC tools, any AI agent, and you in a terminal. Open sessions from the PC are ended. Shared folders already mounted stay. How: everything from the PC comes in by SSH as `ubuntu` with Multipass's key, and SSH reads that key from a file in memory (`/run/uvmc-ssh/ubuntu.keys`) that the lock empties (`uvmc-lock`); root can't log in by SSH at all.
 - **While locked, only the model on your PC works,** for every conversation, normal or private, and their workers: conversations on another model show "waits for unlock" and can't start a task; a task running on one is stopped when you lock; Claude Code's idle processes are closed. The panel and the model on your PC keep working (the VM calls the PC, not the other way). The agents' internet isn't changed by the lock: each conversation keeps its own rules.
 - **Restarting the VM always unlocks it** (`multipass restart uvmc`): your way back if the panel can't be reached. Any program on the PC can restart the VM, so the lock isn't proof against that: a restart erases private conversations, normal ones come back readable. The panel tells you when a restart released the lock.
-- **What it isn't:** a wall against what is already inside the VM as `ubuntu` or root (until step 7o), or against an administrator on the PC, who can read the VM's disk and memory.
-- The API: `GET /api/lock`; `POST /api/lock` with `{"on": true|false, "pin": "..."}` (403 for a wrong PIN or while tries are slowed down).
+- **What it isn't:** a wall against what is already inside the VM as `ubuntu` or root (until step 7o), or against an administrator on the PC, who can read the VM's disk and memory. Nor against a program on the PC that reads your browser's saved cookies: it gets the new key with them, and could unlock. (A program running as you can usually also log your keystrokes, so a PIN wouldn't stop it either.)
+- The API: `GET /api/lock`; `POST /api/lock` with `{"on": true|false}`. Locking answers with the new key in a `Set-Cookie`; 409 if the VM couldn't be locked or unlocked, 500 if the key couldn't be changed (then it doesn't lock).
 
 ## Keeping UVMC up to date
 

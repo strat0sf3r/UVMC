@@ -74,7 +74,7 @@ UVMC runs an Ubuntu virtual machine on your PC ([Multipass](https://canonical.co
 
 | Feature | Description | Guide |
 | --- | --- | --- |
-| Provider adapters | `anthropic` (Claude and compatible endpoints) and `openai` (OpenAI, DeepSeek, Gemini, Mistral, Groq, OpenRouter, llama.cpp). Same tools, rules and panel whatever the model. | [Models](docs/guide.md#models) |
+| Provider adapters | `anthropic` (Claude and compatible endpoints) and `openai` (OpenAI, DeepSeek, Gemini, Mistral, Groq, OpenRouter, llama.cpp). OpenRouter has a model picker, privacy routing (providers that keep nothing for `paid` profiles) and cost per conversation. Same tools, rules and panel whatever the model. | [Models](docs/guide.md#models) |
 | Claude on your plan | Claude Code signed in with your Pro/Max plan acts as the model, with all its built-in tools switched off. Shows usage per window in the header. | [Claude on your plan](docs/guide.md#claude-on-your-plan-instead-of-the-api) |
 | A model on your PC | `local-model` installs llama.cpp (Vulkan or Metal) and a model sized to your card. A curated list of 8 models in 30 sizes (Qwen, Gemma 4, Ministral 3, Devstral, gpt-oss, uncensored builds), each with a pinned SHA-256, a description and strengths/weaknesses. Your own GGUF files work too. | [A model on your PC](docs/guide.md#a-model-on-your-pc) |
 | The helper on your PC | A tray app (Windows) or background program (macOS/Linux) on `127.0.0.1` only. From the panel it downloads, selects, deletes, tests and starts/stops local models, updates llama.cpp, and opens the panel already signed in. | [The helper on your PC](docs/guide.md#the-helper-on-your-pc) |
@@ -86,7 +86,7 @@ UVMC runs an Ubuntu virtual machine on your PC ([Multipass](https://canonical.co
 | --- | --- | --- |
 | Privacy levels | `local`, `paid` and `open` on models, projects, subfolders and single files. Each conversation's copy holds only the files its model may see. Data reaches a less private place only after your review. | [Projects and privacy levels](docs/guide.md#projects-and-privacy-levels) |
 | Private conversations | Kept in memory, erased on close and at every restart, never shown to other conversations, and their arguments kept out of the audit log. Options: no internet, only the model on your PC, nothing reaches the main folder. A start-up self-check disables them if a system log still records commands. | [Private conversations](docs/guide.md#private-conversations) |
-| The lock | A PIN-protected switch that refuses SSH from the PC (Multipass, scripts, Claude apps, you) and restricts every conversation to the model on your PC. Restarting the VM unlocks it. | [The lock](docs/guide.md#the-lock) |
+| The lock | A switch that refuses SSH from the PC (Multipass, scripts, Claude apps, you) and restricts every conversation to the model on your PC. It gives the panel a new key, so only the panel that locked can unlock; restarting the VM unlocks it too. | [The lock](docs/guide.md#the-lock) |
 | Secrets kept from the agent | API keys, the panel token and tool secrets live where the agent's users cannot read them. | [Models](docs/guide.md#models) |
 
 ### Using UVMC from your PC

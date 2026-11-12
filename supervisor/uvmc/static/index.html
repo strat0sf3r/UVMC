@@ -380,6 +380,14 @@ aside { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: 
 .runs li.viewing button { border-color: var(--you); }
 .runs .task { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .runs .when { font-size: 13px; color: var(--muted); }
+/* Delete beside a file or a past run: small and quiet until pointed at */
+.files li, .runs li { display: flex; align-items: center; gap: 4px; }
+.files li button.del, .runs li button.del {
+  all: unset; box-sizing: border-box; flex: none; width: auto; display: inline-block;
+  padding: 4px 8px; border-radius: 6px; font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.files li button.del:hover, .runs li button.del:hover { color: var(--bad); background: var(--bg); }
+.files li button.del:focus-visible, .runs li button.del:focus-visible { outline: 2px solid var(--focus); }
 
 .meter { margin: 0 0 16px; }
 .meter .row { display: flex; justify-content: space-between; font-size: 15px; }
@@ -478,6 +486,8 @@ body:not([data-state="idle"]) .you .undo { display: none; }
 .addsite input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
 .pane h3 { font-size: 15px; margin: 18px 0 6px; }
 .profiles li, .keys li { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.pick-row { display: flex; gap: 6px; } .pick-row input { flex: 1; min-width: 0; }
+.orpick { max-height: 320px; overflow-y: auto; }
 .acts2 { display: flex; gap: 6px; flex-wrap: wrap; }
 .keyrow .addsite { flex-wrap: wrap; margin: 0; }
 .keyrow .addsite input { flex: 1 1 160px; }
@@ -821,7 +831,7 @@ const activity = { execs: [], nets: [] };  // this conversation, newest last
 
 function resetFeed() {
   thread.innerHTML = "";
-  view.lastSeq = 0; view.tools = {}; view.asks = {}; view.tokens = 0; view.steps = 0; view.checkpoint = null;
+  view.lastSeq = 0; view.tools = {}; view.asks = {}; view.tokens = 0; view.cost = 0; view.steps = 0; view.checkpoint = null;
   activity.execs = []; activity.nets = [];
   showTokens();
   showEmpty();
@@ -883,6 +893,7 @@ function showTokens() {
   t.className = "meta";
   t.title = "";
   t.textContent = view.tokens ? `${view.tokens.toLocaleString()} tokens this conversation` : "";
+  if (view.cost) t.textContent += `, about $${view.cost < 0.01 ? view.cost.toFixed(4) : view.cost.toFixed(2)}`;
   const c = ctxInfo;
   if (c && c.compact && c.tokens) {   // the model on the PC: how full its context is
     const share = c.size ? c.tokens / c.size : 0;
@@ -964,6 +975,7 @@ function apply(ev) {
     case "reply": {
       view.steps += 1;
       view.tokens += (ev.usage?.in || 0) + (ev.usage?.out || 0);
+      view.cost = (view.cost || 0) + (ev.usage?.cost || 0);   // when the provider says (OpenRouter)
       if (ctxInfo && !box && ev.usage?.in) { ctxInfo.tokens = ev.usage.in + (ev.usage.out || 0); ctxInfo.estimated = false; ctxInfo.can_trim = true; }
       showTokens();
       for (const b of ev.content || []) {
@@ -2075,7 +2087,8 @@ async function closeConv(id, discard = false, erase = false) {
   add(el("div", "item err", `<div class="box">${esc(r.error || r.detail || "Closing failed.")}</div>`));
 }
 
-// The lock (lock.py): the VM closed to the PC, only the model on the PC. A PIN to lock and to unlock.
+// The lock (lock.py): the VM closed to the PC, only the model on the PC. No PIN: it keeps programs out, not you;
+// locking gives this panel a new token, so programs holding the old one can't unlock.
 let lockState = null;
 function showLock(lv) {
   if (!lv) return;
@@ -2084,7 +2097,7 @@ function showLock(lv) {
   b.hidden = !lv.available;
   b.textContent = lv.locked ? "Locked" : "Lock";
   b.setAttribute("aria-pressed", String(lv.locked));
-  b.title = lv.locked ? "UVMC is locked. Click to unlock it (your PIN)." : "Close the VM to every program on your PC, and use only the model on your PC (your PIN)";
+  b.title = lv.locked ? "UVMC is locked. Click to unlock it." : "Close the VM to every program on your PC, and use only the model on your PC";
   $("lockBanner").hidden = !lv.locked;
   if (lv.released_by_restart) {
     add(el("div", "item line", "The VM was restarted, which released the lock: UVMC is unlocked."));
@@ -2095,30 +2108,26 @@ function showLock(lv) {
 function lockCard() {
   $("lockCard")?.remove();
   const lv = lockState || {};
-  const on = !lv.locked, first = on && !lv.pin_set;
+  const on = !lv.locked;
   const n = el("div", "item ask");
   n.id = "lockCard";
   n.innerHTML = `<div class="box"><h3>${on ? "Lock UVMC?" : "Unlock UVMC?"}</h3>
-    <p class="why">${on ? "No program on your PC will reach the VM (Multipass, update, scripts, AI agents, you in a terminal), and only the model on your PC will work: tasks on other models stop. The panel and the model on your PC keep working. Restarting the VM unlocks it."
-      : "Programs on your PC can reach the VM again, and every model works again."}</p>
+    <p class="why">${on ? "No program on your PC will reach the VM (Multipass, update, scripts, AI agents, you in a terminal), and only the model on your PC will work: tasks on other models stop. The panel gets a new key, so programs that read the old one lose access; this panel and the model on your PC keep working. Restarting the VM unlocks it."
+      : "Every program on your PC can reach the VM again (Multipass, scripts, the Claude apps, other AI agents), and every model works again."}</p>
     <form class="inline-form" data-form>
-      <label>${first ? "Choose a PIN" : "PIN"} <input type="password" data-pin autocomplete="off" minlength="4" maxlength="64" required></label>
-      ${first ? '<label>The same PIN again <input type="password" data-pin2 autocomplete="off" required></label>' : ""}
-      <p class="small form-msg">${first ? "You'll need it to lock and to unlock. It's kept only as a hash in the VM; if you forget it, restart the VM to unlock." : ""}</p>
+      <p class="small form-msg"></p>
       <div class="actions"><button type="submit" class="btn primary">${on ? "Lock" : "Unlock"}</button><button type="button" class="btn" data-cancel>Cancel</button></div>
     </form></div>`;
   n.querySelector("[data-cancel]").addEventListener("click", () => n.remove());
   n.querySelector("[data-form]").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const msg = n.querySelector(".form-msg"), pin = n.querySelector("[data-pin]").value;
-    if (first && pin !== n.querySelector("[data-pin2]").value) { msg.classList.add("bad"); msg.textContent = "The two PINs differ."; return; }
-    const btn = n.querySelector("button[type=submit]");
+    const msg = n.querySelector(".form-msg"), btn = n.querySelector("button[type=submit]");
     btn.disabled = true;
-    try { showLock(await api("/api/lock", { on, pin })); n.remove(); refreshConvsSoon(); }
+    try { showLock(await api("/api/lock", { on })); n.remove(); refreshConvsSoon(); }
     catch (err) { msg.classList.add("bad"); msg.textContent = err.message; btn.disabled = false; }
   });
   add(n);
-  n.querySelector("[data-pin]").focus();
+  n.querySelector("button[type=submit]").focus();
 }
 $("lockBtn").addEventListener("click", lockCard);
 
@@ -2617,7 +2626,7 @@ async function openRun(run) {
   renderConvs();
   setState(current);
   const events = await api(`/api/history/${encodeURIComponent(run.name)}`);
-  thread.innerHTML = ""; view.tools = {}; view.asks = {}; view.lastSeq = 0; view.tokens = 0;
+  thread.innerHTML = ""; view.tools = {}; view.asks = {}; view.lastSeq = 0; view.tokens = 0; view.cost = 0;
   $("thinking")?.remove();
   for (const ev of events) apply(ev);
   showEmpty();
@@ -2646,10 +2655,23 @@ async function loadRuns(viewing) {
       b.type = "button";
       b.innerHTML = `<div class="task">${esc(r.first_task || "No tasks yet")}</div><div class="when">${r.conv ? (r.conv === view.conv && view.live ? "This conversation" : "Open") : fmtWhen(r.last)}${r.tasks > 1 ? `, ${r.tasks} tasks` : ""}</div>`;
       b.addEventListener("click", () => openRun(r));
-      li.appendChild(b); list.appendChild(li);
+      li.appendChild(b);
+      if (!r.conv && !r.current) {   // an open conversation is closed first (its tab's ×)
+        const d = el("button", "del", "Delete"); d.type = "button";
+        d.setAttribute("aria-label", `Delete the run "${r.first_task || "No tasks yet"}"`);
+        d.addEventListener("click", () => deleteRun(r, viewing));
+        li.appendChild(d);
+      }
+      list.appendChild(li);
     }
     pane.appendChild(list);
   } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
+}
+async function deleteRun(r, viewing) {
+  if (!window.confirm("Delete this run for good? Its messages and steps can't be brought back. Files already in the main folder stay.")) return;
+  try { await api("/api/history/delete", { name: r.name }); }
+  catch (e) { window.alert(e.message); return; }
+  if (viewing === r.name) backToLive(); else loadRuns(viewing);
 }
 
 // --- Files -------------------------------------------------------------------
@@ -2702,12 +2724,45 @@ async function loadFiles(path) {
       const note = f.hidden ? ` <span class="small">hidden from this conversation</span>` : f.given ? ` <span class="small">given</span>` : "";
       b.innerHTML = `<span class="fname">${esc(f.name)}${lvl}${note}</span><span class="fmeta">${f.dir ? "" : fmtBytes(f.size) + ", "}${ago(f.mtime)}</span>`;
       b.addEventListener("click", () => f.dir ? loadFiles(`${data.path}/${f.name}`) : showFile(`${data.path}/${f.name}`));
-      li.appendChild(b); list.appendChild(li);
+      li.appendChild(b);
+      if (deletable(data.path)) {
+        const d = el("button", "del", "Delete"); d.type = "button";
+        d.setAttribute("aria-label", `Delete ${f.name}`);
+        d.addEventListener("click", () => deleteFile(`${data.path}/${f.name}`, f.dir, data.where));
+        li.appendChild(d);
+      }
+      list.appendChild(li);
     }
     pane.appendChild(list);
   } catch (e) {
     pane.innerHTML = `<p class="small">${esc(e.message)}</p>`;
     const b = el("button", "btn", "Go to the work folder"); b.type = "button"; b.addEventListener("click", () => loadFiles(".")); pane.appendChild(b);
+  }
+}
+// Delete: in this conversation's copy or the main folder, never in the read-only shared folders.
+// The machine checks the place again (inside the copy or the main folder only).
+const deletable = (path) => !String(path).startsWith("/mnt/shared") && !String(path).startsWith("/srv/");
+async function deleteFile(path, dir, where) {
+  const name = path.split("/").pop();
+  const what = dir ? `the folder ${name} and everything in it` : name;
+  const ask = (where || fileWhere) === "shared"
+    ? `Delete ${what} from the main folder? Conversations get the change at their next bring-in. You can undo it right after.`
+    : `Delete ${what} from this conversation's copy? It counts as one of its changes: the main folder loses it only when you bring them in.`;
+  if (!window.confirm(ask)) return;
+  let r;
+  try { r = await api("/api/files/delete", { path, conv: view.conv, where: fileWhere }); }
+  catch (e) { window.alert(e.message); return; }
+  await loadFiles(filePath);   // the folder it was in (an open file's folder too)
+  refreshFolderSoon();
+  if (r.undo) {   // the main folder: one click back
+    const n = el("div", "small undo-row", `Deleted ${esc(name)} from the main folder. `);
+    const u = el("button", "btn small", "Undo"); u.type = "button";
+    u.addEventListener("click", async () => {
+      try { await api("/api/files/undo-delete", { checkpoint: r.undo }); n.remove(); loadFiles(filePath); refreshFolderSoon(); }
+      catch (e) { window.alert(e.message); }
+    });
+    n.appendChild(u);
+    $("pane-files").prepend(n);
   }
 }
 // A folder's level, and changing it: its own level (a zone), or a General folder made a project.
@@ -2775,6 +2830,11 @@ async function showFile(path) {
     head.appendChild(back);
     head.appendChild(el("strong", "", esc(path.split("/").pop())));
     head.appendChild(el("span", "small", fmtBytes(f.size)));
+    if (deletable(path)) {
+      const d = el("button", "btn", "Delete"); d.type = "button";
+      d.addEventListener("click", () => deleteFile(path, false, f.where));
+      head.appendChild(d);
+    }
     pane.appendChild(head);
     if (f.level) pane.appendChild(filePrivacy(f, path));
     if (f.binary) pane.appendChild(el("p", "small", "This is a binary file, so it can't be shown as text."));
@@ -2837,6 +2897,7 @@ const PRESETS = {
   "": { label: "", base_url: "" },
   openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: "openai", max_tokens_param: "max_completion_tokens", privacy: "paid" },
   deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com", key: "deepseek", privacy: "open" },
+  openrouter: { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", key: "openrouter", privacy: "open" },
   gemini: { label: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", key: "gemini", privacy: "open" },
   "on-pc": { label: "Model on my PC (llama.cpp)", base_url: "http://{pc}:8091/v1", model: "local", key: "local", privacy: "local" },
   "claude-plan": { label: "Claude (my plan)", provider: "claude-code", model: "sonnet", base_url: "", key: "claude-subscription", privacy: "paid" },
@@ -3001,7 +3062,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
 
   const keys = $("keys");
   for (const k of set.keys) {
-    const li = el("li", "keyrow", `<div><strong>${esc(k.name)}</strong> <span class="sub">${k.set ? esc(k.hint) : "not set"}${k.used_by.length ? `, for ${k.used_by.map(esc).join(", ")}` : ""}</span></div>`);
+    const li = el("li", "keyrow", `<div><strong>${esc(k.name)}</strong> <span class="sub">${k.set ? esc(k.hint) : "not set"}${k.used_by.length ? `, for ${k.used_by.map(esc).join(", ")}` : ", for a model not picked yet"}</span></div>`);
     const f = el("form", "addsite");
     const plan = k.name === "claude-subscription";   // set only by the sign-in above, never pasted here
     f.innerHTML = plan ? `<span class="sub">Set by "Sign in with your Claude plan" above.</span>`
@@ -3017,6 +3078,7 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
     }
     li.appendChild(f);
     keys.appendChild(li);
+    if (k.set && k.name === "openrouter") showOpenRouterCredit(li);
   }
 
   const ul = $("learnedSites");
@@ -3340,6 +3402,63 @@ async function loadLocalModel() {
   } else localPolls = 0;
 }
 
+// --- OpenRouter (openrouter.py): the models that can use tools, and the key's credit ---------
+function openRouterQuery(f) {
+  const q = new URLSearchParams();
+  if (f?.base_url.value.trim()) q.set("base_url", f.base_url.value.trim());
+  if (f?.key.value.trim()) q.set("key", f.key.value.trim());
+  return q.toString() ? "?" + q : "";
+}
+const money = (v) => v == null ? "?" : v === 0 ? "free" : "$" + (v < 1 ? v.toFixed(3) : v.toFixed(2));
+async function openRouterPicker(f) {
+  const box = f.querySelector("[data-picker]");
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<p class="small">Loading OpenRouter's models...</p>`;
+  let rows;
+  try { rows = (await api("/api/openrouter/models" + openRouterQuery(f))).models; }
+  catch (e) { box.innerHTML = `<p class="small bad">${esc(e.message)}</p>`; return; }
+  box.innerHTML = `<input type="search" placeholder="Search ${rows.length} models that can use tools" aria-label="Search OpenRouter's models">
+    <label class="told-switch"><input type="checkbox" data-free> Free ones only</label>
+    <p class="small">Price per million tokens, in / out. Free models are limited (50 requests a day until you've bought 10 dollars of credit) and can only be open.</p>
+    <ul class="alist orpick"></ul>`;
+  const search = box.querySelector("input[type=search]"), free = box.querySelector("[data-free]"), ul = box.querySelector("ul");
+  const draw = () => {
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = rows.filter((r) => (!free.checked || r.free) && words.every((w) => (r.id + " " + r.name).toLowerCase().includes(w)));
+    ul.innerHTML = "";
+    for (const r of hits.slice(0, 80)) {
+      const li = el("li", "", `<div><strong>${esc(r.name)}</strong> <span class="sub">${esc(r.id)}</span>
+        <div class="sub">${money(r.in)} / ${money(r.out)}${r.context ? `, ${Number(r.context).toLocaleString()} tokens of context` : ""}</div></div>`);
+      const b = el("button", "btn", "Use"); b.type = "button";
+      b.addEventListener("click", () => {
+        f.model.value = r.id;
+        if (!f.label.value || f.label.value === "OpenRouter") f.label.value = r.name;
+        if (r.free && f.privacy.value !== "open") f.privacy.value = "open";
+        box.hidden = true;
+      });
+      li.appendChild(b); ul.appendChild(li);
+    }
+    if (hits.length > 80) ul.appendChild(el("li", "sub", `${hits.length - 80} more: search to narrow it down.`));
+    if (!hits.length) ul.appendChild(el("li", "sub", "None match."));
+  };
+  search.addEventListener("input", draw); free.addEventListener("change", draw);
+  draw(); search.focus();
+}
+async function showOpenRouterCredit(li) {
+  const p = el("p", "small", "Checking OpenRouter's credit...");
+  li.appendChild(p);
+  try {
+    const c = await api("/api/openrouter/credit?key=openrouter");
+    const parts = [];
+    if (c.remaining != null) parts.push(`${money(c.remaining)} left${c.limit != null ? ` of ${money(c.limit)}` : ""}`);
+    else if (c.limit == null) parts.push("no spending limit set on the key");
+    if (c.usage_monthly != null) parts.push(`${money(c.usage_monthly)} used this month`);
+    if (c.free_requests?.limit != null) parts.push(`free models: ${c.free_requests.used ?? 0} of ${c.free_requests.limit} requests today`);
+    p.textContent = "OpenRouter: " + (parts.join(", ") || "no details given") + (c.free_tier ? " (no credit bought yet: free models only)" : "") + ".";
+  } catch (e) { p.textContent = "OpenRouter: " + e.message; p.classList.add("bad"); }
+}
+
 function profileForm(p) {
   const box = $("profileForm");
   const isNew = !p;
@@ -3351,13 +3470,15 @@ function profileForm(p) {
     <label>Label <input name="label" value="${esc(p.label)}" placeholder="My model"></label>
     <label>Kind of API <select name="provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI-compatible</option><option value="claude-code">Claude Code on my plan</option></select></label>
     <label>Address (base URL) <input name="base_url" value="${esc(p.base_url)}" placeholder="https://..."></label>
-    <label>Model name <input name="model" value="${esc(p.model)}" required placeholder="as the provider names it"></label>
+    <label>Model name <span class="pick-row"><input name="model" value="${esc(p.model)}" required placeholder="as the provider names it"><button class="btn" type="button" data-pick hidden>Choose...</button></span></label>
+    <div data-picker hidden></div>
     <label>Key name <input name="key" value="${esc(p.key)}" placeholder="empty if no key is needed"></label>
     <label>Privacy: the most private files it may see <select name="privacy">
       <option value="local">local: it runs on my PC</option>
       <option value="paid">paid: I trust this provider by contract</option>
       <option value="open">open: it may log or train on what it gets</option></select></label>
     <p class="small">Read the provider's terms before choosing paid. Suggested from the address and kind: <span data-suggest></span>.</p>
+    <p class="small" data-ornote hidden>OpenRouter passes each request to one of many providers. With <strong>paid</strong>, every request asks for providers that keep and collect nothing (zero data retention); if a model has none, it's refused rather than sent elsewhere. Free models (<code>:free</code>) can only be open. Also see your account's own settings at openrouter.ai/settings/privacy.</p>
     <details><summary>Advanced</summary><label>Length setting the API expects <input name="max_tokens_param" value="${esc(p.max_tokens_param)}"></label></details>
     <p class="small form-msg"></p>
     <div class="actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-cancel>Cancel</button></div></form>`;
@@ -3366,7 +3487,14 @@ function profileForm(p) {
   // The same suggestion as the supervisor's (privacy.suggest)
   const suggest = () => /\{pc\}|^http:\/\/(localhost|127\.0\.0\.1)/.test(f.base_url.value) ? "local"
     : ["anthropic", "claude-code"].includes(f.provider.value) ? "paid" : "open";
-  const showSuggest = () => { f.querySelector("[data-suggest]").textContent = suggest(); };
+  const isOR = () => /^https?:\/\/([a-z0-9-]+\.)*openrouter\.ai(\/|:|$)/i.test(f.base_url.value.trim());
+  const showSuggest = () => {
+    f.querySelector("[data-suggest]").textContent = suggest();
+    f.querySelector("[data-ornote]").hidden = !isOR();
+    f.querySelector("[data-pick]").hidden = !isOR();
+    if (!isOR()) f.querySelector("[data-picker]").hidden = true;
+  };
+  f.querySelector("[data-pick]").addEventListener("click", () => openRouterPicker(f));
   f.privacy.value = p.privacy || suggest();
   showSuggest();
   f.base_url.addEventListener("input", showSuggest);

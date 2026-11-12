@@ -97,6 +97,11 @@ function post(c, body) {
       headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
                  "Authorization": `Bearer ${c.token}`, "Content-Length": Buffer.byteLength(body) },
     }, (res) => {
+      if (res.statusCode === 401) {   // locking UVMC changes the panel's key: look it up again
+        res.resume();
+        reject(new Error("the panel's key changed (UVMC was locked)"));
+        return;
+      }
       const chunks = [];
       res.on("data", (d) => chunks.push(d));
       res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8").trim()));

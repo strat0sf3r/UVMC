@@ -33,6 +33,7 @@ from .privacy import GENERAL, NeedsConfirm, PrivacyError, Projects, Scope, is_sh
 from .agent import Session
 from . import briefing as briefing_mod
 from . import mcp_http
+from . import openrouter
 from .brain import Bridge
 from .audit import ExecFilter, ExecWatcher, set_quiet as audit_quiet
 from .checkpoints import Checkpoints
@@ -646,10 +647,10 @@ class Controller:
         return (f"UVMC is locked: only the model on your PC works, and {profile.label} isn't it. Unlock it in "
                 "the panel, or switch this conversation to the model on your PC.")
 
-    def set_lock(self, on: bool, pin: str) -> dict:
-        """Locks or unlocks the VM (the PIN both ways; the first lock sets it). Locking stops the
-        tasks that use another model and closes Claude Code's idle processes."""
-        self.vm_lock.set(on, pin)
+    def set_lock(self, on: bool) -> dict:
+        """Locks or unlocks the VM. Locking stops the tasks that use another model and closes
+        Claude Code's idle processes. (The route also gives the panel a new token: PanelToken.)"""
+        self.vm_lock.set(on)
         if on:
             for c in list(self.running()):
                 profiles = [self.cfg.profile(c.model)] + [w.profile for w in c.running_jobs()]
@@ -2734,6 +2735,57 @@ class Controller:
             raise KeyError("No such run.")
         return read_log(path)
 
+    def delete_run(self, name: str) -> None:
+        """You delete a closed conversation's log from Runs, for good. An open one is closed first."""
+        with self.lock:
+            path = (self.cfg.log_dir / f"{name}.jsonl").resolve()
+            if path.parent != self.cfg.log_dir.resolve() or not path.exists():
+                raise KeyError("No such run.")
+            if path.stem == self.log.name or any(c.log.name == path.stem for c in self.convs.values()):
+                raise Busy("This conversation is still open. Close it first, then delete it here.")
+            path.unlink()
+
+    def delete_file(self, path: str, conv: str | None = None, where: str = "copy") -> dict:
+        """You delete a file or folder: in a conversation's copy (it then counts as one of its
+        changes, brought in like the agent's own), or in the main folder (a checkpoint first, so
+        it can be undone)."""
+        with self.lock:
+            in_copy = self._where(conv, where) == "copy"
+            c = self.conv(conv) if in_copy else None
+            top = os.path.realpath(c.copy_dir if c is not None else self.cfg.workdir)
+            full = os.path.normpath(path if os.path.isabs(path) else os.path.join(top, path))
+            # The folder it's in, links followed; the name itself isn't (rm takes a link away, never its target).
+            full = os.path.join(os.path.realpath(os.path.dirname(full)), os.path.basename(full))
+            if not full.startswith(top + os.sep):
+                raise ValueError("Only files inside the work folder or a conversation's copy can be deleted here.")
+            rel = os.path.relpath(full, top).replace(os.sep, "/")
+            if rel.split("/", 1)[0] in (MERGE_DIR, CONTEXT_DIR):
+                raise ValueError("UVMC keeps this folder itself; it goes away by itself when it's done.")
+            if not os.path.lexists(full):
+                raise FileNotFoundError(f"{rel} is not there any more.")
+            undo = None
+            if c is not None:
+                if c.busy:
+                    raise Busy("This conversation is working. Stop it first.")
+                p = c.tools._as_agent(': uvmc-panel; rm -rf -- "$1"', full, timeout=120)
+                if p.returncode != 0:
+                    raise RuntimeError(p.stderr.decode(errors="replace").strip() or f"Could not delete {rel}.")
+            else:
+                if "/" not in rel and self.projects.has(rel):
+                    raise ValueError(f"{rel} is a project's folder. Delete the files in it instead.")
+                undo = self.copies.main_undo.create()
+                self.copies._run(["rm", "-rf", "--", full], f"deleting {rel}")
+        self._broadcast({"kind": "shared_folder", "conv": conv})
+        return {"ok": True, "path": rel, "where": "copy" if in_copy else "shared", "undo": undo}
+
+    def undo_delete(self, checkpoint: str) -> None:
+        """The main folder back to how it was before a delete (later bring-ins are undone too)."""
+        with self.lock:
+            if self.anything_running():
+                raise Busy("Wait until no conversation is working: the main folder is theirs too.")
+            self.copies.undo_bring_in(checkpoint)
+        self._broadcast({"kind": "shared_folder"})
+
     def _files_as(self, conv: str | None, where: str):
         """Who looks: a conversation's user in its copy, or the agent user in the main folder."""
         if where == "shared" or not conv:
@@ -2908,14 +2960,16 @@ def signin_target(path: str | None) -> str:
     return "/" + (path or "/").translate({9: None, 10: None, 13: None}).lstrip("/\\")
 
 
-def create_app(ctl: Controller, token: str | None):
+def create_app(ctl: Controller, token: str | PanelToken | None):
     app = FastAPI(title="UVMC supervisor", version=__version__, docs_url="/docs", redoc_url=None,
                   description="The API behind the UVMC panel. Sign in with the panel token: "
                               "`Authorization: Bearer <token>` (or open the panel first, then /docs).")
     machine = Machine()
+    tok = token if isinstance(token, PanelToken) else PanelToken(token)
 
     @app.middleware("http")
     async def auth(request: Request, call_next):
+        token = tok.value
         if not token:
             return PlainTextResponse("The panel has no access token yet. Run the update script on your PC.", 503)
         given = request.query_params.get("token")
@@ -2935,7 +2989,7 @@ def create_app(ctl: Controller, token: str | None):
                 f"<script>location.replace({target_js} + location.hash)</script>"
                 f'<noscript><a href="{target_attr}">Open the UVMC panel</a></noscript>', media_type="text/html")
             resp.headers["Cache-Control"] = "no-store"
-            resp.set_cookie("uvmc_token", token, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 365)
+            set_token_cookie(resp, token)
             return resp
         auth_header = request.headers.get("authorization", "")
         bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
@@ -3241,6 +3295,7 @@ def create_app(ctl: Controller, token: str | None):
         q = ctl.subscribe()
         cur = ctl.conv()
         backlog = [{**r, "conv": cur.id} for r in cur.log.read()]
+        signed_in_with = tok.value
 
         def stream():
             try:
@@ -3250,9 +3305,11 @@ def create_app(ctl: Controller, token: str | None):
                 while True:
                     try:
                         record = q.get(timeout=15)
-                        yield f"data: {json.dumps(record)}\n\n"
                     except queue.Empty:
-                        yield ": ping\n\n"
+                        record = None
+                    if tok.value != signed_in_with:   # locked: a new token, so this stream ends
+                        return                        # (the panel's EventSource comes back with it)
+                    yield f"data: {json.dumps(record)}\n\n" if record is not None else ": ping\n\n"
             finally:
                 ctl.unsubscribe(q)
 
@@ -3307,14 +3364,25 @@ def create_app(ctl: Controller, token: str | None):
 
     @app.post("/api/lock")
     async def lock_set(request: Request):
-        """Locks ({"on": true, "pin": ...}) or unlocks ({"on": false, "pin": ...}) the VM: closed to
-        every program on the PC, only the model on the PC used (lock.py). The first lock sets the
-        PIN. 403 for a wrong PIN or while wrong tries are slowed down."""
+        """Locks ({"on": true}) or unlocks ({"on": false}) the VM: closed to every program on the
+        PC, only the model on the PC used (lock.py). Locking first makes a new panel token and
+        gives it only to the caller, in its cookie: every token read before stops working, open
+        event streams end. 409 if the VM couldn't be locked or unlocked."""
         body = await request.json()
+        on = bool(body.get("on"))
+        new = None
+        if on:
+            try:
+                new = await run_in_threadpool(tok.rotate)
+            except OSError as e:
+                fail(500, f"UVMC couldn't change the panel's key, so it didn't lock: {e}")
         try:
-            return await run_in_threadpool(ctl.set_lock, bool(body.get("on")), str(body.get("pin") or ""))
+            resp = JSONResponse(await run_in_threadpool(ctl.set_lock, on))
         except LockError as e:
-            fail(403, str(e))
+            resp = JSONResponse({"error": str(e)}, status_code=409)
+        if new:
+            set_token_cookie(resp, new)   # the token changed either way: keep this panel signed in
+        return resp
 
     @app.post("/api/lock/seen")
     def lock_seen():
@@ -3457,6 +3525,39 @@ def create_app(ctl: Controller, token: str | None):
     @app.post("/api/settings/default")
     async def settings_default(request: Request):
         return settings_call(ctl.settings.set_default, str((await request.json()).get("name", "")))
+
+    # --- OpenRouter (openrouter.py): its models for the picker, and the key's credit -------
+    def openrouter_target(request: Request) -> tuple[str, str]:
+        """The address and key to ask with: from the query (a profile being added), else the first
+        OpenRouter profile, else the defaults. Only OpenRouter's own address is ever asked."""
+        q = request.query_params
+        prof = next((p for p in ctl.cfg.models.values() if openrouter.is_openrouter(p.base_url)), None)
+        base = q.get("base_url") or (prof.base_url if prof else openrouter.BASE_URL)
+        key_name = q.get("key") or (prof.key if prof else "openrouter")
+        if not openrouter.is_openrouter(base):
+            fail(400, "That is not OpenRouter's address.")
+        if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", key_name):
+            fail(400, "Key names use lowercase letters, digits, - and _.")
+        if ctl.vm_lock.locked:
+            fail(409, "UVMC is locked: only the model on your PC is reached.")
+        return base, config.api_key(key_name) or ""
+
+    @app.get("/api/openrouter/models")
+    async def openrouter_models(request: Request):
+        base, key = openrouter_target(request)
+        try:
+            rows = await run_in_threadpool(openrouter.models, base, key, request.query_params.get("fresh") == "1")
+        except openrouter.OpenRouterError as e:
+            fail(502, str(e))
+        return {"models": rows}
+
+    @app.get("/api/openrouter/credit")
+    async def openrouter_credit(request: Request):
+        base, key = openrouter_target(request)
+        try:
+            return await run_in_threadpool(openrouter.credit, base, key)
+        except openrouter.OpenRouterError as e:
+            fail(502, str(e))
 
     # --- Claude apps on your PC (MCP), off until switched on in Settings ----------------
     @app.post("/mcp")
@@ -3738,6 +3839,50 @@ def create_app(ctl: Controller, token: str | None):
         except KeyError as e:
             fail(404, str(e.args[0]))
 
+    @app.post("/api/history/delete")
+    async def history_delete(request: Request):
+        """Deletes a closed conversation's log from Runs, for good."""
+        body = await request.json()
+        try:
+            ctl.delete_run(str(body.get("name", "")))
+        except Busy as e:
+            fail(409, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        return {"ok": True}
+
+    @app.post("/api/files/delete")
+    async def files_delete(request: Request):
+        """Deletes a file or folder in a conversation's copy (where=copy, the default) or in the
+        main folder (where=shared; the answer's "undo" is a checkpoint for /api/files/undo-delete)."""
+        body = await request.json()
+        try:
+            return await run_in_threadpool(ctl.delete_file, str(body.get("path", "")),
+                                           body.get("conv") or None, str(body.get("where", "copy")))
+        except Busy as e:
+            fail(409, str(e))
+        except FileNotFoundError as e:
+            fail(404, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ValueError as e:
+            fail(400, str(e))
+        except (RuntimeError, SyncError) as e:
+            fail(500, str(e))
+
+    @app.post("/api/files/undo-delete")
+    async def files_undo_delete(request: Request):
+        body = await request.json()
+        try:
+            await run_in_threadpool(ctl.undo_delete, str(body.get("checkpoint", "")))
+        except Busy as e:
+            fail(409, str(e))
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except RuntimeError as e:
+            fail(500, f"Undo failed: {e}")
+        return {"ok": True}
+
     @app.get("/api/files")
     def files(path: str = ".", conv: str = "", where: str = "copy"):
         """A folder: in a conversation's copy (default), or where=shared in the main work folder."""
@@ -3779,6 +3924,37 @@ def load_token() -> str | None:
         return None
 
 
+def set_token_cookie(resp: Response, value: str) -> None:
+    resp.set_cookie("uvmc_token", value, httponly=True, samesite="strict", max_age=60 * 60 * 24 * 365)
+
+
+class PanelToken:
+    """The panel's access token, which locking replaces (lock.py): the new one goes only to the
+    browser that locked and to the token file, which the PC can't read while SSH is shut. With
+    a file, rotate() writes it in place (the supervisor's user owns it, mode 600, in a folder of
+    root's, so no new file and rename); without one (tests), only in memory."""
+
+    ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+    def __init__(self, value: str | None, file: Path | None = None):
+        self.value = value
+        self.file = file
+        self._mutex = threading.Lock()
+
+    def rotate(self) -> str:
+        new = "".join(secrets.choice(self.ALPHABET) for _ in range(40))   # like setup.sh's
+        with self._mutex:
+            if self.file is not None:
+                fd = os.open(self.file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, new.encode())
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            self.value = new
+        return new
+
+
 def build_provider(profile: Profile):
     """The real provider for a profile, with its key read fresh each task."""
     return make_provider(profile, config.api_key(profile.key))
@@ -3792,6 +3968,6 @@ def serve(cfg: config.Config, host: str, port: int) -> None:
     except OSError as e:  # e.g. the proxy port is taken: the agent then simply has no internet
         print(f"Warning: could not start the network proxy: {e}")
         ctl.start_background(proxy=False)
-    app = create_app(ctl, load_token())
+    app = create_app(ctl, PanelToken(load_token(), TOKEN_FILE))
     print(f"UVMC supervisor {__version__} serving the panel on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
