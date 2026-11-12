@@ -256,6 +256,7 @@ The agent is free inside its own space: commands run without asking, it can inst
 | One user per conversation | Each conversation runs as its own user (agent1, agent2, ...), in its own copy of the work folder (only the projects it works on, at its privacy level), and the firewall lets that user reach only its own proxy. Its files, programs and sites are its own; no agent can open the main work folder or another's copy. |
 | Fixed-size home | `/home/agent` is its own disk (6 GB by default), and `/tmp` and `/var/tmp` are size-limited memory disks, so filling a disk can't take the VM down. |
 | Undo | A hard-linked copy of the work folder is saved before every task (last 20 kept). |
+| Private view | Every command of a conversation, job or tool runs in a view of its own: a `/proc` that shows only its own user's processes (no other conversation's commands or arguments), and its own `/tmp`, `/var/tmp` and `/dev/shm` (whatever path a program writes to, the files are its alone). The supervisor and the system keep the normal view. If the view can't be set up, the command doesn't run. |
 | One user per job | A coordinator's jobs run as their own users (agent9, agent10, ...), in their own copies of the coordinator's folder, through their own proxies. A finished job's folder is locked. |
 | Activity log | Linux's audit system records every program the agent starts, even inside scripts. |
 | Factory reset | The `clean` snapshot on your PC, for anything else. |
