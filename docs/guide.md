@@ -188,6 +188,31 @@ A tool's report is data, not a web page: the tool writes JSON to the file named 
 
 For now tools reach sites over HTTP(S) only (no email protocols like IMAP), use the programs already on the machine, and can't be called by the models or your PC's Claude apps. `[made_tools]` in config.toml has the settings.
 
+## Programs that use UVMC
+
+A **program** is your own software that runs on its own (in the VM next to UVMC, on your PC, ...) and uses UVMC's features with a key of its own. It differs from a tool: a tool is code an agent wrote that UVMC runs, contains and holds the secrets of; UVMC doesn't run a program, contain it or see its code, and the program keeps its own secrets. What a program may do is what its key allows. For now that is **sending reports**; waking an agent, asking you questions and offering actions to agents come later (design.md 7s).
+
+**Adding one:** Settings › Programs that use UVMC › **Add a program**: a name (like `training-dispatcher`) and what it is. UVMC shows its key once: copy it into a file only the program can read. **New key** makes another (the old one stops working at once), **Remove** deletes the program, its key and its reports. Per program: what it may do (Send reports) and **Tell me if it's silent for more than N minutes**: a notification (and a red card) when it hasn't called UVMC for that long, and another when it calls again.
+
+**Its reports** appear in the Reports tab next to the tools' (marked "program"), with the same report page, earlier reports (the last 30), "new" counts and Notify choice. The format is the tools' ([reports.py](../supervisor/uvmc/reports.py)), with one difference: a program sends its pictures inside the report (`{"type": "image", "data": "<base64>"}`), since it shares no folder with UVMC.
+
+**The client library:** [client/python/uvmc_client.py](../client/python/uvmc_client.py), one file with nothing but Python's standard library, to copy into a program:
+
+```python
+from uvmc_client import Uvmc
+uvmc = Uvmc()     # reads UVMC_URL, UVMC_KEY_FILE (or UVMC_KEY, or a systemd credential uvmc-key), UVMC_DATA
+uvmc.report(title="Queue", status=("ok", "3 running"),
+            blocks=[uvmc.stats({"Running": 3}), uvmc.table(["Job", "State"], rows)],
+            notify=None)   # a text asks for a notification
+uvmc.heartbeat()   # "still alive", for programs with nothing to report for a while
+```
+
+It never makes the program fail because of UVMC: a call that doesn't get through returns `None` (the reason is in `.last_error`), and a report UVMC couldn't take (unreachable, locked, busy) is kept in `UVMC_DATA` and sent with the next call that gets through. Without `UVMC_URL` it still works: running as a UVMC tool (`UVMC_REPORT` set) it writes the tool's report file, and otherwise it writes `UVMC_DATA/reports/latest.json` (and the few before it). So the same program runs connected to UVMC, as a tool, or on its own. `UVMC_URL` is the panel's address (`http://127.0.0.1:8080` from inside the VM).
+
+**The HTTP interface** behind it, for other languages, with `Authorization: Bearer <key>`: `GET /api/programs/self` (its name, permissions, UVMC's version), `POST /api/programs/self/reports` (a report, up to 8 MB with its pictures, at most 30 a minute), `POST /api/programs/self/heartbeat`.
+
+**Walls:** a program's key reaches only `/api/programs/self/...`; on any other route (the panel's, conversations, files, settings) it gets 403, and those routes take no other key or cookie. UVMC keeps only a hash of the key and shows the key once. While UVMC is locked, program keys are refused (423) like every other program. Each call is listed on the program's page (time, route, result; never its content). Agents, conversations' users, tools and Claude Code can't reach the API at all: the firewall refuses them port 8080, as before. Reports go only to the panel, never to an agent.
+
 ## The headless browser
 
 For pages that only work with JavaScript, or that need clicking through, the agents and the tools they build have a headless browser (a browser with no window): [Playwright](https://playwright.dev) with Chromium's headless shell, installed by `update` (since 0.16.1). The version is pinned in [browser-requirements.txt](../supervisor/browser-requirements.txt); changing that line makes the next `update` install that version.
@@ -415,6 +440,7 @@ Left without a limit on purpose: `shell` and `sign-in-claude` (interactive), `up
 | [supervisor/uvmc/transcript.py](../supervisor/uvmc/transcript.py) | A conversation's log as a readable transcript, for an agent resolving a conflict |
 | [supervisor/uvmc/made_tools.py](../supervisor/uvmc/made_tools.py) | Tools the agent builds: proposals, frozen copies, their users, proxies and schedule |
 | [supervisor/uvmc/reports.py](../supervisor/uvmc/reports.py) | The report format tools write (the blocks), checked before the panel draws it |
+| [supervisor/uvmc/programs.py](../supervisor/uvmc/programs.py) | Programs that use UVMC: their keys, their reports and the silent check |
 | [supervisor/uvmc/shares.py](../supervisor/uvmc/shares.py) | Shared folders: approved writes, backups, restore |
 | [supervisor/uvmc/settings.py](../supervisor/uvmc/settings.py) | Panel settings: model profiles and API keys, on top of config.toml |
 | [supervisor/setup.sh](../supervisor/setup.sh) | Installs all of this inside the VM; `update` runs it again |

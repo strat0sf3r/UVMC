@@ -1536,7 +1536,7 @@ function runBody(res) {
 // --- The Reports tab: each tool's latest report, at full width ---------------------------
 // The Reports button opens it as a tab beside the conversations. A run counts as new until
 // you look at it here; a browser notification comes when the tool's setting asks for one.
-const reports = { open: false, active: false, tools: [], tool: null, run: null, timer: null };
+const reports = { open: false, active: false, tools: [], programs: [], tool: null, program: null, run: null, timer: null };
 try { reports.open = localStorage.getItem("uvmc.reports") === "1"; } catch {}
 const NOTIFY = [["asks", "When it asks, fails or reports a problem"], ["always", "After every run"], ["never", "Never"]];
 
@@ -1570,7 +1570,7 @@ function reportsTab() {
   tab.querySelector(".close").addEventListener("click", closeReports);
   return tab;
 }
-const newReports = () => reports.tools.reduce((n, t) => n + (t.unseen || 0), 0);
+const newReports = () => [...reports.tools, ...reports.programs].reduce((n, t) => n + (t.unseen || 0), 0);
 function showReportCounts() {
   const n = newReports(), b = $("reportsBtn");
   b.querySelector(".badge").textContent = n || "";
@@ -1578,10 +1578,10 @@ function showReportCounts() {
   b.title = n ? `${n} new report${n > 1 ? "s" : ""} from your tools` : "Reports from the tools the agent built";
   b.setAttribute("aria-label", n ? `Reports, ${n} new` : "Reports");
   if (reports.open) renderConvs();
-  if (reports.active && !reports.tool) showReportsOverview();
+  if (reports.active && !reports.tool && !reports.program) showReportsOverview();
 }
 async function refreshReportCounts() {
-  try { reports.tools = await api("/api/made-tools"); } catch { return; }
+  try { [reports.tools, reports.programs] = await Promise.all([api("/api/made-tools"), api("/api/programs").catch(() => [])]); } catch { return; }
   showReportCounts();
 }
 function refreshReportsSoon() { clearTimeout(reports.timer); reports.timer = setTimeout(refreshReportCounts, 300); }
@@ -1589,19 +1589,21 @@ function refreshReportsSoon() { clearTimeout(reports.timer); reports.timer = set
 async function loadReports() {
   await refreshReportCounts();
   if (reports.tool && !reports.tools.some((t) => t.name === reports.tool)) { reports.tool = null; reports.run = null; }
-  if (reports.tool) showReportPage(); else showReportsOverview();
+  if (reports.program && !reports.programs.some((t) => t.name === reports.program)) { reports.program = null; reports.run = null; }
+  if (reports.tool) showReportPage(); else if (reports.program) showProgramPage(); else showReportsOverview();
 }
-function openReport(name, runId) { reports.tool = name; reports.run = runId || null; showReportPage(); $("reppage").scrollTop = 0; }
-function backToOverview() { reports.tool = null; reports.run = null; showReportsOverview(); }
+function openReport(name, runId) { reports.tool = name; reports.program = null; reports.run = runId || null; showReportPage(); $("reppage").scrollTop = 0; }
+function openProgramReport(name, id) { reports.program = name; reports.tool = null; reports.run = id || null; showProgramPage(); $("reppage").scrollTop = 0; }
+function backToOverview() { reports.tool = null; reports.program = null; reports.run = null; showReportsOverview(); }
 // Every tool as a card: how its last run went, its first few numbers, and the way into its report.
 function showReportsOverview() {
   const page = $("reppage");
-  if (!reports.tools.length) {
-    page.innerHTML = `<div class="empty"><h2>No reports yet.</h2><p>Tools the agent builds show their results here. Ask the agent for one, for example: <em>"every morning, check this page and tell me what changed"</em>.</p></div>`;
+  if (!reports.tools.length && !reports.programs.length) {
+    page.innerHTML = `<div class="empty"><h2>No reports yet.</h2><p>Tools the agent builds show their results here. Ask the agent for one, for example: <em>"every morning, check this page and tell me what changed"</em>. Your own programs can send reports here too (Settings › Programs).</p></div>`;
     return;
   }
   const keep = page.scrollTop;
-  page.innerHTML = `<h2>Reports</h2><p class="small">The latest result of each tool the agent built. Open one for the whole report and its earlier runs.</p>`;
+  page.innerHTML = `<h2>Reports</h2><p class="small">The latest result of each tool the agent built and each program that reports here. Open one for the whole report and the earlier ones.</p>`;
   const grid = el("div", "repgrid");
   for (const t of reports.tools) {
     const r = t.last_run, rep = r?.report;
@@ -1631,8 +1633,76 @@ function showReportsOverview() {
     row.append(open, run);
     grid.appendChild(card);
   }
+  for (const p of reports.programs) grid.appendChild(programCard(p));
   page.appendChild(grid);
   page.scrollTop = keep;
+}
+// A program's card: its last report (or that it went silent) and the way into its reports.
+const programWhen = (p) => p.last_seen ? `Last heard from ${fmtWhen(p.last_seen)}.` : "Hasn't called yet.";
+const silentFor = (p) => `Silent for ${Math.round((p.silent_for || 0) / 60)} min`;
+function programCard(p) {
+  const rep = p.last_report;
+  const card = el("div", `repcard${p.silent || rep?.status?.state === "bad" ? " bad" : ""}`);
+  const status = p.silent ? `<div class="rstatus bad"><span class="ico" aria-hidden="true">✕</span><span>${esc(silentFor(p))}</span></div>`
+    : !rep ? `<p class="small">No report yet.</p>`
+    : rep.status ? `<div class="rstatus ${esc(rep.status.state)}"><span class="ico" aria-hidden="true">${STATUS_ICON[rep.status.state] || ""}</span><span>${esc(rep.status.text || rep.status.state)}</span></div>`
+    : `<div class="rstatus info"><span class="ico" aria-hidden="true">i</span><span>${esc(rep.title || "A report")}</span></div>`;
+  card.innerHTML = `<div class="top"><strong>${esc(p.name)}</strong> <span class="tag">program</span>${p.unseen ? `<span class="badge">${p.unseen} new</span>` : ""}</div>
+    ${status}
+    <div class="glance"></div>
+    <div class="when">${rep ? `Report ${esc(fmtWhen(rep.at))}. ` : ""}${esc(programWhen(p))}</div>
+    <div class="row"></div>`;
+  if (rep?.stats?.length) card.querySelector(".glance").appendChild(renderBlock({ type: "stats", items: rep.stats }, ""));
+  const open = el("button", "btn primary", "Open report"); open.type = "button";
+  open.disabled = !rep;
+  open.addEventListener("click", () => openProgramReport(p.name));
+  card.querySelector(".row").appendChild(open);
+  return card;
+}
+const programBase = (name, id) => `/api/programs/${encodeURIComponent(name)}/reports/${encodeURIComponent(id)}`;
+async function showProgramPage() {
+  const page = $("reppage");
+  const name = reports.program;
+  let p, res = null;
+  try {
+    p = await api(`/api/programs/${encodeURIComponent(name)}`);
+    const id = reports.run || p.reports[0]?.id;
+    if (id) res = await api(programBase(name, id));
+  } catch (e) { page.innerHTML = `<p class="small bad">${esc(e.message)}</p>`; return; }
+  if (reports.program !== name) return;   // another one was picked meanwhile
+  page.innerHTML = "";
+  const back = el("button", "linkish repback", "← All reports"); back.type = "button";
+  back.addEventListener("click", backToOverview);
+  page.appendChild(back);
+  const head = el("div", "rephead");
+  head.innerHTML = `<div class="who"><h2>${esc(p.name)} <span class="tag">program</span></h2>${p.description ? `<p class="small">${esc(p.description)}</p>` : ""}
+      <p class="small">${p.silent ? `<span class="bad">${esc(silentFor(p))}.</span> ` : ""}${esc(programWhen(p))}${p.silent_after ? ` You're told if it's silent for more than ${esc(p.silent_after)} min.` : ""}</p></div>
+    <div class="ctrls"></div>`;
+  const ctrls = head.querySelector(".ctrls");
+  const settings = el("button", "btn", "Settings"); settings.type = "button";
+  settings.addEventListener("click", () => { if (reports.active) setReportsView(false); selectTab($("tab-settings")); });
+  const notify = el("label", "pick", `<span>Notify me</span><select>${NOTIFY.map(([v, l]) => `<option value="${v}" ${p.notify === v ? "selected" : ""}>${esc(v === "always" ? "After every report" : l)}</option>`).join("")}</select>`);
+  notify.querySelector("select").addEventListener("change", async (e) => {
+    try { await api("/api/programs/update", { name, notify: e.target.value }); askNotifyPermission(); }
+    catch (err) { ctrls.appendChild(el("p", "small bad", esc(err.message))); }
+  });
+  ctrls.append(settings, notify);
+  page.appendChild(head);
+  if (!res) { page.appendChild(el("p", "small", "No report yet. It appears here as soon as the program sends one.")); return; }
+  const bar = el("div", "repbar");
+  bar.innerHTML = `<span class="small">Sent ${esc(fmtWhen(res.record.at))}.</span>`;
+  if (p.reports.length > 1) {
+    const sel = el("select", "", p.reports.map((x, i) => `<option value="${esc(x.id)}" ${x.id === res.record.id ? "selected" : ""}>${i ? "" : "Latest: "}${esc(fmtWhen(x.at))}${x.status?.state === "bad" ? " (problem)" : ""}</option>`).join(""));
+    sel.setAttribute("aria-label", "Earlier reports");
+    sel.addEventListener("change", () => { reports.run = sel.value === p.reports[0].id ? null : sel.value; showProgramPage(); });
+    bar.appendChild(el("label", "pick", "<span>Report</span>")).appendChild(sel);
+  }
+  page.appendChild(bar);
+  const w = el("div");
+  if (res.report) w.appendChild(renderReport(res.report, programBase(name, res.record.id)));
+  if (res.problems?.length) w.appendChild(problemsEl(res.problems));
+  page.appendChild(w);
+  if (res.record.seen === false && !document.hidden) api("/api/programs/seen", { name, id: res.record.id }).catch(() => {});
 }
 async function showReportPage() {
   const page = $("reppage");
@@ -1738,7 +1808,7 @@ function showNotifyHint(head) {
   if (why) head.appendChild(el("p", "small nhint", esc(why)));
 }
 function askNotifyPermission() {   // only ever from a click, as browsers want
-  if ("Notification" in window && Notification.permission === "default" && reports.tools.some((t) => t.notify !== "never"))
+  if ("Notification" in window && Notification.permission === "default" && [...reports.tools, ...reports.programs].some((t) => t.notify !== "never" || t.silent_after))
     Notification.requestPermission().catch(() => {});
 }
 // A run ended. Like the memory alert: a browser notification only when you're not looking
@@ -1754,6 +1824,25 @@ function toolRunEnded(ev) {
   const body = rep?.notify || (!r.ok ? `The run failed${r.note ? ": " + r.note : ""}.` : rep?.status?.text || rep?.title || "A new result.");
   const n = new Notification(`UVMC: ${ev.title}`, { body, tag: `uvmc-tool-${ev.name}` });
   n.onclick = () => { window.focus(); openReports(ev.name); n.close(); };
+}
+// A program sent a report, went silent or came back: like a tool's run.
+function programReported(ev) {
+  refreshReportsSoon();
+  if (reports.active && reports.program === ev.name && !reports.run) showProgramPage();
+  const rep = ev.report, mode = ev.notify || "asks";
+  if (mode === "never" || (mode === "asks" && rep?.status?.state !== "bad" && !rep?.notify)) return;
+  programNotice(ev.name, rep?.notify || rep?.status?.text || rep?.title || "A new report.");
+}
+function programSilent(ev) {
+  refreshReportsSoon();
+  if ($("programsList") && !$("pane-settings").hidden) loadPrograms();
+  programNotice(ev.name, ev.back ? "It's calling again." : `It hasn't called UVMC for ${ev.minutes} minutes.`);
+}
+function programNotice(name, body) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (!document.hidden && document.hasFocus()) return;
+  const n = new Notification(`UVMC: ${name}`, { body, tag: `uvmc-program-${name}` });
+  n.onclick = () => { window.focus(); reports.program = name; reports.tool = null; reports.run = null; openReports(); n.close(); };
 }
 $("reportsBtn").addEventListener("click", () => openReports());
 
@@ -2330,6 +2419,9 @@ function connect() {
     if (ev.kind === "projects") { if (!$("pane-projects").hidden) loadProjects(); refreshFolderSoon(); if (filesVisible()) refreshFilesSoon(); return; }
     if (ev.kind === "made_tools") { if (toolsVisible()) loadToolsSoon(); refreshReportsSoon(); return; }
     if (ev.kind === "tool_run") { toolRunEnded(ev); return; }
+    if (ev.kind === "programs") { refreshReportsSoon(); if ($("programsList") && !$("pane-settings").hidden) loadPrograms(); return; }
+    if (ev.kind === "program_report") { programReported(ev); return; }
+    if (ev.kind === "program_silent") { programSilent(ev); return; }
     if (ev.kind === "updates") { updatesNotice(ev); return; }
     if (ev.kind === "private") { privateNotice(); return; }
     if (ev.kind === "lock") { api("/api/lock").then(showLock).catch(() => {}); refreshConvsSoon(); return; }
@@ -2947,6 +3039,81 @@ async function loadSettings() {
   } catch (e) { pane.innerHTML = `<p class="small">${esc(e.message)}</p>`; }
 }
 
+// --- Settings › Programs that use UVMC (programs.py) ----------------------------------------
+const PROGRAM_PERMS = [["reports", "Send reports"]];
+async function loadPrograms() {
+  const list = $("programsList");
+  if (!list) return;
+  let progs;
+  try { progs = await api("/api/programs"); } catch (e) { list.innerHTML = `<li class="small bad">${esc(e.message)}</li>`; return; }
+  if (!$("programsList")) return;
+  if (list.contains(document.activeElement) && document.activeElement.matches("input")) return;   // not while you type
+  list.innerHTML = progs.length ? "" : `<li class="small">None yet.</li>`;
+  for (const p of progs) {
+    const seen = p.last_seen ? `last called ${fmtWhen(p.last_seen)}` : "hasn't called yet";
+    const li = el("li", "profile", `<div><strong>${esc(p.name)}</strong>${p.silent ? ` <span class="tag bad">silent</span>` : ""}
+      ${p.description ? `<div class="sub">${esc(p.description)}</div>` : ""}
+      <div class="sub">Key uvmcp_${esc(p.key_id || "?")}_…, made ${fmtWhen(p.key_made || p.created)}; ${esc(seen)}.</div>
+      ${PROGRAM_PERMS.map(([v, l]) => `<div class="sub"><label class="told-switch"><input type="checkbox" data-perm="${v}" ${p.permissions.includes(v) ? "checked" : ""}> ${esc(l)}</label></div>`).join("")}
+      <div class="sub"><label>Tell me if it's silent for more than <input type="number" min="0" max="10080" step="1" data-silent value="${esc(p.silent_after || 0)}" style="width:5em" aria-label="Minutes"> minutes (0: never)</label></div></div>`);
+    const acts = el("div", "acts2");
+    const key = el("button", "btn", "New key"); key.type = "button";
+    key.title = "Makes a new key and shows it once; the old one stops working at once.";
+    key.addEventListener("click", async () => {
+      if (!confirm(`Make a new key for ${p.name}? The old one stops working at once.`)) return;
+      try { const r = await api("/api/programs/key", { name: p.name }); showProgramKey(p.name, r.key); loadPrograms(); }
+      catch (e) { li.appendChild(el("p", "small bad", esc(e.message))); }
+    });
+    const rm = el("button", "btn", "Remove"); rm.type = "button";
+    rm.addEventListener("click", async () => {
+      if (!confirm(`Remove ${p.name}? Its key stops working and its reports are deleted.`)) return;
+      try { await api("/api/programs/remove", { name: p.name }); loadPrograms(); refreshReportsSoon(); }
+      catch (e) { li.appendChild(el("p", "small bad", esc(e.message))); }
+    });
+    acts.append(key, rm);
+    li.appendChild(acts);
+    const save = async (body) => {
+      try { await api("/api/programs/update", { name: p.name, ...body }); }
+      catch (e) { li.appendChild(el("p", "small bad", esc(e.message))); loadPrograms(); }
+    };
+    li.querySelectorAll("[data-perm]").forEach((box) => box.addEventListener("change", () =>
+      save({ permissions: [...li.querySelectorAll("[data-perm]:checked")].map((b) => b.dataset.perm) })));
+    li.querySelector("[data-silent]").addEventListener("change", (e) => save({ silent_after: Number(e.target.value) || 0 }));
+    list.appendChild(li);
+  }
+}
+function programForm() {
+  const box = $("programForm");
+  box.innerHTML = `<form class="pform"><h3>Add a program</h3>
+    <label>Name <input data-name required maxlength="32" pattern="[a-z][a-z0-9\\-]{1,31}" placeholder="e.g. training-dispatcher"></label>
+    <p class="small">Lowercase letters, digits and dashes.</p>
+    <label>What it is <input data-desc maxlength="500" placeholder="optional"></label>
+    <div class="row"><button class="btn primary" type="submit">Add and show its key</button> <button class="btn" type="button" data-cancel>Cancel</button></div>
+    <p class="small form-msg"></p></form>`;
+  const f = box.querySelector("form");
+  f.querySelector("[data-cancel]").addEventListener("click", () => { box.innerHTML = ""; });
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/api/programs/add", { name: f.querySelector("[data-name]").value, description: f.querySelector("[data-desc]").value });
+      showProgramKey(r.program.name, r.key);
+      loadPrograms();
+      refreshReportsSoon();
+    } catch (err) { const m = f.querySelector(".form-msg"); m.textContent = err.message; m.classList.add("bad"); }
+  });
+  f.querySelector("[data-name]").focus();
+}
+// The key, once: copy it now, it's never shown again.
+function showProgramKey(name, key) {
+  const box = $("programForm");
+  box.innerHTML = `<div class="pform"><h3>The key for ${esc(name)}</h3>
+    <p class="small"><strong>Copy it now: it's never shown again.</strong> Give it to the program in a file only the program can read, and point UVMC_KEY_FILE at it (or a systemd credential named uvmc-key). UVMC_URL is this panel's address.</p>
+    <pre class="cfg" data-key>${esc(key)}</pre>
+    <div class="row"><button class="btn primary" type="button" data-copy>Copy</button> <button class="btn" type="button" data-done>Done</button></div></div>`;
+  box.querySelector("[data-copy]").addEventListener("click", (e) => { navigator.clipboard?.writeText(key); e.target.textContent = "Copied"; });
+  box.querySelector("[data-done]").addEventListener("click", () => { box.innerHTML = ""; });
+}
+
 async function settingsPost(path, body, pane) {
   try {
     await api(path, body);
@@ -2985,6 +3152,11 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
     <p class="small">Let Claude Code or Claude Desktop on your PC hand tasks to the agent here, as a tool. Their tasks run with the same rules and walls; anything that needs approval still waits for you here, and they can't approve anything.</p>
     <label class="told-switch"><input type="checkbox" id="mcpOn" ${set.mcp_enabled ? "checked" : ""}> Allow Claude apps on my PC to use UVMC</label>
     <p class="small" id="mcpSeen"></p>
+    <h3>Programs that use UVMC</h3>
+    <p class="small">Your own programs (running on their own, in this machine or elsewhere) can send reports to the Reports tab, each with a key of its own. A key reaches only what you allow here, nothing of the panel, and nothing while UVMC is locked. UVMC doesn't run these programs or hold their secrets. The client library and how to connect one: guide.md, "Programs".</p>
+    <ul class="alist programs" id="programsList"><li class="small">Loading...</li></ul>
+    <div id="programForm"></div>
+    <button class="btn" type="button" id="addProgram">Add a program</button>
     <h3>Models</h3>
     <p class="small">Pick which one a conversation uses in the header. Changes here are kept in the VM on top of config.toml.</p>
     <ul class="alist profiles" id="profiles"></ul>
@@ -3021,6 +3193,8 @@ function renderSettings(pane, st, set, c, net, cc = {}) {
   }).catch(() => {});
   loadLocalModel();
   loadUpdates();
+  loadPrograms();
+  $("addProgram").addEventListener("click", programForm);
   api("/api/briefing").then(renderBriefing).catch((e) => { $("briefingBox").innerHTML = `<p class="small bad">${esc(e.message)}</p>`; });
   $("ccUpdate").addEventListener("click", async (e) => {
     const line = $("ccLine");

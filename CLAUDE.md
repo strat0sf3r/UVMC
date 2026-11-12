@@ -40,7 +40,7 @@ To look at the panel without a VM, run it the way the tests do: a `Controller` w
 - `windows/helper.ps1`, `unix/helper`: the UVMC helper on the PC (guide: "The helper on your PC"): `127.0.0.1:8092` only, its key, the panel's origin and Host checked; runs `local-model` as hidden jobs for the panel (`/pc/...`) and opens the panel signed in (`/panel`). Both answer the panel the same way; change them together. The panel's side is `pcApi` and `pcControls` in `static/index.html`.
 - `windows/`, `unix/`: the scripts on the PC. A quick command a script sends to the VM gets `timeout` inside it and is checked with `windows/timeouts.ps1` / `unix/timeouts.sh`, which log timeouts on the PC (guide: "Time limits on the PC's commands to the VM"). Hidden runs (the relay, the extension) also get a limit on the PC (`Invoke-VmQuick`).
 
-## State (0.22.6, 2026-11-12)
+## State (0.23.0, 2026-11-12)
 
 Done: steps 1-5, 7 (tools the agent builds), 7b (several conversations), 7c (each conversation isolated, bring-in, agent-resolved conflicts), a model on the PC's graphics card (`local-model`, llama.cpp, not Ollama: the user doesn't want Ollama's subscription side). Step 6 (Codex on a ChatGPT plan) is parked: no plan to test with.
 
@@ -85,6 +85,8 @@ Private conversations, fix found on the VM (with 0.19.1): the start-up self-chec
 0.22.4: OpenRouter tried for real on the VM (0.22.2 running, a key without credit): the credit check, the model list (340 with tools, 13 free) and a tool call from `nvidia/nemotron-3.5-lightning:free` (cost 0, reasoning blocks kept). Fixed from it: a 429 from the provider behind OpenRouter (Google AI Studio's free Gemma) was told as your own limit; the credit line read the key's spending limit as money left. Not yet: the panel's picker and credit line seen in a browser.
 
 0.22.5: Settings › Models also lists the config.toml profiles still without a model (`gpt`, `gemini`, `openrouter`; `config.waiting_profiles`) with "Choose a model" (for OpenRouter it opens the picker): the user couldn't find OpenRouter in the panel, since a profile without a model isn't offered anywhere else.
+
+0.23.0 (branch `programs`): step 7s slice 1, programs that use UVMC (`programs.py`): a key per program in Settings › Programs (shown once, hashed, reaches only `/api/programs/self/...`, refused while locked), their reports in the Reports tab (pictures inline), "tell me if it's silent", and `client/python/uvmc_client.py` (stdlib only; keeps a report UVMC couldn't take; falls back to a tool's report file or local files). Tests pass in the VM (261 + the new ones; `tests/test_programs.py`); panel checked in a preview there (`tests/preview_programs.py`). Not yet: `update` on the VM, a real program connected.
 
 0.22.6: the model form fills the Model name's dropdown (a `datalist`) from OpenRouter as soon as the address is OpenRouter's and the key is set (`fillOpenRouterList`, once per address and key); typing narrows it; a `:free` id sets the privacy to open. "Choose..." stays for prices and the free filter. Panel only; not yet seen in a browser.
 
