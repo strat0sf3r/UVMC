@@ -924,10 +924,14 @@ class Services:
                 "after failing too often in a row", "success": "normally"}.get(result, result or "for an unknown reason")
 
     def log(self, name: str, lines: int = 200, unit: str | None = None) -> str:
+        """Its log since this service was added: a service removed and added again under the same
+        name doesn't show the old one's lines (journald keeps them by unit name)."""
         if no_sudo():
             return ""
-        p = subprocess.run(["journalctl", "-u", unit or self.unit(name), "-n", str(max(1, min(lines, 2000))),
-                            "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        since = int(self.get(name).get("created") or 0)
+        p = subprocess.run(["journalctl", "-u", unit or self.unit(name), "--since", f"@{since}",
+                            "-n", str(max(1, min(lines, 2000))), "--no-pager", "-o", "short-iso"],
+                           capture_output=True, text=True, timeout=20)
         return p.stdout[-200_000:]
 
     # --- installing in place: sessions, snapshots, the asked network ------------------------------
