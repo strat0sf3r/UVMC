@@ -948,7 +948,7 @@ class Services:
     def session_marker(self, name: str) -> Path:
         return (Path(self.cfg.state_dir) / "service-sessions" if no_sudo() else Path("/run/uvmc/service-sessions")) / name
 
-    def start_session(self, name: str, who: str = "shell", sites: list | None = None) -> dict:
+    def start_session(self, name: str, who: str = "shell", sites: list | None = None, conv: str | None = None) -> dict:
         """Opens an install session: snapshot, the service stopped, the app folder writable to it,
         the network asked site by site (sites: allowed for this session without asking)."""
         if who not in ("shell", "agent"):
@@ -972,7 +972,7 @@ class Services:
             if was_on:
                 self._systemctl("stop", self.unit(name))
             e["session"] = {"who": who, "started": time.time(), "was_on": was_on, "snapshot": snap,
-                            "allowed": allowed, "answers": {}, "used": []}
+                            "allowed": allowed, "answers": {}, "used": [], "conv": conv}
             self._save()
             self._write_session_files(name)
             proxy = self.proxies.get(name)
@@ -1033,7 +1033,7 @@ class Services:
                 q = waits[qid] = {"id": qid, "host": host, "port": port, "t": time.time(), "event": threading.Event(),
                                   "result": False}
                 self.on_event({"kind": "service_ask", "name": name, "id": qid, "host": host, "port": port,
-                               "who": sess["who"]})
+                               "who": sess["who"], "conv": sess.get("conv")})
                 self.notify()
         q["event"].wait(self.cfg.net_approval_timeout_s)
         with self.lock:
@@ -1087,6 +1087,15 @@ class Services:
         if not done:
             raise ServiceError("Its profile has no sites list under [network]: edit the profile by hand.")
         return self.set_adapter(name, "\n".join(lines) + "\n")
+
+    def set_level(self, name: str, level: str) -> None:
+        """Its privacy level (privacy.py): an agent working inside it needs a model at least that level."""
+        from . import privacy
+        privacy.check(level)
+        with self.lock:
+            self.get(name)["level"] = level
+            self._save()
+        self.notify()
 
     def rollback(self, name: str, snapshot: str) -> None:
         """The app folder as it was before an install session (the service restarted if it's on)."""
@@ -1241,6 +1250,14 @@ class Services:
         for name, e in self.registry.items():
             if e.get("installed"):
                 self._restart_proxy(name)
+        # An agent's install session belongs to its conversation, which a restart doesn't bring
+        # back: it ends (the service starts again if it was on). A shell's stays until you end it.
+        for name, e in list(self.registry.items()):
+            if (e.get("session") or {}).get("who") == "agent":
+                try:
+                    self.end_session(name)
+                except Exception as err:   # never keeps the supervisor from starting
+                    print(f"Warning: could not end the agent's install session of {name}: {err}")
 
         def loop():
             while True:

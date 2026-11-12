@@ -138,6 +138,29 @@ class LocalExecutor(Executor):
     """Tests only: runs as the current user."""
 
 
+class SessionExecutor(Executor):
+    """An agent's commands inside a service's account (services.py, install sessions): each runs
+    as a transient systemd service with the session's properties (the service's user, sandbox
+    and box, its app folder writable, no secrets, its data folder hidden), named
+    <unit_prefix>-<n> so Stop can end them. props() is read at every command, so a profile
+    change applies at once. Outside the VM (tests) it runs like LocalExecutor."""
+
+    def __init__(self, cfg: Config, slice_name: str, props, unit_prefix: str, **who):
+        super().__init__(cfg, slice_name, **who)
+        self.props = props
+        self.unit_prefix = unit_prefix
+        self.n = 0
+
+    def command(self, script, args, timeout):
+        if no_sudo():
+            return self.inner(script, args, timeout)
+        self.n += 1
+        flags = [x for p in self.props() for x in ("-p", p)]
+        return ["sudo", "-n", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "--service-type=exec",
+                f"--unit={self.unit_prefix}-{os.getpid()}-{self.n}", *flags, "-p", f"RuntimeMaxSec={timeout + 30}",
+                "--", *self.inner(script, args, timeout)]
+
+
 def conversation_slice(conv_id: str) -> str:
     """A conversation's box: a child of the agent's (systemd nests "a-b.slice" in "a.slice"),
     so the agent's limits cover every conversation together, and Stop can end one alone."""

@@ -68,6 +68,12 @@ def main(port: int) -> None:
     ctl.services.start_session("random-app", "shell", ["pypi.org"])
     ctl.services._used("random-app", "pypi.org")
     threading.Thread(target=ctl.services._ask, args=("random-app", "files.pythonhosted.org", 443), daemon=True).start()
+    # another one with an agent working inside it, one site waiting for your answer in its conversation
+    ctl.services.add_local(LOCAL_PROFILE.replace('"random-app"', '"agent-app"').replace("A random app", "An app an agent installs"))
+    ctl.services.approve("agent-app", "local")
+    inside = ctl.new_conversation_inside("agent-app")
+    threading.Thread(target=ctl.services._ask, args=("agent-app", "github.com", 443), daemon=True).start()
+    ctl.select(inside["conv"]) if hasattr(ctl, "select") else None
     print(f"Preview on port {port}: open /?token=token, then Services")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 

@@ -700,6 +700,7 @@ pre.diff { white-space: pre-wrap; word-break: break-word; max-height: 300px; ove
       <p class="banner" id="lockBanner" hidden>Locked: no program on your PC can reach the VM (Multipass, scripts, AI agents, you in a terminal), and only the model on your PC works. Restarting the VM unlocks it.</p>
       <p class="banner" id="keyBanner" hidden></p>
       <p class="banner bad" id="memBanner" role="alert" hidden><span id="memText"></span><button class="btn" id="memClose" type="button">Dismiss</button></p>
+      <p class="banner" id="svcAskBanner" hidden></p>
       <p class="banner" id="pastBanner" hidden><span id="pastText"></span><button class="btn" id="backLive" type="button">Back to the live conversation</button></p>
     </div>
     <div id="feed" tabindex="-1"><div class="thread" id="thread"></div></div>
@@ -1913,9 +1914,27 @@ function showServiceCounts() {
   b.title = n ? `${n} service${n > 1 ? "s" : ""} waiting for you (an approval, or one that stopped)` : "Your own apps that UVMC runs (installed from git when you approve them)";
   if (services.open) renderConvs();
 }
+// An agent's install session asks about sites in its own conversation (and on the service's page).
+function renderSvcAsks() {
+  const banner = $("svcAskBanner");
+  if (!banner) return;
+  const mine = services.list.filter((x) => x.session?.conv && x.session.conv === view.conv && x.asks?.length);
+  banner.hidden = !mine.length;
+  banner.innerHTML = "";
+  for (const x of mine) for (const q of x.asks) {
+    const line = el("span", "", `${esc(x.title)} wants to reach <strong>${esc(q.host)}</strong> (outside its profile; for this session only) `);
+    for (const [label, allow] of [["Allow", true], ["Refuse", false]]) {
+      const b = el("button", allow ? "btn primary" : "btn", label); b.type = "button";
+      b.addEventListener("click", async () => { b.disabled = true; try { await api("/api/services/answer", { name: x.name, id: q.id, allow }); } catch (e) {} refreshServices(); });
+      line.appendChild(b);
+    }
+    banner.appendChild(line);
+  }
+}
 async function refreshServices() {
   try { services.list = await api("/api/services"); } catch { return; }
   showServiceCounts();
+  renderSvcAsks();
   if (services.active && !services.name) showServicesOverview();
   if (services.active && services.name) updateServicePage();
 }
@@ -2234,14 +2253,32 @@ function installSection(x, act) {
   const name = x.name;
   if (x.session) {
     sec.innerHTML = `<h3>Being installed</h3><p class="small">By ${x.session.who === "shell" ? "you, in a shell" : "an agent"} since ${esc(fmtWhen(x.session.started))}. The service is stopped meanwhile${x.session.was_on ? " and starts again when the session ends" : ""}. Sites allowed without asking: ${x.session.allowed?.length ? x.session.allowed.map(esc).join(", ") : "none"}; used so far: ${x.session.used?.length ? x.session.used.map(esc).join(", ") : "none"}.</p>
-      <p class="small">A shell's session ends when you leave the shell. If it was left open, end it here.</p>
+      <p class="small">${x.session.who === "shell" ? "A shell's session ends when you leave the shell. If it was left open, end it here." : "It ends when you close the agent's conversation (or here)."}</p>
       <div class="row"><button class="btn" type="button" data-end>End the session</button>${x.session.was_on ? `<label class="told-switch"><input type="checkbox" data-again checked> start it again</label>` : ""}</div>`;
     sec.querySelector("[data-end]").addEventListener("click", () => act("/api/services/session/end", { name, start_again: sec.querySelector("[data-again]")?.checked !== false }, "Session ended."));
   } else {
     sec.innerHTML = `<h3>Install or update it</h3>
       <p class="small">Inside its account, the way the app's README says: its app folder is writable during the session (read-only while it runs), the service is stopped meanwhile, a snapshot is taken first, it gets no secrets, and every site outside its profile is asked here.</p>
       <p class="small"><strong>Yourself:</strong> in a terminal on your PC run <code>uvmc shell ${esc(name)}</code> (add <code>-Sites pypi.org,github.com</code>, or <code>--sites</code> on a Mac or Linux, for sites to allow without asking). Leaving the shell ends the session.</p>
-      <p class="small"><strong>With an agent:</strong> coming next.</p>`;
+      <div class="row"><strong class="small">With an agent:</strong>
+        <button class="btn primary" type="button" data-agent>Install or update with an agent</button>
+        <label class="pick"><span>Privacy level</span><select data-level>${["open", "paid", "local"].map((l) => `<option ${x.level === l ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
+      <p class="small">A conversation opens whose commands run as this service, in an install session (the same walls as your shell, and it doesn't see the data folder). It uses the model of your current conversation, which must be at least this service's privacy level. Closing the conversation ends the session.</p>`;
+    sec.querySelector("[data-agent]").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      let r;
+      try { r = await api("/api/services/agent", { name }); }
+      catch (err) { e.target.disabled = false; sec.appendChild(el("p", "small bad", esc(err.message))); return; }
+      setServicesView(false);
+      await refreshConvs();
+      await selectConv(r.conv);
+      const box = $("task");
+      box.value = `Install ${x.manifest.title} in this account, following its own instructions. Then try it, and propose its profile.\n\nWhere it comes from: `;
+      box.dispatchEvent(new Event("input"));
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    });
+    sec.querySelector("[data-level]").addEventListener("change", (e) => act("/api/services/level", { name, level: e.target.value }, "Privacy level saved."));
   }
   const last = x.last_session;
   if (last && !x.session) {
@@ -2554,6 +2591,7 @@ function renderConvs() {
   }
   if (reports.open) list.prepend(reportsTab());
   if (services.open) list.prepend(servicesTab());
+  if (typeof renderSvcAsks === "function") renderSvcAsks();
   list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
   showTitle();
 }
@@ -2713,6 +2751,15 @@ async function refreshFolder() {
   const bar = $("folderbar");
   if (!view.conv || !view.live) { bar.hidden = true; return; }
   const id = view.conv;
+  const inside = convs.find((c) => c.id === id)?.service;
+  if (inside) {   // it works in a service's app folder, not on a copy of the work folder
+    bar.hidden = false;
+    bar.innerHTML = `<span>Works inside the service <strong>${esc(inside)}</strong>: its commands run as that service, in its app folder, in an install session. Nothing here is brought into the main folder.</span>`;
+    const go = el("button", "btn", "Open its service"); go.type = "button";
+    go.addEventListener("click", () => openServices(inside));
+    bar.appendChild(go);
+    return;
+  }
   let ch;
   try { ch = await api(`/api/conversations/${encodeURIComponent(id)}/changes`); } catch (e) { bar.hidden = true; return; }
   if (id !== view.conv) return;
