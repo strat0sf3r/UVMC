@@ -137,15 +137,14 @@ for i in $(seq 1 "$POOL"); do
   CONV_UIDS="$CONV_UIDS $(id -u "$u")"
 done
 usermod -aG "$AGENT" "$OWNER"
-# Their firewall chains: each may reach only its own proxy (and loopback, except UVMC's ports).
+# Their firewall chains, a second wall: their commands run in their own network (netns.py,
+# design.md 7t: only their own loopback, with their proxy in it), so in the VM's network these
+# users may reach nothing at all, not even its loopback.
 CONV_JUMPS="" CONV_CHAINS="" i=0
 for uid in $CONV_UIDS; do
   i=$((i + 1))
   CONV_JUMPS+="    meta skuid $uid jump conv${i}_out"$'\n'
   CONV_CHAINS+="  chain conv${i}_out {
-    oifname \"lo\" ip daddr 127.0.0.1 tcp dport $((CONV_PORT + i)) accept
-    oifname \"lo\" tcp dport { 8080, $PROXY_PORT, $BRAIN_PROXY_PORT, $TOOLS_PORT-$((TOOLS_PORT + 99)), $CONV_PORT-$((CONV_PORT + 99)), $SVC_PORT-$((SVC_PORT + 99)) } reject with tcp reset
-    oifname \"lo\" accept
     meta l4proto tcp reject with tcp reset
     reject with icmpx type admin-prohibited
   }"$'\n'
@@ -422,8 +421,9 @@ EOF
 # --- firewall: the agent can only reach the proxy ---------------------------------
 cat > /etc/uvmc/firewall.nft <<EOF
 # UVMC: outgoing traffic from the agent user may only reach the supervisor's proxy.
-# Loopback stays open for the agent's own local servers, except the panel port and
-# Claude Code's proxy. The brain user (Claude Code on your plan) may only reach its proxy.
+# Loopback stays open for a shell as the agent (uvmc-agent shell), except the panel port and
+# Claude Code's proxy; the commands UVMC runs as any agent user run in that user's own network
+# instead (netns.py). The brain user (Claude Code on your plan) may only reach its proxy.
 table inet uvmc
 delete table inet uvmc
 table inet uvmc {
