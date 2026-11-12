@@ -27,7 +27,7 @@ AGENT_GID="$(id -g "$AGENT")"
 
 # --- packages ---------------------------------------------------------------
 need=()
-for pkg in nftables auditd rsync acl python3-venv; do
+for pkg in nftables auditd rsync acl python3-venv netcat-openbsd openssh-client git; do
   dpkg -s "$pkg" >/dev/null 2>&1 || need+=("$pkg")
 done
 if [ "${#need[@]}" -gt 0 ]; then
@@ -65,6 +65,7 @@ import tomllib, shlex
 c = tomllib.load(open("/etc/uvmc/config.toml", "rb"))
 n, l, b = c.get("network", {}), c.get("limits", {}), c.get("subscription", {})
 mt = c.get("made_tools", {})
+sv = c.get("services", {})
 cv = c.get("conversations", {})
 vals = {
     "CONV_MAX": cv.get("max_open", 8),
@@ -72,6 +73,10 @@ vals = {
     "CONV_PORT": cv.get("proxy_port", 3300),
     "TOOLS_DIR": mt.get("dir", "/var/lib/uvmc-tools"),
     "TOOLS_PORT": mt.get("proxy_port", 3200),
+    "SVC_DIR": sv.get("dir", "/var/lib/uvmc-services"),
+    "SVC_PORT": sv.get("proxy_port", 3400),
+    "SVC_MEM": sv.get("memory", "768M"),
+    "SVC_CPU": sv.get("cpu_percent", 100),
     "PROXY_PORT": n.get("proxy_port", 3128),
     "MEM": l.get("memory", "1200M"),
     "CPU": l.get("cpu_percent", 150),
@@ -139,7 +144,7 @@ for uid in $CONV_UIDS; do
   CONV_JUMPS+="    meta skuid $uid jump conv${i}_out"$'\n'
   CONV_CHAINS+="  chain conv${i}_out {
     oifname \"lo\" ip daddr 127.0.0.1 tcp dport $((CONV_PORT + i)) accept
-    oifname \"lo\" tcp dport { 8080, $PROXY_PORT, $BRAIN_PROXY_PORT, $TOOLS_PORT-$((TOOLS_PORT + 99)), $CONV_PORT-$((CONV_PORT + 99)) } reject with tcp reset
+    oifname \"lo\" tcp dport { 8080, $PROXY_PORT, $BRAIN_PROXY_PORT, $TOOLS_PORT-$((TOOLS_PORT + 99)), $CONV_PORT-$((CONV_PORT + 99)), $SVC_PORT-$((SVC_PORT + 99)) } reject with tcp reset
     oifname \"lo\" accept
     meta l4proto tcp reject with tcp reset
     reject with icmpx type admin-prohibited
@@ -154,6 +159,14 @@ getent group uvmc-tools >/dev/null || groupadd --system uvmc-tools
 TOOLS_GID="$(getent group uvmc-tools | cut -d: -f3)"
 install -d -m 2750 -o "$OWNER" -g uvmc-tools "$TOOLS_DIR"
 install -d -m 750 -o "$OWNER" -g "$OWNER" /var/log/uvmc/tools
+
+# --- services you add from git (services.py, docs/app-contract.md) --------------------
+# Each approved service gets its own user in the group uvmc-services, made by the supervisor,
+# and runs as a systemd unit uvmc-s-<name>.service. Their code (read-only, root's) and data
+# folders live in $SVC_DIR; agents and tools can't see them.
+getent group uvmc-services >/dev/null || groupadd --system uvmc-services
+SVC_GID="$(getent group uvmc-services | cut -d: -f3)"
+install -d -m 755 -o "$OWNER" -g "$OWNER" "$SVC_DIR"
 # Claude Code for the "my plan" models: installed by uvmc-install-claude, which update-claude
 # (on your PC) and the panel's "Update Claude Code" button also run.
 cat > /usr/local/sbin/uvmc-install-claude <<'CCEOF'
@@ -419,18 +432,24 @@ table inet uvmc {
     meta skuid $AGENT_UID jump agent_out
 ${CONV_JUMPS}    meta skuid $BRAIN_UID jump brain_out
     meta skgid $TOOLS_GID jump tools_out
+    meta skgid $SVC_GID jump services_out
   }
 ${CONV_CHAINS}  chain agent_out {
     oifname "lo" tcp dport $PROXY_PORT accept
     oifname "lo" tcp dport 8080 reject with tcp reset
     oifname "lo" tcp dport $BRAIN_PROXY_PORT reject with tcp reset
-    oifname "lo" tcp dport { $TOOLS_PORT-$((TOOLS_PORT + 99)), $CONV_PORT-$((CONV_PORT + 99)) } reject with tcp reset
+    oifname "lo" tcp dport { $TOOLS_PORT-$((TOOLS_PORT + 99)), $CONV_PORT-$((CONV_PORT + 99)), $SVC_PORT-$((SVC_PORT + 99)) } reject with tcp reset
     oifname "lo" accept
     meta l4proto tcp reject with tcp reset
     reject with icmpx type admin-prohibited
   }
   chain tools_out {
     oifname "lo" ip daddr 127.0.0.1 tcp dport $TOOLS_PORT-$((TOOLS_PORT + 99)) accept
+    meta l4proto tcp reject with tcp reset
+    reject with icmpx type admin-prohibited
+  }
+  chain services_out {
+    oifname "lo" ip daddr 127.0.0.1 tcp dport { $SVC_PORT-$((SVC_PORT + 99)), 8080 } accept
     meta l4proto tcp reject with tcp reset
     reject with icmpx type admin-prohibited
   }
@@ -453,6 +472,7 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/uvmc/firewall.nft
 ExecStartPost=-/usr/sbin/nft -f /etc/uvmc/tools.nft
+ExecStartPost=-/usr/sbin/nft -f /etc/uvmc/services.nft
 ExecStop=-/usr/sbin/nft delete table inet uvmc
 
 [Install]
@@ -491,6 +511,18 @@ MemoryMax=512M
 MemorySwapMax=0
 CPUQuota=100%
 TasksMax=256
+EOF
+
+# The services' box: every service together, apart from the agents', the tools' and Claude Code's.
+cat > /etc/systemd/system/uvmc-services.slice <<EOF
+[Unit]
+Description=UVMC: services you added and approved
+
+[Slice]
+MemoryMax=$SVC_MEM
+MemorySwapMax=0
+CPUQuota=$SVC_CPU%
+TasksMax=512
 EOF
 
 # --- the supervisor service ------------------------------------------------------

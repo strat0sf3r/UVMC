@@ -29,6 +29,7 @@ def make_cfg(workdir: str, logdir: str):
     cfg.workdir, cfg.log_dir, cfg.max_output_chars = workdir, Path(logdir), 400
     cfg.state_dir = Path(logdir).parent / "state"
     cfg.made_tools_dir = str(Path(logdir).parent / "made-tools")
+    cfg.services_dir = str(Path(logdir).parent / "services")
     cfg.conv_root = str(Path(logdir).parent / "conv")
     # No folders shared from the PC, and none of the VM's real ones (/srv/uvmc-host) reached.
     for name in ("shares_rw", "shares_view", "shares_hold"):

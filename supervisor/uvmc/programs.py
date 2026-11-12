@@ -104,7 +104,7 @@ class Programs:
         e["key_id"], e["key_hash"], e["key_made"] = kid, _hash(secret), time.time()
         return f"{KEY_PREFIX}{kid}_{secret}"
 
-    def add(self, name: str, description: str = "") -> str:
+    def add(self, name: str, description: str = "", kind: str = "program") -> str:
         """A new program; returns its key, which is never shown again."""
         name = str(name).strip().lower()
         if not NAME_RE.match(name) or name in RESERVED:
@@ -113,7 +113,7 @@ class Programs:
         with self.lock:
             if name in self.registry:
                 raise ProgramError(f"There's already a program called {name}.")
-            e = {"name": name, "description": str(description).strip()[:500], "permissions": ["reports"],
+            e = {"name": name, "description": str(description).strip()[:500], "permissions": ["reports"], "kind": kind,
                  "created": time.time(), "last_seen": None, "silent_after": 0, "silent": False,
                  "notify": "asks", "reports": [], "calls": []}
             key = self._new_key(e)
@@ -291,6 +291,7 @@ class Programs:
                     continue
                 rs = e.get("reports", [])
                 item = {"name": n, "description": e["description"], "permissions": e.get("permissions", []),
+                        "kind": e.get("kind", "program"),
                         "created": e["created"], "key_id": e.get("key_id"), "key_made": e.get("key_made"),
                         "last_seen": e.get("last_seen"), "silent_after": e.get("silent_after", 0),
                         "silent": bool(e.get("silent")),

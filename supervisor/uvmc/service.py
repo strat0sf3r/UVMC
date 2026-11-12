@@ -44,6 +44,7 @@ from .lock import Lock, LockError
 from .log import ChildLog, RunLog, read_log
 from .made_tools import GET_CODE_SPEC, PROPOSE_SPEC, ToolBox, ToolError
 from .programs import KEY_PREFIX as PROGRAM_KEY_PREFIX, ProgramError, Programs
+from .services import ServiceError, Services
 from .workcopies import CONTEXT_DIR, MERGE_DIR, SyncError, WorkCopies
 from .transcript import transcript
 from .netproxy import Proxy, SiteList
@@ -261,6 +262,9 @@ class Controller:
                                      {"kind": "program_report", **self.programs.result(name, rid)}),
                                  on_silent=lambda name, info: self._broadcast(
                                      {"kind": "program_silent", "name": name, **info}))
+        # services you add from git and approve (services.py)
+        self.services = Services(cfg, programs=self.programs, notify=lambda: self._broadcast({"kind": "services"}),
+                                 on_event=self._broadcast)
         # newer versions of UVMC's parts, for Settings > Updates (a notice the first time one is seen)
         # The lock: the VM closed to the PC, only the model on the PC used (lock.py)
         self.vm_lock = Lock(cfg.state_dir)
@@ -358,6 +362,11 @@ class Controller:
             except Exception as e:  # the tools must never keep the supervisor from starting
                 print(f"Warning: the agent's tools could not start: {e}")
         self.programs.start()
+        if made_tools:
+            try:
+                self.services.start()
+            except Exception as e:  # never keeps the supervisor from starting
+                print(f"Warning: the services could not start: {e}")
         # Who may read each shared folder: set now (closing what an earlier run left open), and
         # again every half minute, for a folder shared meanwhile (set_access skips unchanged ones).
         def share_loop():
@@ -3793,10 +3802,15 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
         key = program_call(ctl.programs.add, name, str(body.get("description", "")))
         return {"key": key, "program": ctl.programs.view(name)}
 
+    def not_a_service(name: str) -> None:
+        if ctl.programs.registry.get(name, {}).get("kind") == "service":
+            fail(409, f"{name} is a service: manage it on the Services page.")
+
     @app.post("/api/programs/key")
     async def programs_key(request: Request):
         """A new key for a program (the old one stops working); in the answer, once."""
         body = await request.json()
+        not_a_service(str(body.get("name", "")))
         return {"key": program_call(ctl.programs.new_key, str(body.get("name", "")))}
 
     @app.post("/api/programs/update")
@@ -3810,6 +3824,7 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
     @app.post("/api/programs/remove")
     async def programs_remove(request: Request):
         body = await request.json()
+        not_a_service(str(body.get("name", "")))
         program_call(ctl.programs.remove, str(body.get("name", "")))
         return {"ok": True}
 
@@ -3834,6 +3849,83 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
         return Response(data, media_type=kind, headers={
             "Content-Security-Policy": "default-src 'none'; sandbox", "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, max-age=86400"})
+
+    # --- services you add from git (services.py, docs/app-contract.md) -------------------------
+
+    def svc(fn, *args, **kw):
+        try:
+            return fn(*args, **kw)
+        except KeyError as e:
+            fail(404, str(e.args[0]))
+        except ServiceError as e:
+            fail(409, str(e))
+
+    @app.get("/api/services")
+    def services_list():
+        return ctl.services.view()
+
+    @app.post("/api/services/add")
+    def services_add(body: dict):
+        """Fetches a repository and reads its uvmc-app.toml: a proposal; nothing is installed or run."""
+        return svc(ctl.services.add, str(body.get("url", "")), str(body.get("branch", "") or "main"),
+                   str(body.get("path", "")), str(body.get("token", "")))
+
+    @app.post("/api/services/approve")
+    def services_approve(body: dict):
+        """Installs exactly the commit you looked at (and restarts the service if it's on)."""
+        return svc(ctl.services.approve, str(body.get("name", "")), str(body.get("commit", "")))
+
+    @app.post("/api/services/discard")
+    def services_discard(body: dict):
+        svc(ctl.services.discard, str(body.get("name", "")))
+        return {"ok": True}
+
+    @app.post("/api/services/check")
+    def services_check(body: dict):
+        """Looks for new commits now (they wait for your approval)."""
+        return {"found": svc(ctl.services.check_updates, str(body.get("name", "")) or None)}
+
+    @app.post("/api/services/settings")
+    def services_settings(body: dict):
+        svc(ctl.services.save_settings, str(body.get("name", "")), body.get("values") or {})
+        return {"ok": True}
+
+    @app.post("/api/services/hostkey")
+    def services_hostkey(body: dict):
+        svc(ctl.services.set_host_key, str(body.get("name", "")), str(body.get("machine", "")), str(body.get("text", "")))
+        return {"ok": True}
+
+    @app.post("/api/services/keyscan")
+    def services_keyscan(body: dict):
+        """The machine's host keys as UVMC's machine sees them, for you to compare before saving."""
+        return svc(ctl.services.keyscan, str(body.get("name", "")), str(body.get("machine", "")))
+
+    @app.post("/api/services/enable")
+    def services_enable(body: dict):
+        svc(ctl.services.set_enabled, str(body.get("name", "")), bool(body.get("on")))
+        return {"ok": True}
+
+    @app.post("/api/services/restart")
+    def services_restart(body: dict):
+        svc(ctl.services.restart, str(body.get("name", "")))
+        return {"ok": True}
+
+    @app.post("/api/services/health")
+    def services_health(body: dict):
+        return svc(ctl.services.health, str(body.get("name", "")))
+
+    @app.post("/api/services/remove")
+    def services_remove(body: dict):
+        svc(ctl.services.remove, str(body.get("name", "")), bool(body.get("keep_data")))
+        return {"ok": True}
+
+    @app.get("/api/services/{name}")
+    def services_one(name: str):
+        return svc(ctl.services.view, name, True)
+
+    @app.get("/api/services/{name}/diff")
+    def services_diff(name: str):
+        return {"text": svc(ctl.services.diff, name)}
 
     @app.get("/api/made-tools")
     def made_tools():

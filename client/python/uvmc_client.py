@@ -11,8 +11,8 @@ Where it reads its settings (the host contract):
   UVMC_URL       where UVMC answers, e.g. http://127.0.0.1:8080 (the panel's address)
   UVMC_KEY_FILE  a file holding the program's key (or UVMC_KEY, the key itself, or a systemd
                  credential named uvmc-key); the key comes from the panel: Settings > Programs
-  UVMC_DATA      the program's data folder (default: the current folder); a report waiting to
-                 be sent and the local reports are kept here
+  UVMC_DATA      the program's data folder (or APP_DATA, as a service gets it; default: the
+                 current folder); a report waiting to be sent and the local reports are kept here
 
 Where a report goes:
   UVMC_URL set    to UVMC. If UVMC can't be reached, is locked or busy, the report is kept and
@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 PENDING = "uvmc-pending.json"
 KEEP_LOCAL = 10
@@ -50,7 +50,7 @@ class Uvmc:
                  timeout: float = 5.0):
         self.url = (url if url is not None else os.environ.get("UVMC_URL", "")).rstrip("/")
         self.key = key if key is not None else _read_key()
-        self.data = Path(data or os.environ.get("UVMC_DATA") or ".")
+        self.data = Path(data or os.environ.get("UVMC_DATA") or os.environ.get("APP_DATA") or ".")
         self.tool_report = os.environ.get("UVMC_REPORT", "")
         self.timeout = timeout
         self.last_error = ""

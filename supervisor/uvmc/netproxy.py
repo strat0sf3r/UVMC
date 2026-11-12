@@ -94,11 +94,15 @@ Reporter = Callable[[dict], None]
 
 class Proxy:
     def __init__(self, port: int, allowed_ports: list[int], sites: SiteList,
-                 decide: Decider, report: Reporter, host: str = "127.0.0.1", offline: bool = False):
+                 decide: Decider, report: Reporter, host: str = "127.0.0.1", offline: bool = False,
+                 host_ports: dict[str, list[int]] | None = None):
         from . import pc
         self.sites, self.decide, self.report = sites, decide, report
         self.offline = offline   # a private conversation's: every site refused, allowed ones too
         self.allowed_ports = set(allowed_ports)
+        # Extra ports for exact hosts only (a service's declared SSH machines: port 22 to those
+        # addresses, nowhere else). Such a host:port needs no site entry.
+        self.host_ports = {normalize_host(h): set(ps) for h, ps in (host_ports or {}).items()}
         self.is_pc = pc.is_pc
         proxy = self
 
@@ -155,9 +159,11 @@ class Proxy:
         if not valid_site(host):
             self._event(info, "deny", "not a valid site name", started)
             return self._refuse(client, 400, "Not a valid site name")
-        if port not in self.allowed_ports:
-            self._event(info, "deny", f"port {port} is not allowed", started)
-            return self._refuse(client, 403, f"UVMC: port {port} is not allowed")
+        declared = port in self.host_ports.get(host, ())
+        if port not in self.allowed_ports and not declared:
+            why = f"port {port} to {host} isn't declared" if self.host_ports else f"port {port} is not allowed"
+            self._event(info, "deny", why, started)
+            return self._refuse(client, 403, f"UVMC: {why}")
         if self.is_pc(host):  # the PC that runs this machine is never reachable, whatever you allow
             self._event(info, "deny", "the PC itself", started)
             return self._refuse(client, 403, "UVMC: the PC itself can't be reached from here")
@@ -165,7 +171,9 @@ class Proxy:
         if self.offline:
             self._event(info, "deny", "private conversation: no internet", started)
             return self._refuse(client, 403, "UVMC: this is a private conversation, so it has no internet.")
-        if self.sites.allows(host):
+        if declared:
+            reason = "declared machine"
+        elif self.sites.allows(host):
             reason = "allowed site"
         elif self.decide(host, port):
             reason = "approved by you"
