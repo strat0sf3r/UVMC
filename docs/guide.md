@@ -93,11 +93,24 @@ The supervisor isn't tied to Claude. The loop talks to a **provider interface**,
 | `anthropic` | Claude, and Anthropic-compatible endpoints |
 | `openai` | OpenAI and any OpenAI-compatible API: DeepSeek, Gemini (through Google's compatibility endpoint, beta), Mistral, Groq, OpenRouter, and llama.cpp's server on your PC (`local`, below) |
 
-Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`.
+Each **model profile** in `config.toml` (`[models.<name>]`) names a provider, a URL, a model and a key name. Ready to use: `claude`, `claude-opus`, `claude-haiku`, `deepseek`, and `local` once `local-model` has run. Prepared, just fill in a model name: `gpt`, `gemini`, `openrouter` (below).
 
 - Add keys in the panel: **Settings › API keys** (the profile's `key` name, e.g. `deepseek`). Keys stay in the VM where the agent can't read them. (The `set-key` scripts were removed in 0.12.6: piping a key into `multipass exec` hangs with Multipass on Windows (1.16, still in 1.17.0); the installer no longer asks for one either.)
 - Pick the model per conversation in the panel's header, even mid-conversation; from a terminal, `uvmc ask --model deepseek "..."`.
 - Tools, rules, walls, logs and the panel are the same whatever the model. How well a model uses the tools varies a lot, so try a new one on small tasks first.
+
+### OpenRouter
+
+[OpenRouter](https://openrouter.ai) gives one key for hundreds of models (Claude, GPT, Gemini, DeepSeek, Qwen, Llama and more) and passes each request to one of the providers that serve the model. It speaks the OpenAI-compatible API, so it goes through the `openai` adapter; what is particular to it is in [openrouter.py](../supervisor/uvmc/openrouter.py).
+
+- **Key:** make one at openrouter.ai/settings/keys and paste it in **Settings › API keys** as `openrouter` (the key's row then shows its credit and, for free models, today's requests).
+- **Model:** edit the `openrouter` profile (or **Add a model › Start from OpenRouter**) and click **Choose...** next to Model name: a searchable list of the models that can use tools, with price per million tokens and context. Ids look like `deepseek/deepseek-v4-pro`. For several OpenRouter models at once, add one profile each with the same key.
+- **Privacy:** the profile starts `open`. Set it to `paid` and every request asks OpenRouter for providers that keep and collect nothing (`provider: {zdr: true, data_collection: "deny"}`); a model with no such provider is refused rather than sent elsewhere. OpenRouter's own account settings (openrouter.ai/settings/privacy) apply as well; read them before choosing `paid`. Every request with tools also asks only for providers that support every parameter (`require_parameters`), so a request never lands where tools are ignored.
+- **Free models** (ids ending `:free`) can only be `open`: their providers may keep or train on what they get. They allow 20 requests a minute, and 50 a day until you have bought 10 dollars of credit (1000 after). A task can take up to 40 model turns, so a few tasks use a day's allowance.
+- **Cost:** OpenRouter says what each reply cost; the header adds it up per conversation next to the tokens.
+- **Reasoning models:** their reasoning blocks are sent back to the same profile on the next turn (some models, Claude among them, need that with tool calls), and kept in memory only, never in the log. Another model gets the plain conversation.
+- **Errors** say what to do: no credit (402), the limit and when to try again (429), no provider that keeps nothing (paid profiles).
+- Not sent: attribution headers (`HTTP-Referer`, `X-OpenRouter-Title`); UVMC doesn't announce itself. While UVMC is locked, the model list and the credit check aren't asked either.
 
 ### A model on your PC
 

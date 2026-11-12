@@ -33,6 +33,7 @@ from .privacy import GENERAL, NeedsConfirm, PrivacyError, Projects, Scope, is_sh
 from .agent import Session
 from . import briefing as briefing_mod
 from . import mcp_http
+from . import openrouter
 from .brain import Bridge
 from .audit import ExecFilter, ExecWatcher, set_quiet as audit_quiet
 from .checkpoints import Checkpoints
@@ -3524,6 +3525,39 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
     @app.post("/api/settings/default")
     async def settings_default(request: Request):
         return settings_call(ctl.settings.set_default, str((await request.json()).get("name", "")))
+
+    # --- OpenRouter (openrouter.py): its models for the picker, and the key's credit -------
+    def openrouter_target(request: Request) -> tuple[str, str]:
+        """The address and key to ask with: from the query (a profile being added), else the first
+        OpenRouter profile, else the defaults. Only OpenRouter's own address is ever asked."""
+        q = request.query_params
+        prof = next((p for p in ctl.cfg.models.values() if openrouter.is_openrouter(p.base_url)), None)
+        base = q.get("base_url") or (prof.base_url if prof else openrouter.BASE_URL)
+        key_name = q.get("key") or (prof.key if prof else "openrouter")
+        if not openrouter.is_openrouter(base):
+            fail(400, "That is not OpenRouter's address.")
+        if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", key_name):
+            fail(400, "Key names use lowercase letters, digits, - and _.")
+        if ctl.vm_lock.locked:
+            fail(409, "UVMC is locked: only the model on your PC is reached.")
+        return base, config.api_key(key_name) or ""
+
+    @app.get("/api/openrouter/models")
+    async def openrouter_models(request: Request):
+        base, key = openrouter_target(request)
+        try:
+            rows = await run_in_threadpool(openrouter.models, base, key, request.query_params.get("fresh") == "1")
+        except openrouter.OpenRouterError as e:
+            fail(502, str(e))
+        return {"models": rows}
+
+    @app.get("/api/openrouter/credit")
+    async def openrouter_credit(request: Request):
+        base, key = openrouter_target(request)
+        try:
+            return await run_in_threadpool(openrouter.credit, base, key)
+        except openrouter.OpenRouterError as e:
+            fail(502, str(e))
 
     # --- Claude apps on your PC (MCP), off until switched on in Settings ----------------
     @app.post("/mcp")
