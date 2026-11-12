@@ -33,7 +33,7 @@ from .privacy import GENERAL, NeedsConfirm, PrivacyError, Projects, Scope, is_sh
 from .agent import Session
 from . import briefing as briefing_mod
 from . import mcp_http
-from . import openrouter
+from . import netns, openrouter
 from .brain import Bridge
 from .audit import ExecFilter, ExecWatcher, set_quiet as audit_quiet
 from .checkpoints import Checkpoints
@@ -358,6 +358,11 @@ class Controller:
             except Exception as e:  # the tools must never keep the supervisor from starting
                 print(f"Warning: the agent's tools could not start: {e}")
         self.programs.start()
+        # Each agent user's own network (netns.py): made before any of their commands runs (they
+        # live in /run, so a restart of the VM empties them). Without one, a command doesn't run.
+        problem = netns.ensure(agent_users(self.cfg))
+        if problem:
+            print(f"Warning: the agent users' own networks could not all be made: {problem}")
         # Who may read each shared folder: set now (closing what an earlier run left open), and
         # again every half minute, for a folder shared meanwhile (set_access skips unchanged ones).
         def share_loop():
@@ -1033,10 +1038,17 @@ class Controller:
         try:
             c.proxy = Proxy(c.port, self.cfg.net_ports, self.sites,
                             lambda host, port, c=c: self.decide_site(c, host, port),
-                            lambda info, c=c: self._on_net(c, info), offline=c.offline).start()
+                            lambda info, c=c: self._on_net(c, info), offline=c.offline,
+                            listener=self._listener(c.user, c.port)).start()
             c.tools.executor.proxy_port = c.proxy.port
         except OSError as e:
             c.log.event("notice", text=f"This conversation's proxy could not start ({e}), so it has no internet.")
+
+    @staticmethod
+    def _listener(user: str, port: int):
+        """Where a conversation's or job's proxy listens: 127.0.0.1:port in its user's own network
+        (netns.py), the only network its commands have. None in tests (the VM's own loopback)."""
+        return None if no_sudo() else netns.listen(user, port)
 
     def _pool_missing(self) -> str:
         """Setup makes the conversations' users; an older setup doesn't have them."""
@@ -1886,7 +1898,8 @@ class Controller:
         try:
             w.proxy = Proxy(w.port, self.cfg.net_ports, self.sites,
                             lambda host, port, c=c, w=w: self.decide_site(c, host, port, w),
-                            lambda info, c=c, w=w: self._on_net(c, info, w), offline=c.offline).start()
+                            lambda info, c=c, w=w: self._on_net(c, info, w), offline=c.offline,
+                            listener=self._listener(w.user, w.port)).start()
             w.tools.executor.proxy_port = w.proxy.port
         except OSError as e:
             c.log.event("notice", text=f"A worker's proxy could not start ({e}), so it has no internet.")

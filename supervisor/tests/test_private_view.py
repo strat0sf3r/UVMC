@@ -1,6 +1,7 @@
 """Agents can't watch each other (design.md 7p): every command of a conversation, job or tool
 starts in a private view of its own (executor.private_view): a /proc showing only its user's
-processes and its own /tmp, /var/tmp and /dev/shm.
+processes and its own /tmp, /var/tmp and /dev/shm; conversations' and jobs' commands also in
+their user's own network (design.md 7t, netns.py).
 
 Offline these check the commands; the view itself is checked in the VM by
 tests/check_private_view.py (as the supervisor's user, which has sudo).
@@ -18,15 +19,15 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from uvmc.config import load as load_config  # noqa: E402
-from uvmc.executor import PRIVATE_DIR, VIEW_SCRIPT, SudoExecutor, SystemdExecutor, private_view  # noqa: E402
+from uvmc.executor import PRIVATE_DIR, VIEW_SCRIPT, SudoExecutor, SystemdExecutor, netns_name, private_view  # noqa: E402
 
 
 class PrivateViewTest(unittest.TestCase):
     def setUp(self):
         self.cfg = load_config(ROOT / "config.toml")
 
-    def check(self, cmd, user, group):
-        view = private_view(user, group)
+    def check(self, cmd, user, group, own_network=True):
+        view = private_view(user, group, own_network)
         i = cmd.index("unshare")
         self.assertEqual(cmd[i:i + len(view)], view)
         setpriv = cmd.index("setpriv")
@@ -38,6 +39,7 @@ class PrivateViewTest(unittest.TestCase):
         cmd = SystemdExecutor(self.cfg, user="agent1", workdir="/w", proxy_port=3301).command("echo hi", ("a",), 30)
         self.assertLess(cmd.index("systemd-run"), cmd.index("unshare"))   # inside its box
         rest = self.check(cmd, "agent1", self.cfg.user)
+        self.assertEqual(cmd[cmd.index("setpriv") - 1], netns_name("agent1"))   # in its own network
         self.assertEqual(rest[-2:], ["uvmc", "a"])                 # its arguments, unchanged
         self.assertIn('cd "/w" && echo hi', rest)                 # the script itself, unchanged
 
@@ -45,6 +47,7 @@ class PrivateViewTest(unittest.TestCase):
         cmd = SudoExecutor(self.cfg, user="agent2", workdir="/w").command("true", (), 30)
         self.assertEqual(cmd[:3], ["sudo", "-n", "unshare"])
         rest = self.check(cmd, "agent2", self.cfg.user)
+        self.assertEqual(cmd[cmd.index("setpriv") - 1], netns_name("agent2"))
         self.assertIn("HOME=" + os.path.join(self.cfg.homes_root, "agent2"), rest)
 
     def test_tools(self):
@@ -59,18 +62,25 @@ class PrivateViewTest(unittest.TestCase):
                 for systemd in (True, False):
                     with mock.patch("uvmc.made_tools.os.path.isdir", return_value=systemd):
                         cmd = box.command("watcher", e, {"HOME": "/h", "UVMC_TOOL": "watcher"})
-                        self.check(cmd, box.user("watcher"), cfg.made_tools_group)
+                        self.check(cmd, box.user("watcher"), cfg.made_tools_group, own_network=False)
+                        self.assertEqual(cmd[cmd.index("setpriv") - 1], "-")   # tools keep the VM's network
 
     def test_the_script(self):
         # fails closed: every step checked, and the command only runs at the very end
         self.assertIn("hidepid=invisible", VIEW_SCRIPT)
         self.assertTrue(VIEW_SCRIPT.strip().endswith('exec "$@"'))
-        for step in ("mount -t proc", "install -d -m 711", "install -d -m 700", "mount --bind"):
+        for step in ("mount -t proc", "install -d -m 711", "install -d -m 700", "mount --bind", "mountpoint -q"):
             line = next(ln for ln in VIEW_SCRIPT.splitlines() if step in ln)
             self.assertIn("|| fail", line, step)
         for d in ("/tmp", "/var/tmp", "/dev/shm"):
             self.assertIn(d, VIEW_SCRIPT)
         self.assertIn(PRIVATE_DIR, VIEW_SCRIPT)
+        # its network is entered last of all, and only when it is a real namespace (a mount)
+        lines = [ln.strip() for ln in VIEW_SCRIPT.strip().splitlines()]
+        self.assertTrue(lines[-4].startswith('mountpoint -q "/run/netns/$n"'))
+        self.assertEqual(lines[-3], 'exec nsenter --net="/run/netns/$n" -- "$@"')
+        self.assertEqual(private_view("a", "b")[-1], "uvmc-a")
+        self.assertEqual(private_view("a", "b", own_network=False)[-1], "-")
         self.assertIn("--propagation", private_view("a", "b"))       # shared folders mounted later still show
         self.assertEqual(private_view("a", "b")[private_view("a", "b").index("--propagation") + 1], "slave")
 
