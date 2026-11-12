@@ -217,7 +217,7 @@ It never makes the program fail because of UVMC: a call that doesn't get through
 
 A **service** is your own long-running app that UVMC runs for you: started with the machine, restarted when it fails, inside walls you see and approve. The app itself is standalone (it runs on any similar Linux without UVMC) and follows the [app contract](app-contract.md): a manifest, `uvmc-app.toml`, in its git repository says what to run and what it needs. Tools are programs an agent built; services are yours.
 
-UVMC manages the **account** the app lives in (its user, its walls, its secrets, its start and stop), not the app's insides; its **profile** says what it may run and reach. Here the account is filled from git, pinned to the commit you approve; installing an app in place (by an agent working inside the account, or by you in a shell as it) is planned (design.md 7s, slice 2b). For an app that needs more than an account can give (root, system-wide packages), see [Running an app alongside UVMC](#running-an-app-alongside-uvmc).
+UVMC manages the **account** the app lives in (its user, its walls, its secrets, its start and stop), not the app's insides; its **profile** says what it may run and reach. An account is filled either from git, pinned to the commit you approve, or **installed in place**: the account starts empty and the app is installed the way its README says, inside the account's walls (by you in a shell as the service now; by an agent working inside the account next, design.md 7s). For an app that needs more than an account can give (root, system-wide packages), see [Running an app alongside UVMC](#running-an-app-alongside-uvmc).
 
 **Adding one:** the **Services** button next to Reports opens the Services page (full width, in the conversation's place). **Add a service**: the repository's address (`https://...`, or `file:///...` for one on the machine), the branch, the folder in it if the app isn't at the top, and a token if the repository is private (UVMC keeps it to read the repository; the app never gets it). UVMC fetches the repository and shows an **approval card**: what it would run, its memory, the web sites and SSH machines (with user and address) it would reach, the settings and secrets it will ask for, the commit and its files. Nothing is installed or run before you approve, and you approve exactly the commit you saw.
 
@@ -237,6 +237,16 @@ UVMC manages the **account** the app lives in (its user, its walls, its secrets,
 - a program key of its own (see Programs that use UVMC): its reports appear in Reports, and "tell me if it's silent" works with no setup; it's listed in Settings › Programs as a service.
 
 Agents and tools can't see a service's files, can't reach its proxy, and (since 7p) can't see its processes. The service keeps running when the supervisor restarts or is updated; its proxy is part of the supervisor, so its network pauses for those few seconds.
+
+**Installing in place:** on the Services page, **An empty account to install an app into**: write its profile (its name, what to start once it's installed, its memory; the sites it needs can stay empty for now) and approve it. UVMC makes the account with an empty **app** folder. Then, in a terminal on your PC:
+
+```
+uvmc shell <service>                      (Windows; -Sites pypi.org,github.com to allow those without asking)
+uvmc shell <service> --sites pypi.org     (macOS, Linux)
+uvmc shell <service> <command>            one command instead of a shell
+```
+
+That opens an **install session**: a snapshot of the app folder is taken, the service is stopped, and you get a shell **as the service's user, in its sandbox**, in its app folder, which is writable only during a session (read-only while the app runs, so a compromised app can't change its own code). The data folder is visible to you; secrets are never given to a session. Every site outside its profile (and the list you gave) waits for your answer on its page in the panel, with a notification; your answer holds for that session. Leaving the shell ends the session: the service starts again if it was on, and its page lists the sites it used that its profile doesn't, with **Add them to its profile** (a profile change you approve). A session left open can be ended on the page. **Snapshots** (the last 5) let you roll the app folder back to how it was before a session. An agent doing the installing inside the account comes next.
 
 **Removing** a service stops it and removes its unit, user, code, secrets and program entry; its data folder too, unless you tick **Keep its data folder**.
 

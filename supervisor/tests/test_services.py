@@ -354,6 +354,143 @@ class DeclaredMachinesTest(unittest.TestCase):
         self.assertIn("403", self.connect(f"127.0.0.1:{self.port + 1}"))    # declared host, other port
 
 
+LOCAL_PROFILE = """contract = 1
+name = "random-app"
+title = "A random app"
+run = "python3 serve.py"
+memory = "128M"
+
+[network]
+sites = ["example.com"]
+ssh = []
+"""
+
+
+class InstallInPlaceTest(unittest.TestCase):
+    """Slice 2b: an empty account, install sessions, the asked network, snapshots."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.cfg = make_cfg(str(t / "work"), str(t / "logs"))
+        self.cfg.net_approval_timeout_s = 5
+        self.events = []
+        self.programs = Programs(self.cfg)
+        self.s = Services(self.cfg, programs=self.programs, on_event=self.events.append)
+        v = self.s.add_local(LOCAL_PROFILE)
+        self.assertEqual((v["source"], v["installed"], v["proposal"]["kind"]), ("local", False, "install"))
+        self.v = self.s.approve("random-app", "local")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_an_empty_account(self):
+        app = Path(self.cfg.services_dir, "random-app", "app")
+        self.assertTrue(app.is_dir())
+        self.assertEqual(list(app.iterdir()), [])
+        self.assertTrue(self.v["installed"])
+        self.assertEqual(self.programs.registry["random-app"]["kind"], "service")
+        self.assertIn(f"cd {app}", Path(self.cfg.services_dir, "random-app", "run.sh").read_text())
+        self.assertEqual(self.s.check_updates(), [])                         # no repository to look at
+        with self.assertRaises(ServiceError):
+            self.s.set_adapter("random-app", None)                            # its profile is UVMC's
+        self.assertIn(f"ReadWritePaths={self.s.home('random-app')}", self.s.unit_text("random-app"))
+        self.assertNotIn(f"ReadWritePaths={app}", self.s.unit_text("random-app"))   # read-only while it runs
+
+    def test_sessions_and_their_walls(self):
+        sess = self.s.start_session("random-app", "shell", ["pypi.org"])
+        self.assertEqual(sess["allowed"], ["pypi.org"])
+        self.assertEqual(self.s.view("random-app")["status"]["state"], "installing")
+        with self.assertRaises(ServiceError):
+            self.s.start_session("random-app")                                # one at a time
+        self.assertTrue(self.s.session_marker("random-app").exists())
+        base = Path(self.cfg.services_dir, "random-app")
+        shell = (base / "session-shell.properties").read_text()
+        agent = (base / "session-agent.properties").read_text()
+        app, home = self.s.app("random-app"), self.s.home("random-app")
+        for props in (shell, agent):
+            self.assertIn("User=uvmc-s-random-app", props)
+            self.assertIn("ProtectSystem=strict", props)
+            self.assertIn(f"WorkingDirectory={app}", props)
+            self.assertIn(f"HOME={app}", props)
+            self.assertNotIn("LoadCredential", props)                         # never its secrets
+            self.assertNotIn("UVMC_URL", props)
+        self.assertIn(f"ReadWritePaths={app} {home}", shell)                  # your shell sees its data
+        self.assertIn(f"InaccessiblePaths={home}", agent)                     # the agent doesn't
+        end = self.s.end_session("random-app")
+        self.assertEqual(end["new_sites"], [])
+        self.assertFalse(self.s.session_marker("random-app").exists())
+        with self.assertRaises(ServiceError):
+            self.s.end_session("random-app")
+
+    def test_the_network_is_asked(self):
+        self.s.start_session("random-app", "shell", ["pypi.org"])
+        self.assertTrue(self.s._ask("random-app", "pypi.org", 443))          # on the starting list
+        got = {}
+        t = threading.Thread(target=lambda: got.update(r=self.s._ask("random-app", "files.example.net", 443)))
+        t.start()
+        from test_service import wait_for
+        self.assertTrue(wait_for(lambda: self.s.view("random-app")["asks"]))
+        ask = self.s.view("random-app")["asks"][0]
+        self.assertEqual(ask["host"], "files.example.net")
+        self.assertEqual(self.events[-1]["kind"], "service_ask")
+        self.s.answer("random-app", ask["id"], True)
+        t.join(5)
+        self.assertTrue(got["r"])
+        self.assertTrue(self.s._ask("random-app", "files.example.net", 443))   # remembered for the session
+        t = threading.Thread(target=lambda: got.update(r2=self.s._ask("random-app", "evil.example", 443)))
+        t.start()
+        self.assertTrue(wait_for(lambda: self.s.view("random-app")["asks"]))
+        self.s.answer("random-app", self.s.view("random-app")["asks"][0]["id"], False)
+        t.join(5)
+        self.assertFalse(got["r2"])
+        end = self.s.end_session("random-app")
+        self.assertEqual(end["new_sites"], ["files.example.net", "pypi.org"])  # used, not in the profile
+        self.assertFalse(self.s._ask("random-app", "pypi.org", 443))          # no session: nothing asked
+        v = self.s.add_sites("random-app", end["new_sites"])
+        self.assertEqual(v["proposal"]["kind"], "manifest")
+        self.assertEqual(v["proposal"]["manifest"]["sites"], ["example.com", "files.example.net", "pypi.org"])
+        self.assertTrue(v["proposal"]["walls_changed"])
+        v = self.s.approve("random-app", "local")
+        self.assertEqual(v["manifest"]["sites"], ["example.com", "files.example.net", "pypi.org"])
+
+    def test_an_unanswered_question_is_refused(self):
+        self.cfg.net_approval_timeout_s = 1
+        self.s.start_session("random-app")
+        self.assertFalse(self.s._ask("random-app", "slow.example", 443))
+        self.assertEqual(self.s.view("random-app")["asks"], [])
+
+    def test_snapshots_and_rollback(self):
+        app = self.s.app("random-app")
+        (app / "serve.py").write_text("v1\n")
+        snap = self.s.start_session("random-app")["snapshot"]                # before the session
+        (app / "serve.py").write_text("broken\n")
+        (app / "new.txt").write_text("x\n")
+        self.s.end_session("random-app")
+        self.assertIn(snap, self.s.view("random-app", detail=True)["snapshots"])
+        self.s.rollback("random-app", snap)
+        self.assertEqual((app / "serve.py").read_text(), "v1\n")
+        self.assertFalse((app / "new.txt").exists())
+
+    def test_git_services_have_no_sessions(self):
+        repo = Path(self.tmp.name) / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        (repo / "uvmc-app.toml").write_text(MANIFEST)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "v1")
+        v = self.s.add("file://" + str(repo))
+        self.s.approve("test-app", v["proposal"]["commit"])
+        with self.assertRaises(ServiceError):
+            self.s.start_session("test-app")
+
+    def test_removing_ends_a_session(self):
+        self.s.start_session("random-app")
+        self.s.remove("random-app")
+        self.assertFalse(self.s.session_marker("random-app").exists())
+        self.assertEqual(self.s.view(), [])
+
+
 class RoutesTest(unittest.TestCase):
     def test_add_and_approve_through_the_api(self):
         from fastapi.testclient import TestClient

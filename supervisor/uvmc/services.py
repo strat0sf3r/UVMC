@@ -36,6 +36,7 @@ import tomllib
 from pathlib import Path
 from typing import Callable
 
+from .checkpoints import Checkpoints
 from .executor import no_sudo, root
 from .netproxy import Proxy, SiteList, valid_site
 
@@ -50,6 +51,8 @@ USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 URL_RE = re.compile(r"^(https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~/-]+|file:///[A-Za-z0-9._~/-]+)$")
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
 UNIT_PREFIX = "uvmc-s-"
+LOCAL = "local"           # the "commit" of a service installed in place (no repository)
+SNAPSHOTS_KEPT = 5
 SLICE = "uvmc-services.slice"
 MAX_DIFF = 400_000
 API_PORT = 8080
@@ -209,6 +212,7 @@ class Services:
         self.notify, self.on_event = notify, on_event
         self.lock = threading.RLock()
         self.proxies: dict[str, Proxy] = {}
+        self.asks: dict[str, dict] = {}       # an install session's site questions, waiting for you
         self.net: dict[str, collections.deque] = {}
         self.registry: dict[str, dict] = self._load()
 
@@ -243,7 +247,15 @@ class Services:
         return self.base / name / "repo.git"
 
     def code(self, name: str, commit: str) -> Path:
-        return self.base / name / "versions" / commit[:12]
+        """The app's code: a read-only copy of a commit, or the app folder of one installed in place."""
+        return self.app(name) if commit == LOCAL else self.base / name / "versions" / commit[:12]
+
+    def app(self, name: str) -> Path:
+        """Where an app installed in place lives (written only during install sessions)."""
+        return self.base / name / "app"
+
+    def is_local(self, name: str) -> bool:
+        return (self.get(name).get("source") or {}).get("kind") == LOCAL
 
     def home(self, name: str) -> Path:
         return self.base / name / "data"
@@ -298,6 +310,8 @@ class Services:
         e = self.get(name)
         if e.get("adapter"):
             return {"text": e["adapter"], "from": "uvmc"}
+        if self.is_local(name):
+            return {"text": TEMPLATE.replace('"my-app"', f'"{name}"'), "from": "none"}
         commit = e["commit"] or (e.get("proposal") or {}).get("commit")
         rel = f"{e['path']}/{MANIFEST}" if e["path"] else MANIFEST
         p = subprocess.run(["git", "--git-dir", str(self.repo(name)), "show", f"{commit}:{rel}"], capture_output=True)
@@ -312,6 +326,8 @@ class Services:
             e = self.get(name)
             if text is not None and not text.strip():
                 text = None
+            if text is None and self.is_local(name):
+                raise ServiceError("An app installed in place has no repository: its profile is the one kept by UVMC.")
             if text is None:
                 commit = e["commit"] or e["proposal"]["commit"]
                 manifest = self._manifest_at(self.repo(name), commit, e["path"])   # back to the repository's
@@ -323,7 +339,9 @@ class Services:
                 e["adapter"] = text
                 e["proposal"]["manifest"] = manifest
             else:
-                e["proposal"] = {**self._summary(self.repo(name), e["commit"]), "kind": "manifest", "manifest": manifest,
+                summary = ({"commit": LOCAL, "author": "", "date": "", "subject": "its profile"} if self.is_local(name)
+                           else self._summary(self.repo(name), e["commit"]))
+                e["proposal"] = {**summary, "kind": "manifest", "manifest": manifest,
                                  "adapter": text, "walls_changed": walls(manifest) != walls(e["manifest"]), "problem": None}
             self._save()
         self.notify()
@@ -377,12 +395,34 @@ class Services:
         self.notify()
         return self.view(name)
 
+    def add_local(self, profile: str) -> dict:
+        """An empty account to install an app into: its profile (kept by UVMC) for you to approve.
+        Nothing is made before you approve it; then the account starts with an empty app folder."""
+        manifest = parse_manifest(profile)
+        name = manifest["name"]
+        with self.lock:
+            if name in self.registry:
+                raise ServiceError(f"There's already a service called {name}.")
+            if self.programs is not None and name in self.programs.registry:
+                raise ServiceError(f"A program called {name} already uses that name (Settings > Programs).")
+            (self.base / name).mkdir(parents=True, exist_ok=True)
+            os.chmod(self.base / name, 0o755)
+            self.registry[name] = {
+                "name": name, "source": {"kind": LOCAL}, "adapter": profile.strip(), "url": "", "branch": "", "path": "",
+                "created": time.time(), "installed": False, "commit": None, "manifest": None, "enabled": False,
+                "values": {}, "host_keys": {}, "port": None, "checked": None, "level": "open",
+                "proposal": {"commit": LOCAL, "author": "", "date": "", "subject": "an empty account", "kind": "install",
+                             "manifest": manifest, "files": []}}
+            self._save()
+        self.notify()
+        return self.view(name)
+
     def check_updates(self, name: str | None = None) -> list[str]:
         """Fetches each installed service's branch; a new commit becomes a proposal (it waits for you)."""
         found = []
         for n in [name] if name else list(self.registry):
             e = self.registry.get(n)
-            if not e or not e["installed"]:
+            if not e or not e["installed"] or (e.get("source") or {}).get("kind") == LOCAL:
                 continue
             try:
                 head = self._fetch(self.repo(n), e["url"], e["branch"], self._token(n))
@@ -419,7 +459,7 @@ class Services:
         """The proposed update's full diff (cut at MAX_DIFF)."""
         e = self.get(name)
         p = e.get("proposal")
-        if not p or p.get("kind") != "update":
+        if not p or p.get("kind") != "update" or self.is_local(name):
             raise ServiceError("No update is waiting.")
         out = self._git(self.repo(name), "diff", e["commit"], p["commit"], check=False)
         return out if len(out) <= MAX_DIFF else out[:MAX_DIFF] + f"\n\n(cut: the diff is over {MAX_DIFF // 1000} KB)"
@@ -456,7 +496,8 @@ class Services:
             if p["kind"] == "manifest":
                 e["adapter"] = p.get("adapter")
             old = e.get("commit")
-            self._checkout(name, commit)
+            if commit != LOCAL:
+                self._checkout(name, commit)
             first = not e["installed"]
             e.update({"installed": True, "commit": commit, "manifest": manifest, "proposal": None,
                       "updated": time.time(), "subject": p.get("subject", "")})
@@ -469,8 +510,10 @@ class Services:
             if first:
                 self._make_user(name)
                 self._ensure_program(name, manifest)
+                if commit == LOCAL:
+                    self._make_app_folder(name)
             self._write_runtime(name)
-            if old and old != commit:
+            if old and old != commit and old != LOCAL:
                 self._drop_version(name, old)
             if e["enabled"]:
                 if self.missing(name):
@@ -532,6 +575,15 @@ class Services:
                 raise ServiceError(f"Could not make the service's user: {p.stderr.decode(errors='replace').strip()}")
         root(["chown", f"{user}:{group}", str(home)], timeout=30)
         root(["chmod", "700", str(home)], timeout=30)
+
+    def _make_app_folder(self, name: str) -> None:
+        """The empty app folder: the service's user owns it (to install into it during a session);
+        while the app runs, systemd's sandbox keeps it read-only."""
+        app = self.app(name)
+        app.mkdir(parents=True, exist_ok=True)
+        if not no_sudo():
+            root(["chown", f"{self.user(name)}:{self.cfg.services_group}", str(app)], timeout=30)
+            root(["chmod", "750", str(app)], timeout=30)
 
     def _ensure_program(self, name: str, manifest: dict) -> None:
         """The service's program entry (programs.py): its key as the uvmc-key credential."""
@@ -765,8 +817,9 @@ class Services:
             return
         m = e["manifest"]
         try:
+            decide = (lambda host, port, n=name: self._ask(n, host, port)) if e.get("session") else (lambda host, port: False)
             self.proxies[name] = Proxy(e["port"], [80, 443], SiteList(m["sites"], Path("/nonexistent/uvmc-svc-sites")),
-                                       lambda host, port: False, lambda info, n=name: self._on_net(n, info),
+                                       decide, lambda info, n=name: self._on_net(n, info),
                                        host_ports={x["host"]: [22] for x in m["machines"]}).start()
         except OSError as err:
             print(f"Warning: the proxy for service {name} could not start: {err}")
@@ -839,6 +892,9 @@ class Services:
         e = self.get(name)
         if not e["installed"]:
             return {"state": "waiting for approval", "words": "Not installed: waiting for your approval."}
+        if e.get("session"):
+            who = "you, in a shell" if e["session"]["who"] == "shell" else "an agent"
+            return {"state": "installing", "words": f"Being installed by {who}: stopped until the session ends."}
         s = self._show(self.unit(name))
         if not s:
             return {"state": "unknown", "words": "(status is only known in the VM)"}
@@ -868,17 +924,238 @@ class Services:
                 "after failing too often in a row", "success": "normally"}.get(result, result or "for an unknown reason")
 
     def log(self, name: str, lines: int = 200, unit: str | None = None) -> str:
+        """Its log since this service was added: a service removed and added again under the same
+        name doesn't show the old one's lines (journald keeps them by unit name)."""
         if no_sudo():
             return ""
-        p = subprocess.run(["journalctl", "-u", unit or self.unit(name), "-n", str(max(1, min(lines, 2000))),
-                            "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        since = int(self.get(name).get("created") or 0)
+        p = subprocess.run(["journalctl", "-u", unit or self.unit(name), "--since", f"@{since}",
+                            "-n", str(max(1, min(lines, 2000))), "--no-pager", "-o", "short-iso"],
+                           capture_output=True, text=True, timeout=20)
         return p.stdout[-200_000:]
+
+    # --- installing in place: sessions, snapshots, the asked network ------------------------------
+    # An install session (you in a shell as the service, later an agent) can write the app folder.
+    # Before it starts: a snapshot of the app folder; the service is stopped. While it lasts: the
+    # service's proxy asks about every site not in its profile (or the session's starting list).
+    # When it ends: the service starts again if it was on, and the sites it used are listed.
+
+    def snapshots(self, name: str) -> Checkpoints:
+        c = Checkpoints(self.cfg, src=str(self.app(name)), base=self.base / name / "snapshots")
+        c.keep = SNAPSHOTS_KEPT
+        return c
+
+    def session_marker(self, name: str) -> Path:
+        return (Path(self.cfg.state_dir) / "service-sessions" if no_sudo() else Path("/run/uvmc/service-sessions")) / name
+
+    def start_session(self, name: str, who: str = "shell", sites: list | None = None) -> dict:
+        """Opens an install session: snapshot, the service stopped, the app folder writable to it,
+        the network asked site by site (sites: allowed for this session without asking)."""
+        if who not in ("shell", "agent"):
+            raise ServiceError("who: shell or agent.")
+        allowed = []
+        for host in sites or []:
+            host = str(host).strip().lower()
+            if host:
+                if not valid_site(host):
+                    raise ServiceError(f"{host} isn't a site name (like pypi.org).")
+                allowed.append(host)
+        with self.lock:
+            e = self.get(name)
+            if not e["installed"] or not self.is_local(name):
+                raise ServiceError("Install sessions are for apps installed in place (an empty account you approved).")
+            if e.get("session"):
+                raise ServiceError(f"An install session is already open ({e['session']['who']}, since "
+                                   f"{time.strftime('%H:%M', time.localtime(e['session']['started']))}). End it first.")
+            snap = self.snapshots(name).create() if not no_sudo() or self.app(name).exists() else ""
+            was_on = bool(e["enabled"])
+            if was_on:
+                self._systemctl("stop", self.unit(name))
+            e["session"] = {"who": who, "started": time.time(), "was_on": was_on, "snapshot": snap,
+                            "allowed": allowed, "answers": {}, "used": []}
+            self._save()
+            self._write_session_files(name)
+            proxy = self.proxies.get(name)
+            if proxy is not None:
+                proxy.decide = lambda host, port, n=name: self._ask(n, host, port)
+        self.notify()
+        return e["session"]
+
+    def end_session(self, name: str, start_again: bool = True) -> dict:
+        """Closes the install session: back to its walls, started again if it was on. Returns the
+        sites it reached that its profile doesn't list (offered as a profile change)."""
+        with self.lock:
+            e = self.get(name)
+            sess = e.get("session")
+            if not sess:
+                raise ServiceError("No install session is open.")
+            proxy = self.proxies.get(name)
+            if proxy is not None:
+                proxy.decide = lambda host, port: False
+            for q in self.asks.pop(name, {}).values():   # anything still waiting: refused
+                q["result"] = False
+                q["event"].set()
+            try:
+                self.session_marker(name).unlink()
+            except OSError:
+                pass
+            known = set(e["manifest"]["sites"])
+            new = sorted({h for h in sess["used"] if h not in known})
+            e["session"] = None
+            e["last_session"] = {"who": sess["who"], "started": sess["started"], "ended": time.time(),
+                                 "snapshot": sess["snapshot"], "new_sites": new}
+            self._save()
+            if sess["was_on"] and start_again and not self.missing(name):
+                self._systemctl("start", self.unit(name))
+            elif sess["was_on"] and not start_again:
+                e["enabled"] = False
+                self._save()
+                self._systemctl("disable", self.unit(name))
+        self.notify()
+        return e["last_session"]
+
+    def _ask(self, name: str, host: str, port: int) -> bool:
+        """The service's proxy during a session, for a site its profile doesn't list."""
+        e = self.registry.get(name)
+        sess = (e or {}).get("session")
+        if not sess:
+            return False
+        if host in sess["allowed"] or sess["answers"].get(host):
+            self._used(name, host)
+            return True
+        if host in sess["answers"]:
+            return False
+        with self.lock:
+            waits = self.asks.setdefault(name, {})
+            q = next((x for x in waits.values() if x["host"] == host), None)
+            if q is None:
+                qid = secrets_mod.token_hex(4)
+                q = waits[qid] = {"id": qid, "host": host, "port": port, "t": time.time(), "event": threading.Event(),
+                                  "result": False}
+                self.on_event({"kind": "service_ask", "name": name, "id": qid, "host": host, "port": port,
+                               "who": sess["who"]})
+                self.notify()
+        q["event"].wait(self.cfg.net_approval_timeout_s)
+        with self.lock:
+            self.asks.get(name, {}).pop(q["id"], None)
+            if (self.registry.get(name) or {}).get("session") is sess:
+                sess["answers"].setdefault(host, q["result"])
+                self._save()
+        if q["result"]:
+            self._used(name, host)
+        self.notify()
+        return q["result"]
+
+    def _used(self, name: str, host: str) -> None:
+        sess = (self.registry.get(name) or {}).get("session")
+        if sess is not None and host not in sess["used"]:
+            sess["used"].append(host)
+            self._save()
+
+    def answer(self, name: str, qid: str, allow: bool) -> None:
+        """Your answer to a site question of an install session (for this session only)."""
+        with self.lock:
+            q = self.asks.get(name, {}).get(qid)
+            if q is None:
+                raise KeyError("That question isn't waiting any more.")
+            q["result"] = bool(allow)
+            q["event"].set()
+
+    def add_sites(self, name: str, hosts: list) -> dict:
+        """The sites a session used, added to the profile kept by UVMC: a profile change for you to approve."""
+        e = self.get(name)
+        text = e.get("adapter")
+        if not text:
+            raise ServiceError("Its profile comes from its repository: add the sites there, or edit the profile here.")
+        hosts = [str(h).strip().lower() for h in hosts if valid_site(str(h).strip())]
+        sites = list(dict.fromkeys(e["manifest"]["sites"] + hosts))
+        new_line = "sites = [" + ", ".join(f'"{h}"' for h in sites) + "]"
+        lines = text.splitlines()
+        section, done = "", False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("[") and not stripped.startswith("[["):
+                section = stripped.strip("[]").strip()
+            elif stripped.startswith("[["):
+                section = ""
+            elif section == "network" and re.match(r"^sites\s*=", stripped):
+                if "]" not in stripped:
+                    raise ServiceError("Its sites list spans several lines: edit the profile by hand.")
+                lines[i] = new_line + ("  " + stripped.split("]", 1)[1].strip() if stripped.split("]", 1)[1].strip() else "")
+                done = True
+                break
+        if not done:
+            raise ServiceError("Its profile has no sites list under [network]: edit the profile by hand.")
+        return self.set_adapter(name, "\n".join(lines) + "\n")
+
+    def rollback(self, name: str, snapshot: str) -> None:
+        """The app folder as it was before an install session (the service restarted if it's on)."""
+        with self.lock:
+            e = self.get(name)
+            if not self.is_local(name):
+                raise ServiceError("Only apps installed in place have snapshots.")
+            if e.get("session"):
+                raise ServiceError("End the install session first.")
+            if e["enabled"]:
+                self._systemctl("stop", self.unit(name))
+            self.snapshots(name).restore(snapshot)
+            if e["enabled"]:
+                self._systemctl("start", self.unit(name))
+            e["rolled_back"] = {"snapshot": snapshot, "at": time.time()}
+            self._save()
+        self.notify()
+
+    def session_properties(self, name: str, who: str) -> list[str]:
+        """The transient unit's properties for an install session: the running unit's own (user,
+        group, box, sandbox) with the app folder writable, without secrets; the agent doesn't see
+        the data folder. Read by uvmc-service-shell (and the agent's commands)."""
+        e = self.get(name)
+        app, home = self.app(name), self.home(name)
+        keep = ("User=", "Group=", "Slice=", "EnvironmentFile=", "MemoryMax=", "UMask=", "NoNewPrivileges=",
+                "ProtectSystem=", "ProtectHome=", "PrivateTmp=", "PrivateDevices=", "ProtectProc=", "ProtectKernel",
+                "ProtectControlGroups=", "ProtectClock=", "ProtectHostname=", "RestrictSUIDSGID=", "LockPersonality=",
+                "RestrictRealtime=", "RestrictNamespaces=", "CapabilityBoundingSet=", "AmbientCapabilities=",
+                "RestrictAddressFamilies=", "SystemCallArchitectures=")
+        props = [ln for ln in self.unit_text(name).splitlines() if ln.startswith(keep)]
+        env = [ln[len("Environment="):].strip("'") for ln in self.unit_text(name).splitlines() if ln.startswith("Environment=")]
+        env = [x for x in env if not x.startswith(("HOME=", "UVMC_URL="))] + [f"HOME={app}"]
+        props += [f"Environment={x}" for x in env]
+        props += [f"WorkingDirectory={app}", f"ReadWritePaths={app}" + ("" if who == "agent" else f" {home}")]
+        if who == "agent":
+            props.append(f"InaccessiblePaths={home}")
+        props.append("TimeoutStopSec=15")
+        return props
+
+    def _write_session_files(self, name: str) -> None:
+        """The session's properties for uvmc-service-shell, and the marker that a session is open."""
+        files = {self.base / name / f"session-{who}.properties": "\n".join(self.session_properties(name, who)) + "\n"
+                 for who in ("shell", "agent")}
+        marker = self.session_marker(name)
+        if no_sudo():
+            for path, text in files.items():
+                path.write_text(text, encoding="utf-8")
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(self.get(name)["session"]["who"], encoding="utf-8")
+            return
+        for path, text in files.items():
+            p = root(["tee", str(path)], stdin=text.encode(), timeout=15)
+            if p.returncode == 0:
+                root(["chown", "root:root", str(path)], timeout=15)
+                root(["chmod", "640", str(path)], timeout=15)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(self.get(name)["session"]["who"], encoding="utf-8")
 
     # --- removing one ----------------------------------------------------------------------------
 
     def remove(self, name: str, keep_data: bool = False) -> None:
         with self.lock:
             e = self.get(name)
+            for q in self.asks.pop(name, {}).values():   # an open install session ends with it
+                q["event"].set()
+            try:
+                self.session_marker(name).unlink()
+            except OSError:
+                pass
             if e["installed"] and not no_sudo():
                 self._systemctl("disable", "--now", self.unit(name))
                 for unit in (self.unit(name), f"{UNIT_PREFIX}{name}-health.service"):
@@ -929,6 +1206,11 @@ class Services:
                     "manifest": m, "proposal": e.get("proposal"), "checked": e.get("checked"),
                     "check_error": e.get("check_error"), "missing": self.missing(n) if m else [],
                     "status": self.status(n), "health": e.get("health"),
+                    "source": (e.get("source") or {}).get("kind", "git"), "level": e.get("level", "open"),
+                    "session": {k: v for k, v in e["session"].items() if k != "answers"} if e.get("session") else None,
+                    "last_session": e.get("last_session"),
+                    "asks": [{"id": q["id"], "host": q["host"], "port": q["port"], "t": q["t"]}
+                             for q in self.asks.get(n, {}).values()],
                     "refused": sum(1 for x in self.net.get(n, ()) if x["verdict"] == "deny")}
             if detail and m:
                 values = []
@@ -939,6 +1221,8 @@ class Services:
                     else:
                         v["value"] = e["values"].get(st["name"], st["default"])
                     values.append(v)
+                if (e.get("source") or {}).get("kind") == LOCAL:
+                    item["snapshots"] = self.snapshots(n).list()[::-1] if self.app(n).exists() else []
                 item.update({"settings": values, "host_keys": e["host_keys"], "net": list(self.net.get(n, ()))[::-1][:100],
                              "log": self.log(n), "has_token": bool(self._token(n))})
             out.append(item)

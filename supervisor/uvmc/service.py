@@ -3895,6 +3895,40 @@ def create_app(ctl: Controller, token: str | PanelToken | None):
         text = body.get("text")
         return svc(ctl.services.set_adapter, str(body.get("name", "")), None if text is None else str(text))
 
+    @app.post("/api/services/add-local")
+    def services_add_local(body: dict):
+        """An empty account to install an app into: its profile, waiting for your approval."""
+        return svc(ctl.services.add_local, str(body.get("profile", "")))
+
+    @app.post("/api/services/session/start")
+    def services_session_start(body: dict):
+        """Opens an install session (snapshot, service stopped, sites asked); the PC's
+        uvmc shell calls this before its shell, and the end after."""
+        sites = body.get("sites") or []
+        if isinstance(sites, str):
+            sites = [x for x in sites.replace(",", " ").split() if x]
+        return svc(ctl.services.start_session, str(body.get("name", "")), str(body.get("who", "shell")), sites)
+
+    @app.post("/api/services/session/end")
+    def services_session_end(body: dict):
+        return svc(ctl.services.end_session, str(body.get("name", "")), body.get("start_again", True) is not False)
+
+    @app.post("/api/services/answer")
+    def services_answer(body: dict):
+        """Your answer to an install session's site question (for that session only)."""
+        svc(ctl.services.answer, str(body.get("name", "")), str(body.get("id", "")), bool(body.get("allow")))
+        return {"ok": True}
+
+    @app.post("/api/services/add-sites")
+    def services_add_sites(body: dict):
+        """Sites a session used, added to the profile: a profile change waiting for your approval."""
+        return svc(ctl.services.add_sites, str(body.get("name", "")), list(body.get("hosts") or []))
+
+    @app.post("/api/services/rollback")
+    def services_rollback(body: dict):
+        svc(ctl.services.rollback, str(body.get("name", "")), str(body.get("snapshot", "")))
+        return {"ok": True}
+
     @app.post("/api/services/approve")
     def services_approve(body: dict):
         """Installs exactly the commit you looked at (and restarts the service if it's on)."""

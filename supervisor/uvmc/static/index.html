@@ -1875,7 +1875,7 @@ $("reportsBtn").addEventListener("click", () => openReports());
 // --- The Services page: your own apps that UVMC runs (services.py, docs/app-contract.md) -----
 // Full width, in the same place as Reports. Nothing is installed or updated without your
 // approval: a new app or a new version shows as a card with what it runs and reaches.
-const svcWaiting = () => services.list.filter((x) => x.proposal || x.status?.state === "failed").length;
+const svcWaiting = () => services.list.filter((x) => x.proposal || x.asks?.length || x.status?.state === "failed").length;
 function setServicesView(on, quiet) {
   if (on && reports.active) setReportsView(false);
   services.active = on;
@@ -1932,16 +1932,20 @@ function serviceNotice(name, body) {
   const n = new Notification(`UVMC: ${name}`, { body, tag: `uvmc-service-${name}` });
   n.onclick = () => { window.focus(); openServices(name); n.close(); };
 }
-const svcState = (x) => !x.installed ? ["Waiting for your approval", "need"] : x.proposal ? ["New version waiting", "need"]
+const svcState = (x) => !x.installed ? ["Waiting for your approval", "need"] : x.asks?.length ? ["A site waits for your answer", "need"]
+  : x.session ? ["Being installed", "need"] : x.proposal ? [x.proposal.kind === "manifest" ? "Profile change waiting" : "New version waiting", "need"]
   : x.status?.state === "active" ? ["Running", "on"] : x.status?.state === "failed" ? ["Stopped", "bad"]
   : x.missing?.length ? ["Needs settings", "need"] : x.enabled ? [x.status?.words || "On", ""] : ["Off", ""];
 function showServicesOverview() {
   const page = $("svcpage");
   const keep = page.scrollTop;
   page.innerHTML = `<h2>Services</h2><p class="small">Your own long-running apps, installed from a git repository when you approve them, and run by UVMC: each as its own user, from a read-only copy of the version you approved, reaching only the sites and SSH machines its manifest declares. New versions wait for your approval. How to make an app for it: docs/app-contract.md.</p>`;
-  const add = el("button", "btn primary", "Add a service"); add.type = "button";
+  const add = el("button", "btn primary", "Add from a git repository"); add.type = "button";
   add.addEventListener("click", () => addServiceForm(page));
-  page.appendChild(add);
+  const local = el("button", "btn", "An empty account to install an app into"); local.type = "button";
+  local.title = "For an app you install the way its README says, inside the account's walls (uvmc shell on your PC)";
+  local.addEventListener("click", () => addLocalForm(page));
+  page.append(add, " ", local);
   if (!services.list.length) page.appendChild(el("p", "small", "No services yet."));
   const grid = el("div", "repgrid");
   for (const x of services.list) {
@@ -1950,7 +1954,7 @@ function showServicesOverview() {
     card.innerHTML = `<div class="top"><strong>${esc(x.title)}</strong>${x.proposal ? `<span class="badge">approve</span>` : ""}</div>
       <div class="rstatus ${kind === "on" ? "ok" : kind === "bad" ? "bad" : kind === "need" ? "warn" : "info"}"><span>${esc(label)}</span></div>
       <p class="small">${esc(x.description || "")}</p>
-      <div class="when">${esc(x.url)} (${esc(x.branch)})${x.commit ? `, version ${esc(x.commit.slice(0, 8))}` : ""}${x.refused ? `. <span class="bad">${x.refused} refused connection${x.refused > 1 ? "s" : ""}</span>` : ""}</div>
+      <div class="when">${x.source === "local" ? "Installed in place" : `${esc(x.url)} (${esc(x.branch)})${x.commit ? `, version ${esc(x.commit.slice(0, 8))}` : ""}`}${x.refused ? `. <span class="bad">${x.refused} refused connection${x.refused > 1 ? "s" : ""}</span>` : ""}</div>
       <div class="row"></div>`;
     const open = el("button", "btn primary", x.proposal ? "Review" : "Open"); open.type = "button";
     open.addEventListener("click", () => openServices(x.name));
@@ -1959,6 +1963,23 @@ function showServicesOverview() {
   }
   page.appendChild(grid);
   page.scrollTop = keep;
+}
+function addLocalForm(page) {
+  page.querySelector(".svcadd")?.remove();
+  const f = el("form", "svcsec svcadd", `<h3>An empty account to install an app into</h3>
+    <p class="small">Its profile: its name, what to start once it's installed, its memory, and the sites it needs when it runs (you can leave them empty: while installing, every site is asked, and the ones it used can be added afterwards). UVMC keeps it. Nothing is made before you approve it.</p>
+    <textarea data-profile spellcheck="false" style="min-height:260px"></textarea>
+    <div class="row"><button class="btn primary" type="submit">Show me</button> <button class="btn" type="button" data-cancel>Cancel</button></div>
+    <p class="small form-msg"></p>`);
+  api("/api/services-template").then((t) => { f.querySelector("[data-profile]").value = t.text; }).catch(() => {});
+  f.querySelector("[data-cancel]").addEventListener("click", () => f.remove());
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = f.querySelector(".form-msg");
+    try { const v = await api("/api/services/add-local", { profile: f.querySelector("[data-profile]").value }); openServices(v.name); }
+    catch (err) { msg.textContent = err.message; msg.classList.add("bad"); }
+  });
+  page.insertBefore(f, page.querySelector(".repgrid"));
 }
 function addServiceForm(page) {
   page.querySelector(".svcadd")?.remove();
@@ -2035,7 +2056,7 @@ async function showServicePage() {
   page.appendChild(back);
   const head = el("div", "rephead");
   head.innerHTML = `<div class="who"><h2>${esc(x.title)}</h2><p class="small">${esc(x.description || "")}</p>
-    <p class="small">From ${esc(x.url)}, branch ${esc(x.branch)}${x.path ? `, folder ${esc(x.path)}` : ""}${x.commit ? `. Running version ${esc(x.commit.slice(0, 12))}: ${esc(x.subject || "")}` : ""}.</p></div><div class="ctrls"></div>`;
+    <p class="small">${x.source === "local" ? "Installed in place, in its own account." : `From ${esc(x.url)}, branch ${esc(x.branch)}${x.path ? `, folder ${esc(x.path)}` : ""}${x.commit ? `. Running version ${esc(x.commit.slice(0, 12))}: ${esc(x.subject || "")}` : ""}.`}</p></div><div class="ctrls"></div>`;
   page.appendChild(head);
   const msg = el("p", "small svcmsg");
   page.appendChild(msg);
@@ -2055,12 +2076,16 @@ async function showServicePage() {
     rs.addEventListener("click", () => act("/api/services/restart", { name }, "Restarted."));
     const up = el("button", "btn", "Look for a new version"); up.type = "button";
     up.addEventListener("click", async () => { const r = await act("/api/services/check", { name }); if (r && !r.found.length) msg.textContent = x.check_error ? "" : "No new version."; });
-    ctrls.append(sw, rs, up);
+    ctrls.append(sw, rs);
+    if (x.source !== "local") ctrls.appendChild(up);
+    if (x.session) { sw.disabled = true; rs.disabled = true; sw.title = rs.title = "Not during an install session"; }
     if (x.manifest.health) {
       const hc = el("button", "btn", "Run its health check"); hc.type = "button";
       hc.addEventListener("click", () => act("/api/services/health", { name }));
       ctrls.appendChild(hc);
     }
+    if (x.asks?.length) page.appendChild(asksSection(x));
+    if (x.source === "local") page.appendChild(installSection(x, act));
     const st = el("div", "svcsec svcstatus");
     page.appendChild(st);
     fillStatus(st, x);
@@ -2070,7 +2095,7 @@ async function showServicePage() {
     const what = el("div", "svcsec", `<h3>Its profile: what it may run and reach</h3>
       <p class="small">${x.manifest_from === "uvmc" ? "Kept by UVMC (written for it here)." : "From the repository's uvmc-app.toml."} A change that touches what it may reach waits for your approval.</p>
       ${manifestWords(x.manifest)}<div class="row"><button class="btn" type="button" data-edit>Edit the profile</button>
-      ${x.manifest_from === "uvmc" ? `<button class="btn" type="button" data-repo>Use the repository's again</button>` : ""}</div>`);
+      ${x.manifest_from === "uvmc" && x.source !== "local" ? `<button class="btn" type="button" data-repo>Use the repository's again</button>` : ""}</div>`);
     what.querySelector("[data-edit]").addEventListener("click", async (e) => {
       e.target.disabled = true;
       let t;
@@ -2107,7 +2132,9 @@ async function updateServicePage() {   // status, connections and log only: neve
   try { x = await api(`/api/services/${encodeURIComponent(name)}`); } catch { return; }
   if (services.name !== name) return;
   const page = $("svcpage");
-  if (!!x.proposal !== !!svcDetail?.proposal || x.installed !== svcDetail?.installed || x.commit !== svcDetail?.commit) { showServicePage(); return; }
+  if (!!x.proposal !== !!svcDetail?.proposal || x.installed !== svcDetail?.installed || x.commit !== svcDetail?.commit
+      || !!x.session !== !!svcDetail?.session || (x.asks || []).length !== (svcDetail?.asks || []).length
+      || x.last_session?.ended !== svcDetail?.last_session?.ended) { showServicePage(); return; }
   svcDetail = x;
   const st = page.querySelector(".svcstatus"), net = page.querySelector(".svcnet"), log = page.querySelector(".svclog")?.parentElement;
   if (st) fillStatus(st, x);
@@ -2122,7 +2149,7 @@ function fillStatus(st, x) {
     ${s.restarts ? `<dt>Restarts</dt><dd>${esc(s.restarts)}</dd>` : ""}
     ${mem ? `<dt>Memory</dt><dd>${mem}</dd>` : ""}
     ${x.health ? `<dt>Health</dt><dd class="${x.health.ok ? "" : "bad"}">${x.health.ok ? "healthy" : "not healthy"}, ${esc(fmtWhen(x.health.at))}</dd>` : ""}
-    <dt>New versions</dt><dd>${x.checked ? `looked ${esc(fmtWhen(x.checked))}` : "not looked yet"}${x.check_error ? ` <span class="bad">(${esc(x.check_error)})</span>` : ""}</dd></dl>`;
+    ${x.source === "local" ? "" : `<dt>New versions</dt><dd>${x.checked ? `looked ${esc(fmtWhen(x.checked))}` : "not looked yet"}${x.check_error ? ` <span class="bad">(${esc(x.check_error)})</span>` : ""}</dd>`}</dl>`;
 }
 function fillNet(net, x) {
   const rows = (x.net || []).slice(0, 50);
@@ -2143,8 +2170,11 @@ function proposalSection(x, act) {
   if (p.kind === "manifest") {
     const changes = wallsChanges(x.manifest, p.manifest);
     sec.innerHTML = `<h3>A change to its profile is waiting</h3>
-      <p class="small">${p.adapter ? "A profile kept by UVMC" : "Back to the repository's own uvmc-app.toml"}, for the running version ${esc(p.commit.slice(0, 12))}.</p>
+      <p class="small">${p.adapter ? "A profile kept by UVMC" : "Back to the repository's own uvmc-app.toml"}${p.commit === "local" ? "" : `, for the running version ${esc(p.commit.slice(0, 12))}`}.</p>
       ${changes.length ? `<p class="warn"><strong>It changes what the app may run or reach:</strong><br>${changes.join("<br>")}</p>` : `<p class="small">What it may run and reach stays the same.</p>`}
+      ${manifestWords(p.manifest)}`;
+  } else if (p.kind === "install" && p.commit === "local") {
+    sec.innerHTML = `<h3>Make an account for ${esc(p.manifest.title)}?</h3><p class="small">An empty account (its own user, an empty app folder, its walls) to install the app into afterwards, with its profile below. Nothing else is installed or run yet.</p>
       ${manifestWords(p.manifest)}`;
   } else if (p.kind === "install") {
     sec.innerHTML = `<h3>Install ${esc(p.manifest.title)}?</h3>${commit}<p class="small">This is everything it would run and reach. Nothing is installed until you approve.</p>
@@ -2166,10 +2196,11 @@ function proposalSection(x, act) {
     });
   }
   const row = el("div", "row");
-  const ok = el("button", "btn primary", p.kind === "install" ? "Approve and install" : p.kind === "manifest" ? "Approve this profile" : "Approve this version"); ok.type = "button";
+  const ok = el("button", "btn primary", p.kind === "install" && p.commit === "local" ? "Approve and make the account" : p.kind === "install" ? "Approve and install" : p.kind === "manifest" ? "Approve this profile" : "Approve this version"); ok.type = "button";
   ok.disabled = !p.manifest;
   ok.addEventListener("click", () => {
-    const sure = p.kind === "install" ? `Install ${p.manifest.title}, version ${p.commit.slice(0, 12)}?`
+    const sure = p.kind === "install" && p.commit === "local" ? `Make the account for ${p.manifest.title}?`
+      : p.kind === "install" ? `Install ${p.manifest.title}, version ${p.commit.slice(0, 12)}?`
       : p.kind === "manifest" ? `Use this profile${x.enabled ? " and restart it" : ""}?` : `Install version ${p.commit.slice(0, 12)}${x.enabled ? " and restart it" : ""}?`;
     if (confirm(sure)) act("/api/services/approve", { name: x.name, commit: p.commit }, "Installed.");
   });
@@ -2180,6 +2211,60 @@ function proposalSection(x, act) {
   });
   row.append(ok, no);
   sec.appendChild(row);
+  return sec;
+}
+// Sites an install session tried that its profile doesn't list: your answer, for that session only.
+function asksSection(x) {
+  const sec = el("div", "svcsec ask", `<h3>It wants to reach ${x.asks.length > 1 ? "these sites" : "a site"}</h3>
+    <p class="small">During its install session, outside its profile. Your answer holds for this session only; the command waits meanwhile.</p>`);
+  for (const q of x.asks) {
+    const row = el("div", "row", `<strong>${esc(q.host)}</strong><span class="small">port ${esc(q.port)}</span>`);
+    for (const [label, allow] of [["Allow", true], ["Refuse", false]]) {
+      const b = el("button", allow ? "btn primary" : "btn", label); b.type = "button";
+      b.addEventListener("click", async () => { b.disabled = true; try { await api("/api/services/answer", { name: x.name, id: q.id, allow }); } catch (e) {} showServicePage(); });
+      row.appendChild(b);
+    }
+    sec.appendChild(row);
+  }
+  return sec;
+}
+// Installing in place: sessions (your shell now; an agent next), what the last one used, snapshots.
+function installSection(x, act) {
+  const sec = el("div", "svcsec");
+  const name = x.name;
+  if (x.session) {
+    sec.innerHTML = `<h3>Being installed</h3><p class="small">By ${x.session.who === "shell" ? "you, in a shell" : "an agent"} since ${esc(fmtWhen(x.session.started))}. The service is stopped meanwhile${x.session.was_on ? " and starts again when the session ends" : ""}. Sites allowed without asking: ${x.session.allowed?.length ? x.session.allowed.map(esc).join(", ") : "none"}; used so far: ${x.session.used?.length ? x.session.used.map(esc).join(", ") : "none"}.</p>
+      <p class="small">A shell's session ends when you leave the shell. If it was left open, end it here.</p>
+      <div class="row"><button class="btn" type="button" data-end>End the session</button>${x.session.was_on ? `<label class="told-switch"><input type="checkbox" data-again checked> start it again</label>` : ""}</div>`;
+    sec.querySelector("[data-end]").addEventListener("click", () => act("/api/services/session/end", { name, start_again: sec.querySelector("[data-again]")?.checked !== false }, "Session ended."));
+  } else {
+    sec.innerHTML = `<h3>Install or update it</h3>
+      <p class="small">Inside its account, the way the app's README says: its app folder is writable during the session (read-only while it runs), the service is stopped meanwhile, a snapshot is taken first, it gets no secrets, and every site outside its profile is asked here.</p>
+      <p class="small"><strong>Yourself:</strong> in a terminal on your PC run <code>uvmc shell ${esc(name)}</code> (add <code>-Sites pypi.org,github.com</code>, or <code>--sites</code> on a Mac or Linux, for sites to allow without asking). Leaving the shell ends the session.</p>
+      <p class="small"><strong>With an agent:</strong> coming next.</p>`;
+  }
+  const last = x.last_session;
+  if (last && !x.session) {
+    const box = el("div", "", `<p class="small">Last session: ${esc(fmtWhen(last.started))} to ${esc(fmtWhen(last.ended))}${last.new_sites?.length ? `. It used sites its profile doesn't list: <strong>${last.new_sites.map(esc).join(", ")}</strong>.` : "."}</p>`);
+    if (last.new_sites?.length && x.manifest_from === "uvmc") {
+      const b = el("button", "btn", "Add them to its profile"); b.type = "button";
+      b.title = "A profile change: you approve it like any other";
+      b.addEventListener("click", () => act("/api/services/add-sites", { name, hosts: last.new_sites }, "Proposed: approve it above."));
+      box.appendChild(b);
+    }
+    sec.appendChild(box);
+  }
+  if (x.snapshots?.length && !x.session) {
+    const box = el("details", "", `<summary>Snapshots of its app folder (${x.snapshots.length})</summary><p class="small">Taken before each install session. Rolling back stops the service, puts the app folder back as it was, and starts it again if it's on.</p>`);
+    for (const snap of x.snapshots) {
+      const row = el("div", "row", `<span class="small">Before the session of ${esc(snap.replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d).*/, "$1-$2-$3 $4:$5"))}</span>`);
+      const b = el("button", "btn", "Roll back to this"); b.type = "button";
+      b.addEventListener("click", () => { if (confirm("Put its app folder back as it was then? Changes since are lost.")) act("/api/services/rollback", { name, snapshot: snap }, "Rolled back."); });
+      row.appendChild(b);
+      box.appendChild(row);
+    }
+    sec.appendChild(box);
+  }
   return sec;
 }
 function settingsSection(x, act) {
@@ -2807,6 +2892,7 @@ function connect() {
     if (ev.kind === "services") { refreshServicesSoon(); return; }
     if (ev.kind === "service_update") { refreshServicesSoon(); serviceNotice(ev.name, `A new version of ${ev.title} is waiting for your approval.`); return; }
     if (ev.kind === "service_refused") { refreshServicesSoon(); return; }
+    if (ev.kind === "service_ask") { refreshServicesSoon(); serviceNotice(ev.name, `It wants to reach ${ev.host} (install session): allow or refuse on its page.`); return; }
     if (ev.kind === "programs") { refreshReportsSoon(); if ($("programsList") && !$("pane-settings").hidden) loadPrograms(); return; }
     if (ev.kind === "program_report") { programReported(ev); return; }
     if (ev.kind === "program_silent") { programSilent(ev); return; }
